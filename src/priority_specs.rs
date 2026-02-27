@@ -3285,6 +3285,7 @@ fn map_build_dependency(dep: &str) -> String {
         "bzip2" => "bzip2-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "go-compiler" => "golang".to_string(),
+        "isa-l" => "isa-l-devel".to_string(),
         "libcurl" => "libcurl-devel".to_string(),
         "libdeflate" => "libdeflate-devel".to_string(),
         "lz4-c" => "lz4-devel".to_string(),
@@ -4260,6 +4261,7 @@ mod tests {
         assert_eq!(map_build_dependency("zlib"), "zlib-devel".to_string());
         assert_eq!(map_build_dependency("openssl"), "openssl-devel".to_string());
         assert_eq!(map_build_dependency("bzip2"), "bzip2-devel".to_string());
+        assert_eq!(map_build_dependency("isa-l"), "isa-l-devel".to_string());
         assert_eq!(map_build_dependency("xz"), "xz-devel".to_string());
         assert_eq!(map_build_dependency("libcurl"), "libcurl-devel".to_string());
         assert_eq!(
