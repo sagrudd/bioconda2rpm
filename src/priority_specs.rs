@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::fs;
+use std::fs::{self, OpenOptions};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -2190,6 +2190,12 @@ fn build_python_requirements(parsed: &ParsedMeta) -> Vec<String> {
             out.insert(req);
         }
     }
+    // Legacy pomegranate releases (used by Bioconda CNVKit) are not compatible
+    // with Cython 3 / NumPy 2; force compatible caps in the locked venv set.
+    if out.iter().any(|req| req.starts_with("pomegranate")) {
+        out.insert("cython<3".to_string());
+        out.insert("numpy<2".to_string());
+    }
     out.into_iter().collect()
 }
 
@@ -2226,6 +2232,7 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
 
     let pip_name = match normalized.as_str() {
         "python-kaleido" => "kaleido".to_string(),
+        "matplotlib-base" => "matplotlib".to_string(),
         other => other.to_string(),
     };
 
@@ -3049,6 +3056,26 @@ mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\"\n\
     sed -i 's|GSL_LIBS=-lgsl|GSL_LIBS=\"-lgsl -lopenblas\"|g' ./build.sh || true\n\
     fi\n\
     \n\
+    # Salmon's Bioconda recipe forces Boost lookup to $PREFIX only.\n\
+    # In RPM builds we install boost-devel via system repos, so allow\n\
+    # standard CMake discovery roots to satisfy Boost components.\n\
+    if [[ \"%{{tool}}\" == \"salmon\" ]]; then\n\
+    sed -i 's|-DBOOST_ROOT=\"${{PREFIX}}\"|-DBOOST_ROOT=\"/usr\"|g' ./build.sh || true\n\
+    sed -i 's|-DBoost_NO_SYSTEM_PATHS=ON|-DBoost_NO_SYSTEM_PATHS=OFF|g' ./build.sh || true\n\
+    # Salmon's libstaden ExternalProject hardcodes ${{BUILD_PREFIX}}/share/gnuconfig.\n\
+    # Ensure a stable system path exists and rewrite to it for non-conda RPM builds.\n\
+    cfg_dir=$(find /usr/share -maxdepth 3 -type f -name config.guess -print 2>/dev/null | head -n 1 | xargs -r dirname)\n\
+    if [[ -n \"$cfg_dir\" && -f \"$cfg_dir/config.guess\" && -f \"$cfg_dir/config.sub\" ]]; then\n\
+      mkdir -p /usr/share/gnuconfig\n\
+      cp -f \"$cfg_dir/config.guess\" /usr/share/gnuconfig/config.guess\n\
+      cp -f \"$cfg_dir/config.sub\" /usr/share/gnuconfig/config.sub\n\
+      sed -i 's|${{BUILD_PREFIX}}/share/gnuconfig|/usr/share/gnuconfig|g' CMakeLists.txt || true\n\
+      perl -0pi -e 's@\\n\\s*cp .*gnuconfig.*\\n@\\n      cp -f /usr/share/gnuconfig/config.guess staden-io_lib/config.guess &&\\n      cp -f /usr/share/gnuconfig/config.sub staden-io_lib/config.sub &&\\n@' CMakeLists.txt || true\n\
+      sed -i 's|set(JEMALLOC_FLAGS \"CC=${{CMAKE_C_COMPILER}} CFLAGS=\\\\\\\"-fPIC ${{SCHAR_FLAG}}\\\\\\\" CPPFLAGS=\\\\\\\"-fPIC ${{SCHAR_FLAG}}\\\\\\\"\")|set(JEMALLOC_FLAGS \"CC=${{CMAKE_C_COMPILER}} CFLAGS=-fPIC CPPFLAGS=-fPIC\")|g' CMakeLists.txt || true\n\
+      perl -0pi -e 's@if\\(CONDA_BUILD\\)\\n\\s*set\\(JEMALLOC_FLAGS .*?\\nelse\\(\\)\\n\\s*set\\(JEMALLOC_FLAGS .*?\\nendif\\(\\)@set(JEMALLOC_FLAGS \"CC=${{CMAKE_C_COMPILER}} CFLAGS=-fPIC CPPFLAGS=-fPIC\")@s' CMakeLists.txt || true\n\
+    fi\n\
+    fi\n\
+    \n\
     # A number of upstream scripts hardcode aggressive THREADS values;\n\
     # force single-core policy for deterministic container builds.\n\
     sed -i -E 's/THREADS=\"-j[0-9]+\"/THREADS=\"-j1\"/g' ./build.sh || true\n\
@@ -3197,18 +3224,40 @@ fn render_python_venv_setup_block(python_recipe: bool, python_requirements: &[St
         return String::new();
     }
 
+    let legacy_pomegranate_mode = python_requirements
+        .iter()
+        .any(|req| req.starts_with("pomegranate"));
     let requirements_install = if python_requirements.is_empty() {
         String::new()
     } else {
         let requirements_body = python_requirements.join("\n");
+        let preinstall_legacy_build_bits = if legacy_pomegranate_mode {
+            "\"$PIP\" install \"cython<3\" \"numpy<2\" \"scipy<2\"\n"
+        } else {
+            ""
+        };
+        let compile_flags = if legacy_pomegranate_mode {
+            " --pip-args \"--no-build-isolation\""
+        } else {
+            ""
+        };
+        let install_flags = if legacy_pomegranate_mode {
+            " --no-build-isolation"
+        } else {
+            ""
+        };
         format!(
             "cat > requirements.in <<'REQEOF'\n\
 {requirements_body}\n\
 REQEOF\n\
+{preinstall_legacy_build_bits}\
 \"$PIP\" install pip-tools\n\
-pip-compile --generate-hashes requirements.in --output-file requirements.lock\n\
-\"$PIP\" install --require-hashes -r requirements.lock\n",
-            requirements_body = requirements_body
+pip-compile --generate-hashes requirements.in --output-file requirements.lock{compile_flags}\n\
+\"$PIP\" install{install_flags} --require-hashes -r requirements.lock\n",
+            requirements_body = requirements_body,
+            preinstall_legacy_build_bits = preinstall_legacy_build_bits,
+            compile_flags = compile_flags,
+            install_flags = install_flags
         )
     };
 
@@ -3602,14 +3651,18 @@ fn map_build_dependency(dep: &str) -> String {
         "autoconf" => "autoconf271".to_string(),
         "boost-cpp" => "boost-devel".to_string(),
         "bzip2" => "bzip2-devel".to_string(),
+        "cereal" => "cereal-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
         "go-compiler" => "golang".to_string(),
+        "gnuconfig" => "automake".to_string(),
         "isa-l" => "isa-l-devel".to_string(),
         "libcurl" => "libcurl-devel".to_string(),
         "libdeflate" => "libdeflate-devel".to_string(),
+        "libiconv" => "glibc-devel".to_string(),
         "lz4-c" => "lz4-devel".to_string(),
         "ncurses" => "ncurses-devel".to_string(),
+        "ninja" => "ninja-build".to_string(),
         "openssl" => "openssl-devel".to_string(),
         "xz" => "xz-devel".to_string(),
         "zlib" => "zlib-devel".to_string(),
@@ -3639,8 +3692,12 @@ fn map_runtime_dependency(dep: &str) -> String {
     }
     match dep {
         "boost-cpp" => "boost".to_string(),
+        "cereal" => "cereal-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
+        "gnuconfig" => "automake".to_string(),
+        "libiconv" => "glibc".to_string(),
+        "ninja" => "ninja-build".to_string(),
         other => other.to_string(),
     }
 }
@@ -4272,6 +4329,10 @@ fn build_spec_chain_in_container(
         "phase=container-build status=queued label={} spec={} image={}",
         build_label, spec_name, build_config.container_image
     ));
+    let logs_dir = build_config.reports_dir.join("build_logs");
+    fs::create_dir_all(&logs_dir)
+        .with_context(|| format!("creating build logs dir {}", logs_dir.display()))?;
+    let final_log_path = logs_dir.join(format!("{}.log", sanitize_label(&build_label)));
 
     let script = format!(
         "set -euo pipefail\n\
@@ -4429,12 +4490,27 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         spec = sh_single_quote(&spec_in_container),
     );
 
-    let run_once = |attempt: usize| -> Result<std::process::Output> {
+    let run_once = |attempt: usize| -> Result<(std::process::ExitStatus, String)> {
         let step_started = Instant::now();
         log_progress(format!(
             "phase=container-build status=started label={} spec={} attempt={} image={}",
             build_label, spec_name, attempt, build_config.container_image
         ));
+        let attempt_log_path = logs_dir.join(format!(
+            "{}.attempt{}.log",
+            sanitize_label(&build_label),
+            attempt
+        ));
+        let stdout_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&attempt_log_path)
+            .with_context(|| format!("opening attempt log {}", attempt_log_path.display()))?;
+        let stderr_file = stdout_file
+            .try_clone()
+            .with_context(|| format!("cloning attempt log {}", attempt_log_path.display()))?;
+
         let mut cmd = Command::new(&build_config.container_engine);
         cmd.arg("run")
             .arg("--rm")
@@ -4449,7 +4525,8 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
             .arg("bash")
             .arg("-lc")
             .arg(&script);
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.stdout(Stdio::from(stdout_file))
+            .stderr(Stdio::from(stderr_file));
 
         let mut child = cmd.spawn().with_context(|| {
             format!(
@@ -4481,38 +4558,35 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
             }
         }
 
-        let output = child
-            .wait_with_output()
-            .with_context(|| format!("collecting container build output for {}", spec_name))?;
+        let status = child
+            .wait()
+            .with_context(|| format!("waiting for container build output for {}", spec_name))?;
+        let combined = String::from_utf8_lossy(
+            &fs::read(&attempt_log_path)
+                .with_context(|| format!("reading attempt log {}", attempt_log_path.display()))?,
+        )
+        .into_owned();
         log_progress(format!(
             "phase=container-build status=finished label={} spec={} attempt={} elapsed={} exit={}",
             build_label,
             spec_name,
             attempt,
             format_elapsed(step_started.elapsed()),
-            output.status
+            status
         ));
-        Ok(output)
+        Ok((status, combined))
     };
 
-    let mut output = run_once(1)?;
-    let mut combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    if !output.status.success() && is_source_permission_denied(&combined) {
+    let (mut status, mut combined) = run_once(1)?;
+    if !status.success() && is_source_permission_denied(&combined) {
         log_progress(format!(
             "phase=container-build status=retrying label={} spec={} reason=source-permission-denied",
             build_label, spec_name
         ));
         fix_host_source_permissions(&build_config.topdir.join("SOURCES"))?;
-        output = run_once(2)?;
-        combined = format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let retry = run_once(2)?;
+        status = retry.0;
+        combined = retry.1;
     }
 
     let dep_events = parse_dependency_events(&combined);
@@ -4542,14 +4616,10 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         }
     }
 
-    let logs_dir = build_config.reports_dir.join("build_logs");
-    fs::create_dir_all(&logs_dir)
-        .with_context(|| format!("creating build logs dir {}", logs_dir.display()))?;
-    let log_path = logs_dir.join(format!("{}.log", sanitize_label(&build_label)));
-    fs::write(&log_path, &combined)
-        .with_context(|| format!("writing build log {}", log_path.display()))?;
+    fs::write(&final_log_path, &combined)
+        .with_context(|| format!("writing build log {}", final_log_path.display()))?;
 
-    if !output.status.success() {
+    if !status.success() {
         let arch_policy =
             classify_arch_policy(&combined, &build_config.host_arch).unwrap_or("unknown");
         let tail = tail_lines(&combined, 20);
@@ -4579,10 +4649,10 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         anyhow::bail!(
             "container build chain failed for {} (exit status: {}) elapsed={} arch_policy={} log={} tail={}{}",
             spec_name,
-            output.status,
+            status,
             format_elapsed(stage_started.elapsed()),
             arch_policy,
-            log_path.display(),
+            final_log_path.display(),
             tail,
             dep_hint
         );
@@ -4873,6 +4943,10 @@ mod tests {
         assert_eq!(map_build_dependency("isa-l"), "isa-l-devel".to_string());
         assert_eq!(map_build_dependency("xz"), "xz-devel".to_string());
         assert_eq!(map_build_dependency("libcurl"), "libcurl-devel".to_string());
+        assert_eq!(map_build_dependency("ninja"), "ninja-build".to_string());
+        assert_eq!(map_build_dependency("cereal"), "cereal-devel".to_string());
+        assert_eq!(map_build_dependency("gnuconfig"), "automake".to_string());
+        assert_eq!(map_build_dependency("libiconv"), "glibc-devel".to_string());
         assert_eq!(
             map_build_dependency("font-ttf-dejavu-sans-mono"),
             "dejavu-sans-mono-fonts".to_string()
@@ -4894,6 +4968,10 @@ mod tests {
             map_runtime_dependency("fonts-conda-ecosystem"),
             "fontconfig".to_string()
         );
+        assert_eq!(map_runtime_dependency("ninja"), "ninja-build".to_string());
+        assert_eq!(map_runtime_dependency("cereal"), "cereal-devel".to_string());
+        assert_eq!(map_runtime_dependency("gnuconfig"), "automake".to_string());
+        assert_eq!(map_runtime_dependency("libiconv"), "glibc".to_string());
         assert_eq!(
             map_build_dependency("perl-canary-stability"),
             "perl-Canary-Stability".to_string()
@@ -5123,8 +5201,51 @@ requirements:
             conda_dep_to_pip_requirement("python-kaleido ==0.2.1"),
             Some("kaleido==0.2.1".to_string())
         );
+        assert_eq!(
+            conda_dep_to_pip_requirement("matplotlib-base >=3.5.2"),
+            Some("matplotlib>=3.5.2".to_string())
+        );
         assert_eq!(conda_dep_to_pip_requirement("python >=3.8"), None);
         assert_eq!(conda_dep_to_pip_requirement("c-compiler"), None);
+    }
+
+    #[test]
+    fn python_requirements_add_cython_cap_for_pomegranate() {
+        let parsed = ParsedMeta {
+            package_name: "cnvkit".to_string(),
+            version: "0.9.12".to_string(),
+            source_url: "https://example.invalid/cnvkit-0.9.12.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/cnvkit".to_string(),
+            license: "Apache-2.0".to_string(),
+            summary: "cnvkit".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            noarch_python: true,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["python >=3.8".to_string()],
+            run_dep_specs_raw: vec!["pomegranate >=0.14.8,<=0.14.9".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let reqs = build_python_requirements(&parsed);
+        assert!(reqs.iter().any(|r| r.starts_with("pomegranate")));
+        assert!(reqs.contains(&"cython<3".to_string()));
+        assert!(reqs.contains(&"numpy<2".to_string()));
+    }
+
+    #[test]
+    fn python_venv_install_disables_build_isolation_for_pomegranate() {
+        let block = render_python_venv_setup_block(
+            true,
+            &["pomegranate>=0.14.8".to_string(), "cython<3".to_string()],
+        );
+        assert!(block.contains("pip-compile --generate-hashes"));
+        assert!(block.contains("--pip-args \"--no-build-isolation\""));
+        assert!(block.contains("\"$PIP\" install \"cython<3\" \"numpy<2\" \"scipy<2\""));
+        assert!(block.contains("install --no-build-isolation --require-hashes"));
     }
 
     #[test]
