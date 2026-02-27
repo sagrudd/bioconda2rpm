@@ -82,6 +82,10 @@ const PHOREUS_R_VERSION: &str = "4.5.2";
 const PHOREUS_R_MINOR: &str = "4.5";
 const PHOREUS_R_PACKAGE: &str = "phoreus-r-4.5.2";
 static PHOREUS_R_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+const PHOREUS_RUST_VERSION: &str = "1.92.0";
+const PHOREUS_RUST_MINOR: &str = "1.92";
+const PHOREUS_RUST_PACKAGE: &str = "phoreus-rust-1.92";
+static PHOREUS_RUST_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn log_progress(message: impl AsRef<str>) {
     println!("progress {}", message.as_ref());
@@ -655,6 +659,13 @@ fn visit_build_plan_node(
                 ));
                 continue;
             }
+            if is_rust_ecosystem_dependency_name(&dep) {
+                log_progress(format!(
+                    "phase=dependency action=skip from={} to={} reason=rust-runtime-provided",
+                    canonical, dep
+                ));
+                continue;
+            }
             log_progress(format!(
                 "phase=dependency action=follow from={} to={}",
                 canonical, dep
@@ -1193,9 +1204,53 @@ fn process_tool(
             };
         }
     };
+    let rust_script_hint = match staged_build_script_indicates_rust(&staged_build_sh) {
+        Ok(v) => v,
+        Err(err) => {
+            let reason = format!(
+                "failed to inspect staged build.sh {} for Rust policy: {err}",
+                staged_build_sh.display()
+            );
+            quarantine_note(bad_spec_dir, &software_slug, &reason);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "quarantined".to_string(),
+                reason,
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: staged_build_sh.display().to_string(),
+            };
+        }
+    };
     if recipe_requires_r_runtime(&parsed) || is_r_project_recipe(&parsed) || r_script_hint {
         if let Err(err) = ensure_phoreus_r_bootstrap(build_config, specs_dir) {
             let reason = format!("bootstrapping Phoreus R runtime failed: {err}");
+            quarantine_note(bad_spec_dir, &software_slug, &reason);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "quarantined".to_string(),
+                reason,
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: staged_build_sh.display().to_string(),
+            };
+        }
+    }
+    if recipe_requires_rust_runtime(&parsed) || rust_script_hint {
+        if let Err(err) = ensure_phoreus_rust_bootstrap(build_config, specs_dir) {
+            let reason = format!("bootstrapping Phoreus Rust runtime failed: {err}");
             quarantine_note(bad_spec_dir, &software_slug, &reason);
             return ReportEntry {
                 software: tool.software.clone(),
@@ -1272,6 +1327,7 @@ fn process_tool(
         parsed.noarch_python,
         python_script_hint,
         r_script_hint,
+        rust_script_hint,
     );
     let meta_version = match next_meta_package_version(&build_config.topdir, &software_slug) {
         Ok(v) => v,
@@ -2054,6 +2110,15 @@ fn recipe_requires_r_runtime(parsed: &ParsedMeta) -> bool {
         .any(|dep| is_r_ecosystem_dependency_name(dep))
 }
 
+fn recipe_requires_rust_runtime(parsed: &ParsedMeta) -> bool {
+    parsed
+        .build_deps
+        .iter()
+        .chain(parsed.host_deps.iter())
+        .chain(parsed.run_deps.iter())
+        .any(|dep| is_rust_ecosystem_dependency_name(dep))
+}
+
 fn is_r_project_recipe(parsed: &ParsedMeta) -> bool {
     let package = parsed.package_name.trim().replace('_', "-").to_lowercase();
     package == "r"
@@ -2101,6 +2166,9 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
         return None;
     }
     if is_r_ecosystem_dependency_name(&normalized) {
+        return None;
+    }
+    if is_rust_ecosystem_dependency_name(&normalized) {
         return None;
     }
     if !is_python_ecosystem_dependency_name(&normalized) {
@@ -2355,6 +2423,12 @@ fn staged_build_script_indicates_r(path: &Path) -> Result<bool> {
     Ok(script_text_indicates_r(&text))
 }
 
+fn staged_build_script_indicates_rust(path: &Path) -> Result<bool> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("reading staged build script {}", path.display()))?;
+    Ok(script_text_indicates_rust(&text))
+}
+
 fn script_text_indicates_python(script: &str) -> bool {
     let lower = script.to_lowercase();
     lower.contains("pip install")
@@ -2371,6 +2445,14 @@ fn script_text_indicates_r(script: &str) -> bool {
         || lower.contains("r -e ")
         || lower.contains("renv::")
         || lower.contains("install.packages(")
+}
+
+fn script_text_indicates_rust(script: &str) -> bool {
+    let lower = script.to_lowercase();
+    lower.contains("cargo ")
+        || lower.contains("cargo\n")
+        || lower.contains("rustc ")
+        || lower.contains("rustup ")
 }
 
 fn extract_package_scalar(rendered: &str, key: &str) -> Option<String> {
@@ -2545,6 +2627,7 @@ fn render_payload_spec(
     noarch_python: bool,
     python_script_hint: bool,
     r_script_hint: bool,
+    rust_script_hint: bool,
 ) -> String {
     let license = spec_escape(&parsed.license);
     let summary = spec_escape(&parsed.summary);
@@ -2571,6 +2654,7 @@ fn render_payload_spec(
     // Python packaging/install semantics.
     let python_recipe = is_python_recipe(parsed) || python_script_hint;
     let r_runtime_required = recipe_requires_r_runtime(parsed) || r_script_hint;
+    let rust_runtime_required = recipe_requires_rust_runtime(parsed) || rust_script_hint;
     let r_project_recipe = is_r_project_recipe(parsed) || r_script_hint;
     let python_requirements = if python_recipe {
         build_python_requirements(parsed)
@@ -2579,7 +2663,9 @@ fn render_payload_spec(
     };
     let python_venv_setup = render_python_venv_setup_block(python_recipe, &python_requirements);
     let r_runtime_setup = render_r_runtime_setup_block(r_runtime_required, r_project_recipe);
-    let module_lua_env = render_module_lua_env_block(python_recipe, r_runtime_required);
+    let rust_runtime_setup = render_rust_runtime_setup_block(rust_runtime_required);
+    let module_lua_env =
+        render_module_lua_env_block(python_recipe, r_runtime_required, rust_runtime_required);
 
     let source_is_zip = source_archive_is_zip(&parsed.source_url);
     let source_unpack_prep = render_source_unpack_prep_block(source_is_zip);
@@ -2594,6 +2680,9 @@ fn render_payload_spec(
     }
     if r_runtime_required {
         build_requires.insert(PHOREUS_R_PACKAGE.to_string());
+    }
+    if rust_runtime_required {
+        build_requires.insert(PHOREUS_RUST_PACKAGE.to_string());
     }
     build_requires.extend(
         parsed
@@ -2797,24 +2886,58 @@ fn render_payload_spec(
     export PATH=\"/opt/rh/autoconf271/bin:$PATH\"\n\
     fi\n\
     \n\
-    # Make locally installed Phoreus Perl dependency trees visible during build.\n\
-    if [[ -d /usr/local/phoreus ]]; then\n\
-    while IFS= read -r -d '' perl_lib; do\n\
-    case \":${{PERL5LIB:-}}:\" in\n\
+# Make locally installed Phoreus Perl dependency trees visible during build.\n\
+if [[ -d /usr/local/phoreus ]]; then\n\
+while IFS= read -r -d '' perl_lib; do\n\
+  case \":${{PERL5LIB:-}}:\" in\n\
     *\":$perl_lib:\"*) ;;\n\
     *) export PERL5LIB=\"$perl_lib${{PERL5LIB:+:$PERL5LIB}}\" ;;\n\
     esac\n\
-    done < <(find /usr/local/phoreus -maxdepth 6 -type d -path '*/lib/perl5*' -print0 2>/dev/null)\n\
-    fi\n\
+done < <(find /usr/local/phoreus -maxdepth 6 -type d -path '*/lib/perl5*' -print0 2>/dev/null)\n\
+fi\n\
+\n\
+# Expose include/lib/pkg-config roots from already-installed Phoreus payloads\n\
+# so dependent recipes can resolve headers and link targets without conda-style\n\
+# shared PREFIX assumptions.\n\
+if [[ -d /usr/local/phoreus ]]; then\n\
+while IFS= read -r -d '' dep_include; do\n\
+  case \":${{CPATH:-}}:\" in\n\
+    *\":$dep_include:\"*) ;;\n\
+    *) export CPATH=\"$dep_include${{CPATH:+:$CPATH}}\" ;;\n\
+  esac\n\
+done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name include -print0 2>/dev/null)\n\
+while IFS= read -r -d '' dep_lib; do\n\
+  case \":${{LIBRARY_PATH:-}}:\" in\n\
+    *\":$dep_lib:\"*) ;;\n\
+    *) export LIBRARY_PATH=\"$dep_lib${{LIBRARY_PATH:+:$LIBRARY_PATH}}\" ;;\n\
+  esac\n\
+  case \":${{LD_LIBRARY_PATH:-}}:\" in\n\
+    *\":$dep_lib:\"*) ;;\n\
+    *) export LD_LIBRARY_PATH=\"$dep_lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\" ;;\n\
+  esac\n\
+  case \" ${{LDFLAGS:-}} \" in\n\
+    *\" -L$dep_lib \"*) ;;\n\
+    *) export LDFLAGS=\"-L$dep_lib ${{LDFLAGS:-}}\" ;;\n\
+  esac\n\
+done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name lib -print0 2>/dev/null)\n\
+while IFS= read -r -d '' dep_pc; do\n\
+  case \":${{PKG_CONFIG_PATH:-}}:\" in\n\
+    *\":$dep_pc:\"*) ;;\n\
+    *) export PKG_CONFIG_PATH=\"$dep_pc${{PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}}\" ;;\n\
+  esac\n\
+done < <(find /usr/local/phoreus -maxdepth 6 -type d -name pkgconfig -print0 2>/dev/null)\n\
+fi\n\
+\n\
+# Ensure common install subdirectories exist for build.sh scripts that assume them.\n\
+mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\"\n\
     \n\
-    # Ensure common install subdirectories exist for build.sh scripts that assume them.\n\
-    mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\"\n\
-    \n\
-    {python_venv_setup}\
-    \n\
-    {r_runtime_setup}\
-    \n\
-    # BLAST recipes in Bioconda assume a conda-style shared prefix where ncbi-vdb\n\
+{python_venv_setup}\
+\n\
+{r_runtime_setup}\
+\n\
+{rust_runtime_setup}\
+\n\
+# BLAST recipes in Bioconda assume a conda-style shared prefix where ncbi-vdb\n\
     # lives under the same PREFIX. In Phoreus, ncbi-vdb is a separate payload.\n\
     # Retarget the generated build.sh argument to the newest installed ncbi-vdb prefix.\n\
     if [[ \"%{{tool}}\" == \"blast\" ]]; then\n\
@@ -2856,7 +2979,7 @@ fn render_payload_spec(
     rc=$?\n\
     # Do not retry deterministic policy failures (missing pinned runtimes,\n\
     # unsupported precompiled binary arch, missing precompiled payload).\n\
-    if [[ \"$rc\" == \"41\" || \"$rc\" == \"42\" || \"$rc\" == \"86\" || \"$rc\" == \"87\" ]]; then\n\
+    if [[ \"$rc\" == \"41\" || \"$rc\" == \"42\" || \"$rc\" == \"43\" || \"$rc\" == \"86\" || \"$rc\" == \"87\" ]]; then\n\
     exit \"$rc\"\n\
     fi\n\
     if [[ \"${{BIOCONDA2RPM_RETRIED_SERIAL:-0}}\" == \"1\" ]]; then\n\
@@ -2937,6 +3060,7 @@ fn render_payload_spec(
         conda_pkg_name = spec_escape(&parsed.package_name),
         conda_pkg_version = spec_escape(&parsed.version),
         r_runtime_setup = r_runtime_setup,
+        rust_runtime_setup = rust_runtime_setup,
     )
 }
 
@@ -3047,7 +3171,34 @@ mkdir -p \"$R_LIBS_USER\"\n\
     )
 }
 
-fn render_module_lua_env_block(python_recipe: bool, r_runtime_required: bool) -> String {
+fn render_rust_runtime_setup_block(rust_runtime_required: bool) -> String {
+    if !rust_runtime_required {
+        return String::new();
+    }
+
+    format!(
+        "# Charter-compliant Rust runtime handling: route rustc/cargo through Phoreus Rust.\n\
+export PHOREUS_RUST_PREFIX=/usr/local/phoreus/rust/{phoreus_rust_minor}\n\
+if [[ ! -x \"$PHOREUS_RUST_PREFIX/bin/rustc\" || ! -x \"$PHOREUS_RUST_PREFIX/bin/cargo\" ]]; then\n\
+  echo \"missing Phoreus Rust runtime at $PHOREUS_RUST_PREFIX\" >&2\n\
+  exit 43\n\
+fi\n\
+export PATH=\"$PHOREUS_RUST_PREFIX/bin:$PATH\"\n\
+export CARGO_HOME=\"$PREFIX/.cargo\"\n\
+export RUSTUP_HOME=\"$PREFIX/.rustup\"\n\
+mkdir -p \"$CARGO_HOME\" \"$RUSTUP_HOME\"\n\
+export CARGO_BUILD_JOBS=1\n\
+export CARGO_INCREMENTAL=0\n\
+export CARGO_TARGET_DIR=\"$(pwd)/.cargo-target\"\n",
+        phoreus_rust_minor = PHOREUS_RUST_MINOR
+    )
+}
+
+fn render_module_lua_env_block(
+    python_recipe: bool,
+    r_runtime_required: bool,
+    rust_runtime_required: bool,
+) -> String {
     let mut out = String::new();
     if python_recipe {
         out.push_str(
@@ -3069,6 +3220,15 @@ prepend_path(\"MANPATH\", pathJoin(prefix, \"share/man\"))\n",
 setenv(\"R_HOME\", \"/usr/local/phoreus/r/{phoreus_r_version}/lib64/R\")\n\
 setenv(\"R_LIBS_USER\", pathJoin(prefix, \"R/library\"))\n",
             phoreus_r_version = PHOREUS_R_VERSION
+        ));
+    }
+
+    if rust_runtime_required {
+        out.push_str(&format!(
+            "setenv(\"PHOREUS_RUST_VERSION\", \"{phoreus_rust_version}\")\n\
+setenv(\"CARGO_HOME\", pathJoin(prefix, \".cargo\"))\n\
+setenv(\"RUSTUP_HOME\", pathJoin(prefix, \".rustup\"))\n",
+            phoreus_rust_version = PHOREUS_RUST_VERSION
         ));
     }
 
@@ -3300,6 +3460,9 @@ fn map_build_dependency(dep: &str) -> String {
     if is_r_ecosystem_dependency_name(dep) {
         return PHOREUS_R_PACKAGE.to_string();
     }
+    if is_rust_ecosystem_dependency_name(dep) {
+        return PHOREUS_RUST_PACKAGE.to_string();
+    }
     if is_phoreus_python_toolchain_dependency(dep) {
         return PHOREUS_PYTHON_PACKAGE.to_string();
     }
@@ -3328,6 +3491,9 @@ fn map_runtime_dependency(dep: &str) -> String {
     }
     if is_r_ecosystem_dependency_name(dep) {
         return PHOREUS_R_PACKAGE.to_string();
+    }
+    if is_rust_ecosystem_dependency_name(dep) {
+        return PHOREUS_RUST_PACKAGE.to_string();
     }
     if is_phoreus_python_toolchain_dependency(dep) {
         return PHOREUS_PYTHON_PACKAGE.to_string();
@@ -3363,6 +3529,17 @@ fn is_r_ecosystem_dependency_name(dep: &str) -> bool {
         || normalized.starts_with("r-")
         || normalized.starts_with("bioconductor-")
         || normalized == PHOREUS_R_PACKAGE
+}
+
+fn is_rust_ecosystem_dependency_name(dep: &str) -> bool {
+    let normalized = dep.trim().replace('_', "-").to_lowercase();
+    normalized == "rust"
+        || normalized == "rustc"
+        || normalized == "cargo"
+        || normalized == "rustup"
+        || normalized.starts_with("rust-")
+        || normalized.starts_with("cargo-")
+        || normalized == PHOREUS_RUST_PACKAGE
 }
 
 fn sync_reference_python_specs(specs_dir: &Path) -> Result<()> {
@@ -3446,6 +3623,30 @@ fn ensure_phoreus_r_bootstrap(build_config: &BuildConfig, specs_dir: &Path) -> R
     Ok(())
 }
 
+fn ensure_phoreus_rust_bootstrap(build_config: &BuildConfig, specs_dir: &Path) -> Result<()> {
+    let lock = PHOREUS_RUST_BOOTSTRAP_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow::anyhow!("phoreus Rust bootstrap lock poisoned"))?;
+
+    if topdir_has_package_artifact(&build_config.topdir, PHOREUS_RUST_PACKAGE)? {
+        return Ok(());
+    }
+
+    let spec_name = format!("{PHOREUS_RUST_PACKAGE}.spec");
+    let spec_path = specs_dir.join(&spec_name);
+    let spec_body = render_phoreus_rust_bootstrap_spec();
+    fs::write(&spec_path, spec_body)
+        .with_context(|| format!("writing Rust bootstrap spec {}", spec_path.display()))?;
+    #[cfg(unix)]
+    fs::set_permissions(&spec_path, fs::Permissions::from_mode(0o644))
+        .with_context(|| format!("setting permissions on {}", spec_path.display()))?;
+
+    build_spec_chain_in_container(build_config, &spec_path, PHOREUS_RUST_PACKAGE)
+        .with_context(|| format!("building bootstrap package {}", PHOREUS_RUST_PACKAGE))?;
+    Ok(())
+}
+
 fn render_phoreus_r_bootstrap_spec() -> String {
     let changelog_date = rpm_changelog_date();
     format!(
@@ -3524,6 +3725,97 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/{r_minor}.lua\n\
         name = PHOREUS_R_PACKAGE,
         version = PHOREUS_R_VERSION,
         r_minor = PHOREUS_R_MINOR,
+        changelog_date = changelog_date
+    )
+}
+
+fn render_phoreus_rust_bootstrap_spec() -> String {
+    let changelog_date = rpm_changelog_date();
+    format!(
+        "%global rust_minor {rust_minor}\n\
+%global debug_package %{{nil}}\n\
+%global __brp_mangle_shebangs %{{nil}}\n\
+\n\
+Name:           {name}\n\
+Version:        {version}\n\
+Release:        1%{{?dist}}\n\
+Summary:        Phoreus Rust {rust_minor} runtime with pinned cargo toolchain\n\
+License:        Apache-2.0 OR MIT\n\
+URL:            https://www.rust-lang.org/\n\
+\n\
+Requires:       phoreus\n\
+Provides:       phoreus-rust = %{{version}}-%{{release}}\n\
+\n\
+%global phoreus_tool rust\n\
+%global phoreus_prefix /usr/local/phoreus/%{{phoreus_tool}}/{rust_minor}\n\
+%global phoreus_moddir /usr/local/phoreus/modules/%{{phoreus_tool}}\n\
+\n\
+BuildRequires:  bash\n\
+BuildRequires:  curl\n\
+BuildRequires:  ca-certificates\n\
+\n\
+%description\n\
+Phoreus Rust runtime package for Rust {version}. Installs a pinned Rust toolchain\n\
+and cargo using upstream rustup-init into a dedicated Phoreus prefix.\n\
+\n\
+%prep\n\
+# No source archive required.\n\
+\n\
+%build\n\
+# No build step required.\n\
+\n\
+%install\n\
+rm -rf %{{buildroot}}\n\
+mkdir -p %{{buildroot}}%{{phoreus_prefix}}\n\
+export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
+export CARGO_HOME=\"$PREFIX\"\n\
+export RUSTUP_HOME=\"$PREFIX/.rustup\"\n\
+mkdir -p \"$CARGO_HOME/bin\" \"$RUSTUP_HOME\"\n\
+\n\
+case \"%{{_arch}}\" in\n\
+  x86_64)\n\
+    rustup_target=\"x86_64-unknown-linux-gnu\"\n\
+    ;;\n\
+  aarch64)\n\
+    rustup_target=\"aarch64-unknown-linux-gnu\"\n\
+    ;;\n\
+  *)\n\
+    echo \"unsupported architecture for phoreus-rust bootstrap: %{{_arch}}\" >&2\n\
+    exit 88\n\
+    ;;\n\
+esac\n\
+\n\
+rustup_url=\"https://static.rust-lang.org/rustup/dist/${{rustup_target}}/rustup-init\"\n\
+curl -fsSL \"$rustup_url\" -o rustup-init\n\
+chmod 0755 rustup-init\n\
+./rustup-init -y --no-modify-path --profile minimal --default-toolchain {version}\n\
+\"$CARGO_HOME/bin/rustc\" --version\n\
+\"$CARGO_HOME/bin/cargo\" --version\n\
+rm -f rustup-init\n\
+\n\
+mkdir -p %{{buildroot}}%{{phoreus_moddir}}\n\
+cat > %{{buildroot}}%{{phoreus_moddir}}/{rust_minor}.lua <<'LUAEOF'\n\
+help([[ Phoreus Rust {rust_minor} runtime module ]])\n\
+whatis(\"Name: rust\")\n\
+whatis(\"Version: {version}\")\n\
+local prefix = \"/usr/local/phoreus/rust/{rust_minor}\"\n\
+setenv(\"PHOREUS_RUST_VERSION\", \"{version}\")\n\
+setenv(\"CARGO_HOME\", prefix)\n\
+setenv(\"RUSTUP_HOME\", pathJoin(prefix, \".rustup\"))\n\
+prepend_path(\"PATH\", pathJoin(prefix, \"bin\"))\n\
+LUAEOF\n\
+chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/{rust_minor}.lua\n\
+\n\
+%files\n\
+%{{phoreus_prefix}}/\n\
+%{{phoreus_moddir}}/{rust_minor}.lua\n\
+\n\
+%changelog\n\
+* {changelog_date} bioconda2rpm <packaging@bioconda2rpm.local> - {version}-1\n\
+- Install pinned Rust {version} runtime and cargo toolchain under Phoreus prefix\n",
+        name = PHOREUS_RUST_PACKAGE,
+        version = PHOREUS_RUST_VERSION,
+        rust_minor = PHOREUS_RUST_MINOR,
         changelog_date = changelog_date
     )
 }
@@ -4392,6 +4684,7 @@ requirements:
             false,
             false,
             false,
+            false,
         );
         assert!(spec.contains("Source2:"));
         assert!(spec.contains("patch -p1 -i %{SOURCE2}"));
@@ -4400,6 +4693,10 @@ requirements:
         assert!(spec.contains("export CPU_COUNT=1"));
         assert!(spec.contains("export MAKEFLAGS=-j1"));
         assert!(spec.contains("/opt/rh/autoconf271/bin/autoconf"));
+        assert!(
+            spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name include")
+        );
+        assert!(spec.contains("export CPATH=\"$dep_include${CPATH:+:$CPATH}\""));
         assert!(spec.contains("disabled by bioconda2rpm for EL9 compatibility"));
         assert!(spec.contains("if [[ \"${CONFIG_SITE:-}\" == \"NONE\" ]]; then"));
         assert!(spec.contains("export PKG_NAME=\"${PKG_NAME:-blast}\""));
@@ -4448,6 +4745,7 @@ requirements:
             &[],
             Path::new("/tmp/meta.yaml"),
             Path::new("/tmp"),
+            false,
             false,
             false,
             false,
@@ -4544,6 +4842,22 @@ requirements:
     }
 
     #[test]
+    fn rust_dependencies_map_to_phoreus_rust_runtime() {
+        assert_eq!(
+            map_build_dependency("rust"),
+            PHOREUS_RUST_PACKAGE.to_string()
+        );
+        assert_eq!(
+            map_build_dependency("cargo"),
+            PHOREUS_RUST_PACKAGE.to_string()
+        );
+        assert_eq!(
+            map_runtime_dependency("rustc"),
+            PHOREUS_RUST_PACKAGE.to_string()
+        );
+    }
+
+    #[test]
     fn phoreus_r_bootstrap_spec_is_rendered_with_expected_name() {
         let spec = render_phoreus_r_bootstrap_spec();
         assert!(spec.contains("Name:           phoreus-r-4.5.2"));
@@ -4552,6 +4866,15 @@ requirements:
             "Source0:        https://cran.r-project.org/src/base/R-4/R-%{version}.tar.gz"
         ));
         assert!(spec.contains("--with-x=no"));
+    }
+
+    #[test]
+    fn phoreus_rust_bootstrap_spec_is_rendered_with_expected_name() {
+        let spec = render_phoreus_rust_bootstrap_spec();
+        assert!(spec.contains("Name:           phoreus-rust-1.92"));
+        assert!(spec.contains("Version:        1.92.0"));
+        assert!(spec.contains("rustup-init"));
+        assert!(spec.contains("default-toolchain 1.92.0"));
     }
 
     #[test]
@@ -4701,6 +5024,7 @@ requirements:
             false,
             false,
             false,
+            false,
         );
         assert!(spec.contains("BuildRequires:  gcc"));
         assert!(!spec.contains("BuildRequires:  cython"));
@@ -4752,10 +5076,53 @@ requirements:
             false,
             false,
             false,
+            false,
         );
         assert!(spec.contains(&format!("BuildRequires:  {}", PHOREUS_R_PACKAGE)));
         assert!(spec.contains(&format!("Requires:  {}", PHOREUS_R_PACKAGE)));
         assert!(!spec.contains("r-ggplot2"));
+    }
+
+    #[test]
+    fn rust_payload_requires_phoreus_rust_runtime() {
+        let mut build_deps = BTreeSet::new();
+        build_deps.insert("rust".to_string());
+        build_deps.insert("cargo".to_string());
+
+        let parsed = ParsedMeta {
+            package_name: "sdust".to_string(),
+            version: "1.0".to_string(),
+            source_url: "https://example.invalid/sdust-1.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/sdust".to_string(),
+            license: "MIT".to_string(),
+            summary: "sdust".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("cargo build --release".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["rust".to_string(), "cargo".to_string()],
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps,
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "sdust",
+            &parsed,
+            "bioconda-sdust-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains(&format!("BuildRequires:  {}", PHOREUS_RUST_PACKAGE)));
+        assert!(spec.contains("export PHOREUS_RUST_PREFIX=/usr/local/phoreus/rust/1.92"));
+        assert!(spec.contains("export CARGO_BUILD_JOBS=1"));
     }
 
     #[test]
