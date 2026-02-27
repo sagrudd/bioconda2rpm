@@ -4260,6 +4260,7 @@ fn map_build_dependency(dep: &str) -> String {
         "go-compiler" => "golang".to_string(),
         "gnuconfig" => "automake".to_string(),
         "isa-l" => "isa-l-devel".to_string(),
+        "jansson" => "jansson-devel".to_string(),
         "libcurl" => "libcurl-devel".to_string(),
         "libblas" => "openblas-devel".to_string(),
         "libdeflate" => "libdeflate-devel".to_string(),
