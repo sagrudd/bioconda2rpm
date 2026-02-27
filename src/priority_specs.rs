@@ -3021,6 +3021,28 @@ mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\"\n\
     sed -i 's|export LC_ALL=\"en_US.UTF-8\"|export LC_ALL=C|g' ./build.sh || true\n\
     fi\n\
     \n\
+    # Samtools recipes often request --with-htslib=system, but in this workflow\n\
+    # HTSlib is provided by the versioned Phoreus prefix rather than /usr.\n\
+    # Rewrite the configure target and inject matching include/lib/pkg-config flags.\n\
+    if [[ \"%{{tool}}\" == \"samtools\" ]]; then\n\
+    hts_prefix=$(find /usr/local/phoreus/htslib -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1 || true)\n\
+    if [[ -n \"$hts_prefix\" ]]; then\n\
+    sed -i \"s|--with-htslib=system|--with-htslib=$hts_prefix|g\" ./build.sh || true\n\
+    export CPPFLAGS=\"-I$hts_prefix/include ${{CPPFLAGS:-}}\"\n\
+    export LDFLAGS=\"-L$hts_prefix/lib ${{LDFLAGS:-}}\"\n\
+    export PKG_CONFIG_PATH=\"$hts_prefix/lib/pkgconfig${{PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}}\"\n\
+    fi\n\
+    # Ensure CURSES_LIB is passed as an environment assignment to configure.\n\
+    sed -i 's|^\\./configure |CURSES_LIB=\"$CURSES_LIB\" ./configure |' ./build.sh || true\n\
+    # Normalize Bioconda's conda-oriented wide-curses flags for EL9 toolchains.\n\
+    if ! ldconfig -p 2>/dev/null | grep -q 'libtinfow\\\\.so'; then\n\
+    sed -i 's|-ltinfow|-ltinfo|g' ./build.sh || true\n\
+    fi\n\
+    if ! ldconfig -p 2>/dev/null | grep -q 'libncursesw\\\\.so'; then\n\
+    sed -i 's|-lncursesw|-lncurses|g' ./build.sh || true\n\
+    fi\n\
+    fi\n\
+    \n\
     # A number of upstream scripts hardcode aggressive THREADS values;\n\
     # force single-core policy for deterministic container builds.\n\
     sed -i -E 's/THREADS=\"-j[0-9]+\"/THREADS=\"-j1\"/g' ./build.sh || true\n\
@@ -4332,9 +4354,35 @@ for dep in \"${{build_requires[@]}}\"; do\n\
         continue\n\
       fi\n\
     elif rpm -Uvh --nodeps --force \"$local_rpm\" >\"$dep_log\" 2>&1; then\n\
+      # Attempt best-effort hydration of runtime deps after nodeps install so\n\
+      # local RPM reuse remains functional even when non-repo capabilities\n\
+      # (for example 'phoreus') block strict package-manager resolution.\n\
+      mapfile -t local_requires < <(rpm -qpR \"$local_rpm\" 2>/dev/null | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
+      for req in \"${{local_requires[@]}}\"; do\n\
+        case \"$req\" in\n\
+          \"\"|rpmlib*|rtld*|ld-linux*|phoreus|$dep)\n\
+            continue\n\
+            ;;\n\
+        esac\n\
+        candidate=\"$req\"\n\
+        if [[ \"$candidate\" == *\"(\"* || \"$candidate\" == *\")\"* || \"$candidate\" == *\":\"* ]]; then\n\
+          if [[ \"$candidate\" == lib*.so* ]]; then\n\
+            candidate=\"${{candidate%%.so*}}\"\n\
+          else\n\
+            continue\n\
+          fi\n\
+        fi\n\
+        if [[ \"$candidate\" == /* ]]; then\n\
+          continue\n\
+        fi\n\
+        if rpm -q --whatprovides \"$req\" >/dev/null 2>&1 || rpm -q --whatprovides \"$candidate\" >/dev/null 2>&1; then\n\
+          continue\n\
+        fi\n\
+        pm_install \"$candidate\" >>\"$dep_log\" 2>&1 || true\n\
+      done\n\
       if rpm -q --whatprovides \"$dep\" >/dev/null 2>&1; then\n\
         provider=$(rpm -q --whatprovides \"$dep\" | head -n 1 || true)\n\
-        emit_depgraph \"$dep\" 'resolved' 'local_rpm' \"$provider\" \"installed_nodeps_from_$(basename \"$local_rpm\")\"\n\
+        emit_depgraph \"$dep\" 'resolved' 'local_rpm' \"$provider\" \"installed_nodeps_from_$(basename \"$local_rpm\")_with_repo_hydration\"\n\
         continue\n\
       fi\n\
     fi\n\
