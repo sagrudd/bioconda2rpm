@@ -40,3 +40,8 @@
 
 ### Q8 - Missing/unresolvable dependency behavior
 - Default behavior: quarantine unresolved packages and continue building the resolvable subset.
+
+### Q9 - Primary CLI command shape
+- Primary command: `bioconda2rpm build <package>`.
+- Dependency resolution is enabled by default.
+- CLI must provide a flag to disable dependency expansion when needed.
