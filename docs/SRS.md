@@ -108,6 +108,12 @@ FR-017 Build dependency tolerance and sourcing policy
 - Generated payload RPMs shall provide the plain software identifier (for example `samtools`) so downstream package builds can consume locally produced RPMs.
 - If any dependency remains unresolved, the package shall be quarantined and unresolved dependencies shall be recorded in reports.
 
+FR-018 Version freshness and metapackage update policy
+- For `build <tool>`, if the requested Bioconda payload version is already present in local artifacts, the command shall report the package as up-to-date and skip rebuild.
+- If the requested Bioconda payload version is newer than the latest local payload artifact, the payload shall be rebuilt.
+- When a newer payload is rebuilt, the corresponding default/meta package version shall be incremented and rewired to the new payload version.
+- Successful/up-to-date outcomes shall clear stale package-specific quarantine notes in `BAD_SPEC`.
+
 ## 4. Non-Functional Requirements
 
 NFR-001 Reproducibility

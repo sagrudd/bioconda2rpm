@@ -74,3 +74,5 @@ bioconda2rpm generate-priority-specs \
 - For each generated SPEC, build order is always `SPEC -> SRPM -> RPM` in the selected container image.
 - RPM stage is executed as SRPM rebuild (`rpmbuild --rebuild <src.rpm>`).
 - Successful package builds clear stale `<topdir>/BAD_SPEC/<tool>.txt` quarantine notes.
+- If local payload artifacts already match the requested Bioconda version, `build` exits with `up-to-date` status.
+- If Bioconda has a newer payload version than local artifacts, `build` rebuilds payload and bumps default/meta package version.

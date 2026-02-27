@@ -81,6 +81,11 @@ Common optional flags:
 - `--no-deps`: disable Bioconda dependency closure.
 - `--dependency-policy <run-only|build-host-run|runtime-transitive-root-build-host>`.
 
+Up-to-date behavior:
+
+- If the requested Bioconda version is already present as a built payload artifact in `<topdir>`, the command exits without rebuilding and reports `up-to-date`.
+- If Bioconda has a newer version than the latest local payload artifact, the payload is rebuilt and the default/meta package version is incremented.
+
 ## 6. Build Sequence Details
 
 Per `build <tool>` run:
@@ -125,6 +130,8 @@ Under `<topdir>`:
 - `reports/dependency_graphs/*.json` per-package dependency resolution graph
 - `reports/dependency_graphs/*.md` per-package dependency resolution graph
 - `BAD_SPEC/` quarantine notes for failed/unresolved items
+
+When a package builds successfully (or is confirmed up-to-date), stale `<topdir>/BAD_SPEC/<tool>.txt` notes are removed for that package.
 
 ## 8. Reports and Status Interpretation
 

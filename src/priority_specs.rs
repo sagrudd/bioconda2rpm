@@ -104,6 +104,8 @@ pub struct GenerationSummary {
 pub struct BuildSummary {
     pub requested: usize,
     pub generated: usize,
+    pub up_to_date: usize,
+    pub skipped: usize,
     pub quarantined: usize,
     pub build_order: Vec<String>,
     pub report_json: PathBuf,
@@ -115,6 +117,13 @@ pub struct BuildSummary {
 struct BuildPlanNode {
     name: String,
     direct_bioconda_deps: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone)]
+enum PayloadVersionState {
+    NotBuilt,
+    UpToDate { existing_version: String },
+    Outdated { existing_version: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -234,6 +243,57 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         host_arch: std::env::consts::ARCH.to_string(),
     };
 
+    let Some((root_resolved, root_parsed)) =
+        resolve_and_parse_recipe(&args.package, &args.recipe_root, &recipe_dirs, true)?
+    else {
+        anyhow::bail!(
+            "no overlapping recipe found in bioconda metadata for '{}'",
+            args.package
+        );
+    };
+    let root_slug = normalize_name(&root_resolved.recipe_name);
+    if let PayloadVersionState::UpToDate { existing_version } =
+        payload_version_state(&topdir, &root_slug, &root_parsed.version)?
+    {
+        clear_quarantine_note(&bad_spec_dir, &root_slug);
+        let reason = format!(
+            "already up-to-date: bioconda version {} already built (latest local payload version {})",
+            root_parsed.version, existing_version
+        );
+        let entry = ReportEntry {
+            software: root_resolved.recipe_name.clone(),
+            priority: 0,
+            status: "up-to-date".to_string(),
+            reason,
+            overlap_recipe: root_resolved.recipe_name.clone(),
+            overlap_reason: "requested-root".to_string(),
+            variant_dir: root_resolved.variant_dir.display().to_string(),
+            package_name: root_parsed.package_name.clone(),
+            version: root_parsed.version.clone(),
+            payload_spec_path: String::new(),
+            meta_spec_path: String::new(),
+            staged_build_sh: String::new(),
+        };
+
+        let report_stem = normalize_name(&args.package);
+        let report_json = reports_dir.join(format!("build_{report_stem}.json"));
+        let report_csv = reports_dir.join(format!("build_{report_stem}.csv"));
+        let report_md = reports_dir.join(format!("build_{report_stem}.md"));
+        write_reports(&[entry], &report_json, &report_csv, &report_md)?;
+
+        return Ok(BuildSummary {
+            requested: 1,
+            generated: 0,
+            up_to_date: 1,
+            skipped: 0,
+            quarantined: 0,
+            build_order: vec![root_resolved.recipe_name],
+            report_json,
+            report_csv,
+            report_md,
+        });
+    }
+
     let (plan_order, plan_nodes) = collect_build_plan(
         &args.package,
         args.with_deps(),
@@ -311,7 +371,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
             &bad_spec_dir,
             &build_config,
         );
-        if entry.status == "generated" {
+        if entry.status == "generated" || entry.status == "up-to-date" {
             built.insert(key.clone());
         } else if args.missing_dependency == MissingDependencyPolicy::Fail {
             fail_reason = Some(entry.reason.clone());
@@ -336,10 +396,14 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     }
 
     let generated = results.iter().filter(|r| r.status == "generated").count();
-    let quarantined = results.len().saturating_sub(generated);
+    let up_to_date = results.iter().filter(|r| r.status == "up-to-date").count();
+    let skipped = results.iter().filter(|r| r.status == "skipped").count();
+    let quarantined = results.iter().filter(|r| r.status == "quarantined").count();
     Ok(BuildSummary {
         requested: results.len(),
         generated,
+        up_to_date,
+        skipped,
         quarantined,
         build_order,
         report_json,
@@ -373,7 +437,10 @@ fn collect_build_plan(
         &mut order,
     )?;
     if root_key.is_none() {
-        anyhow::bail!("no overlapping recipe found in bioconda metadata for '{}'", root);
+        anyhow::bail!(
+            "no overlapping recipe found in bioconda metadata for '{}'",
+            root
+        );
     }
 
     Ok((order, nodes))
@@ -392,20 +459,16 @@ fn visit_build_plan_node(
     nodes: &mut BTreeMap<String, BuildPlanNode>,
     order: &mut Vec<String>,
 ) -> Result<Option<String>> {
-    let resolved_and_parsed = match resolve_and_parse_recipe(
-        query,
-        recipe_root,
-        recipe_dirs,
-        is_root,
-    ) {
-        Ok(v) => v,
-        Err(err) => {
-            if is_root {
-                return Err(err);
+    let resolved_and_parsed =
+        match resolve_and_parse_recipe(query, recipe_root, recipe_dirs, is_root) {
+            Ok(v) => v,
+            Err(err) => {
+                if is_root {
+                    return Err(err);
+                }
+                return Ok(None);
             }
-            return Ok(None);
-        }
-    };
+        };
 
     let Some((resolved, parsed)) = resolved_and_parsed else {
         if is_root {
@@ -497,12 +560,8 @@ fn resolve_and_parse_recipe(
     recipe_dirs: &[RecipeDir],
     allow_identifier_lookup: bool,
 ) -> Result<Option<(ResolvedRecipe, ParsedMeta)>> {
-    let Some(resolved) = resolve_recipe_for_tool_mode(
-        tool_name,
-        recipe_root,
-        recipe_dirs,
-        allow_identifier_lookup,
-    )?
+    let Some(resolved) =
+        resolve_recipe_for_tool_mode(tool_name, recipe_root, recipe_dirs, allow_identifier_lookup)?
     else {
         return Ok(None);
     };
@@ -510,8 +569,12 @@ fn resolve_and_parse_recipe(
         .with_context(|| format!("failed to read metadata {}", resolved.meta_path.display()))?;
     let selector_ctx = SelectorContext::for_rpm_build();
     let selected_meta = apply_selectors(&meta_text, &selector_ctx);
-    let rendered = render_meta_yaml(&selected_meta)
-        .with_context(|| format!("failed to render Jinja for {}", resolved.meta_path.display()))?;
+    let rendered = render_meta_yaml(&selected_meta).with_context(|| {
+        format!(
+            "failed to render Jinja for {}",
+            resolved.meta_path.display()
+        )
+    })?;
     let parsed = parse_rendered_meta(&rendered).with_context(|| {
         format!(
             "failed to parse rendered metadata for {}",
@@ -694,6 +757,49 @@ fn process_tool(
         }
     };
 
+    let version_state =
+        match payload_version_state(&build_config.topdir, &software_slug, &parsed.version) {
+            Ok(v) => v,
+            Err(err) => {
+                let reason = format!("failed to evaluate local artifact versions: {err}");
+                quarantine_note(bad_spec_dir, &software_slug, &reason);
+                return ReportEntry {
+                    software: tool.software.clone(),
+                    priority: tool.priority,
+                    status: "quarantined".to_string(),
+                    reason,
+                    overlap_recipe: resolved.recipe_name,
+                    overlap_reason: resolved.overlap_reason,
+                    variant_dir: resolved.variant_dir.display().to_string(),
+                    package_name: parsed.package_name,
+                    version: parsed.version,
+                    payload_spec_path: String::new(),
+                    meta_spec_path: String::new(),
+                    staged_build_sh: String::new(),
+                };
+            }
+        };
+    if let PayloadVersionState::UpToDate { existing_version } = &version_state {
+        clear_quarantine_note(bad_spec_dir, &software_slug);
+        return ReportEntry {
+            software: tool.software.clone(),
+            priority: tool.priority,
+            status: "up-to-date".to_string(),
+            reason: format!(
+                "already up-to-date: bioconda version {} already built (latest local payload version {})",
+                parsed.version, existing_version
+            ),
+            overlap_recipe: resolved.recipe_name,
+            overlap_reason: resolved.overlap_reason,
+            variant_dir: resolved.variant_dir.display().to_string(),
+            package_name: parsed.package_name,
+            version: parsed.version,
+            payload_spec_path: String::new(),
+            meta_spec_path: String::new(),
+            staged_build_sh: String::new(),
+        };
+    }
+
     let staged_build_sh_name = format!("bioconda-{}-build.sh", software_slug);
     let staged_build_sh = sources_dir.join(&staged_build_sh_name);
 
@@ -770,7 +876,28 @@ fn process_tool(
         &resolved.meta_path,
         &resolved.variant_dir,
     );
-    let default_spec = render_default_spec(&software_slug, &parsed);
+    let meta_version = match next_meta_package_version(&build_config.topdir, &software_slug) {
+        Ok(v) => v,
+        Err(err) => {
+            let reason = format!("failed to determine next meta package version: {err}");
+            quarantine_note(bad_spec_dir, &software_slug, &reason);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "quarantined".to_string(),
+                reason,
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: staged_build_sh.display().to_string(),
+            };
+        }
+    };
+    let default_spec = render_default_spec(&software_slug, &parsed, meta_version);
 
     let write_payload = fs::write(&payload_spec_path, payload_spec);
     let write_meta = fs::write(&meta_spec_path, default_spec);
@@ -886,11 +1013,22 @@ fn process_tool(
 
     clear_quarantine_note(bad_spec_dir, &software_slug);
 
+    let success_reason = match version_state {
+        PayloadVersionState::Outdated { existing_version } => format!(
+            "spec/srpm/rpm generated from bioconda metadata in container (updated payload from {} to {} and bumped meta package)",
+            existing_version, parsed.version
+        ),
+        PayloadVersionState::NotBuilt => {
+            "spec/srpm/rpm generated from bioconda metadata in container".to_string()
+        }
+        PayloadVersionState::UpToDate { .. } => "already up-to-date".to_string(),
+    };
+
     ReportEntry {
         software: tool.software.clone(),
         priority: tool.priority,
         status: "generated".to_string(),
-        reason: "spec/srpm/rpm generated from bioconda metadata in container".to_string(),
+        reason: success_reason,
         overlap_recipe: resolved.recipe_name,
         overlap_reason: resolved.overlap_reason,
         variant_dir: resolved.variant_dir.display().to_string(),
@@ -1557,7 +1695,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
     )
 }
 
-fn render_default_spec(software_slug: &str, parsed: &ParsedMeta) -> String {
+fn render_default_spec(software_slug: &str, parsed: &ParsedMeta, meta_version: u64) -> String {
     let license = spec_escape(&parsed.license);
     let version = spec_escape(&parsed.version);
 
@@ -1566,7 +1704,7 @@ fn render_default_spec(software_slug: &str, parsed: &ParsedMeta) -> String {
 %global upstream_version {version}\n\
 \n\
 Name:           phoreus-%{{tool}}\n\
-Version:        1\n\
+Version:        {meta_version}\n\
 Release:        1%{{?dist}}\n\
 Summary:        Default validated {tool} for Phoreus\n\
 License:        {license}\n\
@@ -1595,10 +1733,11 @@ ln -sfn %{{upstream_version}}.lua %{{buildroot}}%{{phoreus_moddir}}/default.lua\
 %{{phoreus_moddir}}/default.lua\n\
 \n\
 %changelog\n\
-* Thu Feb 27 2026 bioconda2rpm <packaging@bioconda2rpm.local> - 1-1\n\
+* Thu Feb 27 2026 bioconda2rpm <packaging@bioconda2rpm.local> - {meta_version}-1\n\
 - Auto-generated default pointer for {tool} {version}\n",
         tool = software_slug,
         version = version,
+        meta_version = meta_version,
         license = license,
     )
 }
@@ -1643,6 +1782,125 @@ fn normalize_name(name: &str) -> String {
 
 fn normalize_identifier_key(name: &str) -> String {
     normalize_name(name).replace("-plus", "")
+}
+
+fn payload_version_state(
+    topdir: &Path,
+    software_slug: &str,
+    target_version: &str,
+) -> Result<PayloadVersionState> {
+    let Some(existing) = latest_existing_payload_version(topdir, software_slug)? else {
+        return Ok(PayloadVersionState::NotBuilt);
+    };
+    let ord = compare_version_labels(&existing, target_version);
+    if ord == Ordering::Less {
+        Ok(PayloadVersionState::Outdated {
+            existing_version: existing,
+        })
+    } else {
+        Ok(PayloadVersionState::UpToDate {
+            existing_version: existing,
+        })
+    }
+}
+
+fn latest_existing_payload_version(topdir: &Path, software_slug: &str) -> Result<Option<String>> {
+    let mut versions = BTreeSet::new();
+    for name in artifact_filenames(topdir)? {
+        if let Some(version) = extract_payload_version_from_name(&name, software_slug) {
+            versions.insert(version);
+        }
+    }
+    if versions.is_empty() {
+        return Ok(None);
+    }
+    let latest = versions
+        .iter()
+        .max_by(|a, b| compare_version_labels(a, b))
+        .cloned();
+    Ok(latest)
+}
+
+fn next_meta_package_version(topdir: &Path, software_slug: &str) -> Result<u64> {
+    let mut max_meta = 0u64;
+    for name in artifact_filenames(topdir)? {
+        if let Some(v) = extract_meta_package_version_from_name(&name, software_slug)
+            && v > max_meta
+        {
+            max_meta = v;
+        }
+    }
+    Ok(max_meta.saturating_add(1).max(1))
+}
+
+fn artifact_filenames(topdir: &Path) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    let candidates = [
+        topdir.join("RPMS"),
+        topdir.join("SRPMS"),
+        topdir.join("SPECS"),
+    ];
+
+    for root in candidates {
+        if !root.exists() {
+            continue;
+        }
+        collect_artifact_names(&root, &mut names)?;
+    }
+    Ok(names)
+}
+
+fn collect_artifact_names(dir: &Path, names: &mut Vec<String>) -> Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("reading entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_artifact_names(&path, names)?;
+            continue;
+        }
+        if let Some(name) = path.file_name().and_then(|v| v.to_str()) {
+            names.push(name.to_string());
+        }
+    }
+    Ok(())
+}
+
+fn extract_payload_version_from_name(name: &str, software_slug: &str) -> Option<String> {
+    let prefix = format!("phoreus-{software_slug}-");
+    if !name.starts_with(&prefix) {
+        return None;
+    }
+    let rest = name
+        .trim_end_matches(".src.rpm")
+        .trim_end_matches(".rpm")
+        .strip_prefix(&prefix)?;
+    let parts: Vec<&str> = rest.split('-').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    if parts[0] == parts[1] {
+        return Some(parts[0].to_string());
+    }
+    None
+}
+
+fn extract_meta_package_version_from_name(name: &str, software_slug: &str) -> Option<u64> {
+    let prefix = format!("phoreus-{software_slug}-");
+    if !name.starts_with(&prefix) {
+        return None;
+    }
+    let rest = name
+        .trim_end_matches(".src.rpm")
+        .trim_end_matches(".rpm")
+        .strip_prefix(&prefix)?;
+    let parts: Vec<&str> = rest.split('-').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    if parts[0] == parts[1] {
+        return None;
+    }
+    parts[0].parse::<u64>().ok()
 }
 
 fn ensure_container_engine_available(engine: &str) -> Result<()> {

@@ -32,15 +32,24 @@ fn main() -> ExitCode {
             match priority_specs::run_build(&args) {
                 Ok(summary) => {
                     println!(
-                        "build requested={} generated={} quarantined={} order={} report_json={} report_csv={} report_md={}",
+                        "build requested={} generated={} up_to_date={} skipped={} quarantined={} order={} report_json={} report_csv={} report_md={}",
                         summary.requested,
                         summary.generated,
+                        summary.up_to_date,
+                        summary.skipped,
                         summary.quarantined,
                         summary.build_order.join("->"),
                         summary.report_json.display(),
                         summary.report_csv.display(),
                         summary.report_md.display()
                     );
+                    if summary.generated == 0
+                        && summary.up_to_date >= 1
+                        && summary.quarantined == 0
+                        && summary.skipped == 0
+                    {
+                        println!("package is already up-to-date");
+                    }
                 }
                 Err(err) => {
                     eprintln!("build failed: {err:#}");
