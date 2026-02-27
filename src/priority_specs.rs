@@ -3043,6 +3043,12 @@ mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\"\n\
     fi\n\
     fi\n\
     \n\
+    # Bcftools recipes often pass GSL_LIBS=-lgsl only, but EL9's GSL\n\
+    # requires explicit CBLAS linkage at link time.\n\
+    if [[ \"%{{tool}}\" == \"bcftools\" ]]; then\n\
+    sed -i 's|GSL_LIBS=-lgsl|GSL_LIBS=\"-lgsl -lopenblas\"|g' ./build.sh || true\n\
+    fi\n\
+    \n\
     # A number of upstream scripts hardcode aggressive THREADS values;\n\
     # force single-core policy for deterministic container builds.\n\
     sed -i -E 's/THREADS=\"-j[0-9]+\"/THREADS=\"-j1\"/g' ./build.sh || true\n\
@@ -3398,6 +3404,13 @@ ln -sfn %{{upstream_version}}.lua %{{buildroot}}%{{phoreus_moddir}}/default.lua\
 
 fn format_dep_lines(prefix: &str, deps: &BTreeSet<String>) -> String {
     deps.iter()
+        .flat_map(|dep| {
+            dep.split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .map(|dep| format!("{prefix}:  {dep}"))
         .collect::<Vec<_>>()
         .join("\n")
@@ -3581,6 +3594,10 @@ fn map_build_dependency(dep: &str) -> String {
     if is_phoreus_python_toolchain_dependency(dep) {
         return PHOREUS_PYTHON_PACKAGE.to_string();
     }
+    if dep == "gsl" {
+        // GSL on EL9 links through CBLAS; ensure BLAS headers/libs are present.
+        return "gsl-devel openblas-devel".to_string();
+    }
     match dep {
         "autoconf" => "autoconf271".to_string(),
         "boost-cpp" => "boost-devel".to_string(),
@@ -3616,6 +3633,9 @@ fn map_runtime_dependency(dep: &str) -> String {
     }
     if is_phoreus_python_toolchain_dependency(dep) {
         return PHOREUS_PYTHON_PACKAGE.to_string();
+    }
+    if dep == "gsl" {
+        return "gsl".to_string();
     }
     match dep {
         "boost-cpp" => "boost".to_string(),
@@ -4861,6 +4881,11 @@ mod tests {
             map_runtime_dependency("font-ttf-dejavu-sans-mono"),
             "dejavu-sans-mono-fonts".to_string()
         );
+        assert_eq!(
+            map_build_dependency("gsl"),
+            "gsl-devel openblas-devel".to_string()
+        );
+        assert_eq!(map_runtime_dependency("gsl"), "gsl".to_string());
         assert_eq!(
             map_build_dependency("fonts-conda-ecosystem"),
             "fontconfig".to_string()
