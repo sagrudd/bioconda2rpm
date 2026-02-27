@@ -1,5 +1,6 @@
 use crate::cli::{BuildArgs, DependencyPolicy, GeneratePrioritySpecsArgs, MissingDependencyPolicy};
 use anyhow::{Context, Result};
+use chrono::Utc;
 use csv::{ReaderBuilder, Writer};
 use minijinja::{Environment, context, value::Kwargs};
 use rayon::prelude::*;
@@ -1668,6 +1669,7 @@ fn render_payload_spec(
     let requires_lines = format_dep_lines("Requires", &runtime_requires);
     let patch_source_lines = render_patch_source_lines(staged_patch_sources);
     let patch_apply_lines = render_patch_apply_lines(staged_patch_sources);
+    let changelog_date = rpm_changelog_date();
 
     format!(
         "%global debug_package %{{nil}}\n\
@@ -1757,7 +1759,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
 %{{phoreus_moddir}}/%{{version}}.lua\n\
 \n\
 %changelog\n\
-* Thu Feb 27 2026 bioconda2rpm <packaging@bioconda2rpm.local> - {version}-1\n\
+* {changelog_date} bioconda2rpm <packaging@bioconda2rpm.local> - {version}-1\n\
 - Auto-generated from Bioconda metadata and build.sh\n",
         tool = software_slug,
         version = spec_escape(&parsed.version),
@@ -1770,6 +1772,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         patch_apply = patch_apply_lines,
         build_requires = build_requires_lines,
         requires = requires_lines,
+        changelog_date = changelog_date,
         meta_path = spec_escape(&meta_path.display().to_string()),
         variant_dir = spec_escape(&variant_dir.display().to_string()),
     )
@@ -1778,6 +1781,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
 fn render_default_spec(software_slug: &str, parsed: &ParsedMeta, meta_version: u64) -> String {
     let license = spec_escape(&parsed.license);
     let version = spec_escape(&parsed.version);
+    let changelog_date = rpm_changelog_date();
 
     format!(
         "%global tool {tool}\n\
@@ -1813,11 +1817,12 @@ ln -sfn %{{upstream_version}}.lua %{{buildroot}}%{{phoreus_moddir}}/default.lua\
 %{{phoreus_moddir}}/default.lua\n\
 \n\
 %changelog\n\
-* Thu Feb 27 2026 bioconda2rpm <packaging@bioconda2rpm.local> - {meta_version}-1\n\
+* {changelog_date} bioconda2rpm <packaging@bioconda2rpm.local> - {meta_version}-1\n\
 - Auto-generated default pointer for {tool} {version}\n",
         tool = software_slug,
         version = version,
         meta_version = meta_version,
+        changelog_date = changelog_date,
         license = license,
     )
 }
@@ -1949,6 +1954,10 @@ fn normalize_name(name: &str) -> String {
 
 fn normalize_identifier_key(name: &str) -> String {
     normalize_name(name).replace("-plus", "")
+}
+
+fn rpm_changelog_date() -> String {
+    Utc::now().format("%a %b %d %Y").to_string()
 }
 
 fn map_build_dependency(dep: &str) -> String {
