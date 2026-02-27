@@ -3343,14 +3343,15 @@ mkdir -p %{bioconda_source_subdir}\n"
     } else {
         String::new()
     };
-    let source_git_url = git_source
-        .as_ref()
-        .map(|(url, _)| spec_escape(url))
-        .unwrap_or_default();
-    let source_git_rev = git_source
-        .as_ref()
-        .map(|(_, rev)| spec_escape(rev))
-        .unwrap_or_default();
+    let source_git_macros = if let Some((url, rev)) = git_source.as_ref() {
+        format!(
+            "%global bioconda_source_git_url {}\n%global bioconda_source_git_rev {}\n",
+            spec_escape(url),
+            spec_escape(rev)
+        )
+    } else {
+        String::new()
+    };
     let patch_source_lines = render_patch_source_lines(staged_patch_sources);
     let patch_apply_lines =
         render_patch_apply_lines(staged_patch_sources, "%{bioconda_source_subdir}");
@@ -3369,8 +3370,7 @@ mkdir -p %{bioconda_source_subdir}\n"
     %global upstream_version {version}\n\
     %global bioconda_source_subdir {source_subdir}\n\
     %global bioconda_source_relsubdir {source_relsubdir}\n\
-    %global bioconda_source_git_url {source_git_url}\n\
-    %global bioconda_source_git_rev {source_git_rev}\n\
+    {source_git_macros}\
     \n\
     Name:           phoreus-%{{tool}}-%{{upstream_version}}\n\
     Version:        %{{upstream_version}}\n\
@@ -3771,8 +3771,7 @@ fi\n\
         version = spec_escape(&parsed.version),
         source_subdir = spec_escape(&source_subdir),
         source_relsubdir = spec_escape(&source_relsubdir),
-        source_git_url = source_git_url,
-        source_git_rev = source_git_rev,
+        source_git_macros = source_git_macros,
         summary = summary,
         license = license,
         homepage = homepage,
