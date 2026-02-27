@@ -3423,8 +3423,9 @@ into a dedicated Phoreus prefix for hermetic R-dependent bioinformatics tools.\n
 %build\n\
 ./configure \\\n\
   --prefix=%{{phoreus_prefix}} \\\n\
-  --enable-R-shlib\n\
-make %{{?_smp_mflags}}\n\
+  --enable-R-shlib \\\n\
+  --with-x=no\n\
+make -s %{{?_smp_mflags}}\n\
 \n\
 %install\n\
 rm -rf %{{buildroot}}\n\
@@ -4400,6 +4401,7 @@ requirements:
         assert!(spec.contains(
             "Source0:        https://cran.r-project.org/src/base/R-4/R-%{version}.tar.gz"
         ));
+        assert!(spec.contains("--with-x=no"));
     }
 
     #[test]
