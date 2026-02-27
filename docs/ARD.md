@@ -36,6 +36,10 @@ The product is structured as layered components:
 5. Packaging Layer
 - Maps recipes to single-SPEC Phoreus naming profile.
 - Expands `outputs:` into discrete RPM packages.
+- For Python application recipes, enforces hermetic venv packaging:
+  - venv rooted at `/usr/local/phoreus/<tool>/<version>/venv`
+  - dependency lock/install inside venv with hash-verified pip workflow
+  - avoids shared python RPM dependency coupling.
 
 6. Build Execution Layer
 - Runs stage-selected build steps (`spec`/`srpm`/`rpm`) in containers.

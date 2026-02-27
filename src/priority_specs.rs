@@ -50,6 +50,7 @@ struct ParsedMeta {
     source_patches: Vec<String>,
     build_script: Option<String>,
     noarch_python: bool,
+    run_dep_specs_raw: Vec<String>,
     build_deps: BTreeSet<String>,
     host_deps: BTreeSet<String>,
     run_deps: BTreeSet<String>,
@@ -555,6 +556,13 @@ fn selected_dependency_set(
     policy: &DependencyPolicy,
     is_root: bool,
 ) -> BTreeSet<String> {
+    if is_python_recipe(parsed) {
+        let mut out = BTreeSet::new();
+        out.extend(parsed.build_deps.iter().cloned());
+        out.extend(parsed.host_deps.iter().cloned());
+        return out;
+    }
+
     match policy {
         DependencyPolicy::RunOnly => parsed.run_deps.clone(),
         DependencyPolicy::BuildHostRun => {
@@ -1596,6 +1604,10 @@ fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
         .and_then(|m| m.get(Value::String("run".to_string())))
         .map(extract_deps)
         .unwrap_or_default();
+    let run_dep_specs_raw = requirements
+        .and_then(|m| m.get(Value::String("run".to_string())))
+        .map(extract_dep_specs_raw)
+        .unwrap_or_default();
 
     Ok(ParsedMeta {
         package_name,
@@ -1608,10 +1620,126 @@ fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
         source_patches,
         build_script,
         noarch_python,
+        run_dep_specs_raw,
         build_deps,
         host_deps,
         run_deps,
     })
+}
+
+fn extract_dep_specs_raw(node: &Value) -> Vec<String> {
+    let mut out = BTreeSet::new();
+    match node {
+        Value::Sequence(items) => {
+            for item in items {
+                if let Some(raw) = value_to_string(item)
+                    && let Some(spec) = normalize_dep_spec_raw(&raw)
+                {
+                    out.insert(spec);
+                }
+            }
+        }
+        Value::String(raw) => {
+            if let Some(spec) = normalize_dep_spec_raw(raw) {
+                out.insert(spec);
+            }
+        }
+        _ => {}
+    }
+    out.into_iter().collect()
+}
+
+fn normalize_dep_spec_raw(raw: &str) -> Option<String> {
+    let cleaned = raw.trim().trim_matches('"').trim_matches('\'');
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned.to_string())
+    }
+}
+
+fn is_python_recipe(parsed: &ParsedMeta) -> bool {
+    if parsed.noarch_python {
+        return true;
+    }
+    if parsed.build_deps.contains(PHOREUS_PYTHON_PACKAGE)
+        || parsed.host_deps.contains(PHOREUS_PYTHON_PACKAGE)
+        || parsed.run_deps.contains(PHOREUS_PYTHON_PACKAGE)
+    {
+        return true;
+    }
+    parsed
+        .build_script
+        .as_deref()
+        .map(|s| {
+            let lower = s.to_lowercase();
+            lower.contains("pip install") || lower.contains("python -m pip")
+        })
+        .unwrap_or(false)
+}
+
+fn build_python_requirements(parsed: &ParsedMeta) -> Vec<String> {
+    let mut out = BTreeSet::new();
+    for raw in &parsed.run_dep_specs_raw {
+        if let Some(req) = conda_dep_to_pip_requirement(raw) {
+            out.insert(req);
+        }
+    }
+    out.into_iter().collect()
+}
+
+fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
+    let cleaned = raw
+        .split('#')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'');
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    let mut parts = cleaned.split_whitespace();
+    let name_token = parts.next()?;
+    let normalized = name_token.replace('_', "-").to_lowercase();
+    if is_phoreus_python_toolchain_dependency(&normalized) {
+        return None;
+    }
+
+    let pip_name = match normalized.as_str() {
+        "python-kaleido" => "kaleido".to_string(),
+        other => other.to_string(),
+    };
+
+    let remainder = cleaned[name_token.len()..].trim();
+    if remainder.is_empty() {
+        return Some(pip_name);
+    }
+
+    let spec_token = remainder
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if spec_token.is_empty() {
+        return Some(pip_name);
+    }
+
+    let requirement = if spec_token.starts_with(['>', '<', '=', '!', '~']) {
+        format!("{pip_name}{spec_token}")
+    } else if spec_token
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_digit())
+        .unwrap_or(false)
+    {
+        format!("{pip_name}=={spec_token}")
+    } else {
+        pip_name
+    };
+
+    Some(requirement)
 }
 
 fn extract_build_script(node: &Value) -> Option<String> {
@@ -1874,6 +2002,14 @@ fn render_payload_spec(
             folder.to_string()
         }
     };
+    let python_recipe = is_python_recipe(parsed);
+    let python_requirements = if python_recipe {
+        build_python_requirements(parsed)
+    } else {
+        Vec::new()
+    };
+    let python_venv_setup = render_python_venv_setup_block(python_recipe, &python_requirements);
+    let module_lua_env = render_module_lua_env_block(python_recipe);
 
     let mut build_requires = BTreeSet::new();
     build_requires.insert("bash".to_string());
@@ -1882,11 +2018,17 @@ fn render_payload_spec(
     build_requires.insert(PHOREUS_PYTHON_PACKAGE.to_string());
     build_requires.extend(parsed.build_deps.iter().map(|d| map_build_dependency(d)));
     build_requires.extend(parsed.host_deps.iter().map(|d| map_build_dependency(d)));
-    build_requires.extend(parsed.run_deps.iter().map(|d| map_build_dependency(d)));
+    if !python_recipe {
+        build_requires.extend(parsed.run_deps.iter().map(|d| map_build_dependency(d)));
+    }
 
     let mut runtime_requires = BTreeSet::new();
     runtime_requires.insert("phoreus".to_string());
-    runtime_requires.extend(parsed.run_deps.iter().map(|d| map_runtime_dependency(d)));
+    if python_recipe {
+        runtime_requires.insert(PHOREUS_PYTHON_PACKAGE.to_string());
+    } else {
+        runtime_requires.extend(parsed.run_deps.iter().map(|d| map_runtime_dependency(d)));
+    }
 
     let build_requires_lines = format_dep_lines("BuildRequires", &build_requires);
     let requires_lines = format_dep_lines("Requires", &runtime_requires);
@@ -1894,7 +2036,7 @@ fn render_payload_spec(
     let patch_apply_lines =
         render_patch_apply_lines(staged_patch_sources, "%{bioconda_source_subdir}");
     let changelog_date = rpm_changelog_date();
-    let build_arch_line = if noarch_python {
+    let build_arch_line = if noarch_python && !python_recipe {
         "BuildArch:      noarch\n".to_string()
     } else {
         String::new()
@@ -2049,6 +2191,8 @@ fi\n\
 # Ensure common install subdirectories exist for build.sh scripts that assume them.\n\
 mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\"\n\
 \n\
+{python_venv_setup}\
+\n\
 # BLAST recipes in Bioconda assume a conda-style shared prefix where ncbi-vdb\n\
 # lives under the same PREFIX. In Phoreus, ncbi-vdb is a separate payload.\n\
 # Retarget the generated build.sh argument to the newest installed ncbi-vdb prefix.\n\
@@ -2095,6 +2239,14 @@ while IFS= read -r -d '' link_path; do\n\
   esac\n\
 done < <(find %{{buildroot}}%{{phoreus_prefix}} -type l -print0 2>/dev/null)\n\
 \n\
+# Python virtualenv and some installers may record temporary buildroot prefixes\n\
+# in script shebangs/config files; rewrite to final install prefix for RPM checks.\n\
+buildroot_prefix=\"%{{buildroot}}%{{phoreus_prefix}}\"\n\
+final_prefix=\"%{{phoreus_prefix}}\"\n\
+while IFS= read -r -d '' text_path; do\n\
+  sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true\n\
+done < <(grep -RIlZ -- \"$buildroot_prefix\" %{{buildroot}}%{{phoreus_prefix}} 2>/dev/null || true)\n\
+\n\
 # Perl installs often emit perllocal.pod entries that embed buildroot paths.\n\
 # Drop those files to satisfy RPM check-buildroot validation.\n\
 find %{{buildroot}}%{{phoreus_prefix}} -type f -name perllocal.pod -delete 2>/dev/null || true\n\
@@ -2106,9 +2258,7 @@ whatis(\"Name: {tool}\")\n\
 whatis(\"Version: {version}\")\n\
 whatis(\"URL: {homepage}\")\n\
 local prefix = \"/usr/local/phoreus/{tool}/{version}\"\n\
-prepend_path(\"PATH\", pathJoin(prefix, \"bin\"))\n\
-prepend_path(\"LD_LIBRARY_PATH\", pathJoin(prefix, \"lib\"))\n\
-prepend_path(\"MANPATH\", pathJoin(prefix, \"share/man\"))\n\
+{module_lua_env}\
 LUAEOF\n\
 chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
 \n\
@@ -2133,11 +2283,63 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         build_requires = build_requires_lines,
         requires = requires_lines,
         build_arch = build_arch_line,
+        python_venv_setup = python_venv_setup,
+        module_lua_env = module_lua_env,
         changelog_date = changelog_date,
         meta_path = spec_escape(&meta_path.display().to_string()),
         variant_dir = spec_escape(&variant_dir.display().to_string()),
         phoreus_python_version = PHOREUS_PYTHON_VERSION,
     )
+}
+
+fn render_python_venv_setup_block(python_recipe: bool, python_requirements: &[String]) -> String {
+    if !python_recipe {
+        return String::new();
+    }
+
+    let requirements_install = if python_requirements.is_empty() {
+        String::new()
+    } else {
+        let requirements_body = python_requirements.join("\n");
+        format!(
+            "cat > requirements.in <<'REQEOF'\n\
+{requirements_body}\n\
+REQEOF\n\
+\"$PIP\" install pip-tools\n\
+pip-compile --generate-hashes requirements.in --output-file requirements.lock\n\
+\"$PIP\" install --require-hashes -r requirements.lock\n",
+            requirements_body = requirements_body
+        )
+    };
+
+    format!(
+        "# Charter-compliant Python dependency handling: build hermetic venv and lock deps.\n\
+mkdir -p \"$PREFIX/venv\"\n\
+\"$PYTHON\" -m venv --copies \"$PREFIX/venv\"\n\
+export VIRTUAL_ENV=\"$PREFIX/venv\"\n\
+export PATH=\"$VIRTUAL_ENV/bin:$PATH\"\n\
+export PYTHON=\"$VIRTUAL_ENV/bin/python\"\n\
+export PYTHON3=\"$VIRTUAL_ENV/bin/python\"\n\
+export PIP=\"$VIRTUAL_ENV/bin/pip\"\n\
+export PIP_DISABLE_PIP_VERSION_CHECK=1\n\
+\"$PIP\" install --upgrade pip setuptools wheel\n\
+{requirements_install}",
+        requirements_install = requirements_install
+    )
+}
+
+fn render_module_lua_env_block(python_recipe: bool) -> String {
+    if python_recipe {
+        "setenv(\"VIRTUAL_ENV\", pathJoin(prefix, \"venv\"))\n\
+prepend_path(\"PATH\", pathJoin(prefix, \"venv/bin\"))\n\
+prepend_path(\"LD_LIBRARY_PATH\", pathJoin(prefix, \"lib\"))\n"
+            .to_string()
+    } else {
+        "prepend_path(\"PATH\", pathJoin(prefix, \"bin\"))\n\
+prepend_path(\"LD_LIBRARY_PATH\", pathJoin(prefix, \"lib\"))\n\
+prepend_path(\"MANPATH\", pathJoin(prefix, \"share/man\"))\n"
+            .to_string()
+    }
 }
 
 fn render_default_spec(software_slug: &str, parsed: &ParsedMeta, meta_version: u64) -> String {
@@ -3156,6 +3358,7 @@ requirements:
             source_patches: vec!["boost_106400.patch".to_string()],
             build_script: None,
             noarch_python: false,
+            run_dep_specs_raw: Vec::new(),
             build_deps: BTreeSet::new(),
             host_deps: BTreeSet::new(),
             run_deps: BTreeSet::new(),
@@ -3193,6 +3396,46 @@ about:
             Some("$PYTHON -m pip install . --no-deps")
         );
         assert!(parsed.noarch_python);
+    }
+
+    #[test]
+    fn parse_meta_preserves_raw_run_dependency_specs() {
+        let rendered = r#"
+package:
+  name: multiqc
+  version: "1.33"
+source:
+  url: https://example.invalid/multiqc.tar.gz
+requirements:
+  run:
+    - python >=3.8,!=3.14.1
+    - jinja2 >=3.0.0
+    - python-kaleido ==0.2.1
+"#;
+        let parsed = parse_rendered_meta(rendered).expect("parse rendered meta");
+        assert!(
+            parsed
+                .run_dep_specs_raw
+                .contains(&"jinja2 >=3.0.0".to_string())
+        );
+        assert!(
+            parsed
+                .run_dep_specs_raw
+                .contains(&"python-kaleido ==0.2.1".to_string())
+        );
+    }
+
+    #[test]
+    fn python_requirements_are_converted_to_pip_specs() {
+        assert_eq!(
+            conda_dep_to_pip_requirement("jinja2 >=3.0.0"),
+            Some("jinja2>=3.0.0".to_string())
+        );
+        assert_eq!(
+            conda_dep_to_pip_requirement("python-kaleido ==0.2.1"),
+            Some("kaleido==0.2.1".to_string())
+        );
+        assert_eq!(conda_dep_to_pip_requirement("python >=3.8"), None);
     }
 
     #[test]

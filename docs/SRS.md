@@ -115,6 +115,11 @@ FR-018 Version freshness and metapackage update policy
 - When a newer payload is rebuilt, the corresponding default/meta package version shall be incremented and rewired to the new payload version.
 - Successful/up-to-date outcomes shall clear stale package-specific quarantine notes in `BAD_SPEC`.
 
+FR-019 Python dependency isolation policy
+- Python application recipes shall be packaged as hermetic virtual environments under `/usr/local/phoreus/<tool>/<version>/venv`.
+- Python dependency resolution for these recipes shall occur inside the venv using lockfile/hash workflow (`pip-compile --generate-hashes`, then `pip install --require-hashes`).
+- Generated RPM specs for Python applications shall not emit shared python library RPM dependencies (for example `Requires: jinja2`); runtime dependencies shall be limited to `phoreus` and the selected `phoreus-python-*` interpreter package.
+
 ## 4. Non-Functional Requirements
 
 NFR-001 Reproducibility

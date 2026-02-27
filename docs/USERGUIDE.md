@@ -117,6 +117,13 @@ For each package build step:
 
 This enforces an auditable SRPM-to-RPM lineage.
 
+Python charter behavior:
+
+- For Python recipes (for example `noarch: python` or `pip` install script recipes), `bioconda2rpm` builds a hermetic virtual environment under `/usr/local/phoreus/<tool>/<version>/venv`.
+- Python dependency trees are solved inside that venv using `pip-compile --generate-hashes` and `pip install --require-hashes`.
+- Python library dependencies are not emitted as shared RPM `Requires`; payload runtime requires are limited to `phoreus` and `phoreus-python-3.11`.
+- This avoids unresolved distro RPM names such as `jinja2`/`rich` and follows the Python RPM charter isolation model.
+
 ## 7. Output Layout
 
 Under `<topdir>`:
