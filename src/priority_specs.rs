@@ -2960,7 +2960,16 @@ fn map_build_dependency(dep: &str) -> String {
     }
     match dep {
         "boost-cpp" => "boost-devel".to_string(),
+        "bzip2" => "bzip2-devel".to_string(),
         "go-compiler" => "golang".to_string(),
+        "libcurl" => "libcurl-devel".to_string(),
+        "libdeflate" => "libdeflate-devel".to_string(),
+        "lz4-c" => "lz4-devel".to_string(),
+        "ncurses" => "ncurses-devel".to_string(),
+        "openssl" => "openssl-devel".to_string(),
+        "xz" => "xz-devel".to_string(),
+        "zlib" => "zlib-devel".to_string(),
+        "zstd" => "libzstd-devel".to_string(),
         other => other.to_string(),
     }
 }
@@ -3795,6 +3804,15 @@ mod tests {
     fn dependency_mapping_handles_conda_aliases() {
         assert_eq!(map_build_dependency("boost-cpp"), "boost-devel".to_string());
         assert_eq!(map_runtime_dependency("boost-cpp"), "boost".to_string());
+        assert_eq!(
+            map_build_dependency("libdeflate"),
+            "libdeflate-devel".to_string()
+        );
+        assert_eq!(map_build_dependency("zlib"), "zlib-devel".to_string());
+        assert_eq!(map_build_dependency("openssl"), "openssl-devel".to_string());
+        assert_eq!(map_build_dependency("bzip2"), "bzip2-devel".to_string());
+        assert_eq!(map_build_dependency("xz"), "xz-devel".to_string());
+        assert_eq!(map_build_dependency("libcurl"), "libcurl-devel".to_string());
         assert_eq!(
             map_build_dependency("perl-canary-stability"),
             "perl-Canary-Stability".to_string()
