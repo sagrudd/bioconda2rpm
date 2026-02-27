@@ -56,3 +56,10 @@
 - Build artifacts must not be written into this software crate repository.
 - Bioconda recipe working data must not taint this crate folder.
 - Artifact/output location must be explicitly provided by the user (no default in-repo topdir).
+
+### Q12 - Default run reporting outputs
+- Default reporting output set:
+  - console logs
+  - machine-readable JSON summary
+  - CSV report
+  - Markdown summary report
