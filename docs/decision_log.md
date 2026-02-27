@@ -26,3 +26,8 @@
 
 ### Q4 - Default container execution model
 - Default container strategy: ephemeral container per build (clean execution environment each run).
+
+### Q5 - Default RPM naming/layout profile
+- Default naming and layout follows Phoreus convention:
+  - versioned payload: `phoreus-<tool>-<version>`
+  - meta/default package: `phoreus-<tool>`
