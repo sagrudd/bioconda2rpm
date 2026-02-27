@@ -17,6 +17,8 @@ pub struct Cli {
 pub enum Command {
     /// Build RPM artifacts for a package and optionally its dependency closure.
     Build(BuildArgs),
+    /// Generate Phoreus payload/meta SPECs for top-priority tools from tools.csv.
+    GeneratePrioritySpecs(GeneratePrioritySpecsArgs),
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
@@ -128,20 +130,52 @@ pub struct BuildArgs {
     pub package: String,
 }
 
-impl BuildArgs {
-    fn default_topdir() -> PathBuf {
-        match env::var_os("HOME") {
-            Some(home) => PathBuf::from(home).join("bioconda2rpm"),
-            None => PathBuf::from("bioconda2rpm"),
-        }
-    }
+#[derive(Debug, clap::Args)]
+pub struct GeneratePrioritySpecsArgs {
+    /// Root directory containing Bioconda recipes.
+    #[arg(long)]
+    pub recipe_root: PathBuf,
 
+    /// CSV file containing priority scores (RPM Priority Score column).
+    #[arg(long)]
+    pub tools_csv: PathBuf,
+
+    /// Number of highest-priority tools to process.
+    #[arg(long, default_value_t = 10)]
+    pub top_n: usize,
+
+    /// Number of worker threads for parallel processing.
+    #[arg(long)]
+    pub workers: Option<usize>,
+
+    /// RPM build topdir. Defaults to ~/bioconda2rpm when omitted.
+    #[arg(long)]
+    pub topdir: Option<PathBuf>,
+
+    /// Quarantine folder for unresolved/non-compliant packages.
+    /// Defaults to <topdir>/BAD_SPEC when omitted.
+    #[arg(long)]
+    pub bad_spec_dir: Option<PathBuf>,
+
+    /// Optional explicit report output directory.
+    #[arg(long)]
+    pub reports_dir: Option<PathBuf>,
+}
+
+pub fn default_topdir() -> PathBuf {
+    match env::var_os("HOME") {
+        Some(home) => PathBuf::from(home).join("bioconda2rpm"),
+        None => PathBuf::from("bioconda2rpm"),
+    }
+}
+
+impl BuildArgs {
     pub fn with_deps(&self) -> bool {
         !self.no_deps
     }
 
     pub fn effective_topdir(&self) -> PathBuf {
-        self.topdir.clone().unwrap_or_else(Self::default_topdir)
+        self.topdir.clone().unwrap_or_else(default_topdir)
     }
 
     pub fn effective_bad_spec_dir(&self) -> PathBuf {
@@ -177,6 +211,24 @@ impl BuildArgs {
     }
 }
 
+impl GeneratePrioritySpecsArgs {
+    pub fn effective_topdir(&self) -> PathBuf {
+        self.topdir.clone().unwrap_or_else(default_topdir)
+    }
+
+    pub fn effective_bad_spec_dir(&self) -> PathBuf {
+        self.bad_spec_dir
+            .clone()
+            .unwrap_or_else(|| self.effective_topdir().join("BAD_SPEC"))
+    }
+
+    pub fn effective_reports_dir(&self) -> PathBuf {
+        self.reports_dir
+            .clone()
+            .unwrap_or_else(|| self.effective_topdir().join("reports"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,7 +245,9 @@ mod tests {
         ])
         .expect("build defaults should parse");
 
-        let Command::Build(args) = cli.command;
+        let Command::Build(args) = cli.command else {
+            panic!("expected build command")
+        };
         assert_eq!(args.package, "fastp");
         assert_eq!(args.stage, BuildStage::Rpm);
         assert_eq!(args.dependency_policy, DependencyPolicy::BuildHostRun);
@@ -230,7 +284,9 @@ mod tests {
         ])
         .expect("topdir and bad spec overrides should parse");
 
-        let Command::Build(args) = cli.command;
+        let Command::Build(args) = cli.command else {
+            panic!("expected build command")
+        };
         assert_eq!(args.effective_topdir(), PathBuf::from("/rpmbuild"));
         assert_eq!(args.effective_bad_spec_dir(), PathBuf::from("/quarantine"));
         assert_eq!(
@@ -265,7 +321,9 @@ mod tests {
         ])
         .expect("build overrides should parse");
 
-        let Command::Build(args) = cli.command;
+        let Command::Build(args) = cli.command else {
+            panic!("expected build command")
+        };
         assert_eq!(args.stage, BuildStage::Spec);
         assert_eq!(args.dependency_policy, DependencyPolicy::RunOnly);
         assert!(!args.with_deps());
@@ -281,5 +339,32 @@ mod tests {
         let parse = Cli::try_parse_from(["bioconda2rpm", "build", "fastqc"]);
 
         assert!(parse.is_err());
+    }
+
+    #[test]
+    fn generate_priority_specs_defaults_parse() {
+        let cli = Cli::try_parse_from([
+            "bioconda2rpm",
+            "generate-priority-specs",
+            "--recipe-root",
+            "/recipes",
+            "--tools-csv",
+            "/tmp/tools.csv",
+        ])
+        .expect("generate-priority-specs defaults should parse");
+
+        let Command::GeneratePrioritySpecs(args) = cli.command else {
+            panic!("expected generate-priority-specs subcommand");
+        };
+        assert_eq!(args.top_n, 10);
+        assert!(args.effective_topdir().ends_with("bioconda2rpm"));
+        assert!(
+            args.effective_bad_spec_dir()
+                .ends_with("bioconda2rpm/BAD_SPEC")
+        );
+        assert!(
+            args.effective_reports_dir()
+                .ends_with("bioconda2rpm/reports")
+        );
     }
 }
