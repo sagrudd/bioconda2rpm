@@ -2,13 +2,16 @@
 
 ## 1. Purpose
 
-`bioconda2rpm` converts Bioconda recipe metadata into Phoreus-style RPM packaging artifacts and executes builds in a containerized, reproducible sequence:
+`bioconda2rpm` converts Bioconda recipe metadata into Phoreus-style RPM artifacts with dependency-first build ordering.
 
-1. Generate SPEC files
-2. Build SRPM from SPEC
-3. Rebuild RPM from SRPM
+Primary production workflow:
 
-For priority-driven batch generation, the tool selects top tools from `tools.csv` using `RPM Priority Score`.
+1. `bioconda2rpm build <tool>`
+2. Resolve Bioconda dependency closure
+3. Build dependency packages first (SPEC -> SRPM -> RPM)
+4. Build requested package last (SPEC -> SRPM -> RPM)
+
+`generate-priority-specs` is a development helper workflow and is not the production entrypoint.
 
 ## 2. Prerequisites
 
@@ -31,49 +34,70 @@ The tool creates these folders automatically if missing.
 
 ## 4. Core Commands
 
-### 4.1 Build Command (single package workflow scaffold)
+### 4.1 Primary Build Command
 
 ```bash
-cargo run -- build <package> --recipe-root <path/to/recipes>
+cargo run -- build <tool> --recipe-root <path/to/recipes>
 ```
 
 Example:
 
 ```bash
-cargo run -- build bwa --recipe-root ../bioconda-recipes/recipes
+cargo run -- build bbmap --recipe-root ../bioconda-recipes/recipes
 ```
 
-### 4.2 Priority SPEC/SRPM/RPM Generation (parallel)
+Optional container controls:
+
+```bash
+cargo run -- build bbmap \
+  --recipe-root ../bioconda-recipes/recipes \
+  --container-image dropworm_dev_almalinux_9_5:0.1.2 \
+  --container-engine docker
+```
+
+### 4.2 Development Helper Command (non-production)
 
 ```bash
 cargo run -- generate-priority-specs \
   --recipe-root ../bioconda-recipes/recipes \
   --tools-csv ../software_query/tools.csv \
-  --container-image dropworm_dev_almalinux_9_5:0.1.2 \
-  --workers 6 \
-  --top-n 10
+  --container-image dropworm_dev_almalinux_9_5:0.1.2
 ```
 
 ## 5. Required and Important Flags
 
-For `generate-priority-specs`:
+For `build`:
 
 - `--recipe-root <path>`: Bioconda recipe tree root.
-- `--tools-csv <path>`: CSV containing `RPM Priority Score`.
-- `--container-image <image:tag>`: image used for SRPM/RPM builds.
+- `<tool>` positional: requested Bioconda package name.
 
 Common optional flags:
 
+- `--container-image <image:tag>`: image used for SRPM/RPM builds.
 - `--container-engine <engine>`: default `docker`.
-- `--top-n <n>`: number of highest priority tools to process (default `10`).
-- `--workers <n>`: parallel worker count.
 - `--topdir <path>`: artifact/report root override.
 - `--bad-spec-dir <path>`: quarantine override.
 - `--reports-dir <path>`: report directory override.
+- `--no-deps`: disable Bioconda dependency closure.
+- `--dependency-policy <run-only|build-host-run|runtime-transitive-root-build-host>`.
 
 ## 6. Build Sequence Details
 
-Per generated SPEC:
+Per `build <tool>` run:
+
+1. Resolve requested recipe from Bioconda metadata.
+2. Resolve Bioconda dependency closure (unless `--no-deps`).
+3. Build dependencies first in deterministic order.
+4. For each package:
+   - Resolve/prepare sources from recipe metadata.
+   - Build SRPM inside container (`rpmbuild -bs`).
+   - Preflight `BuildRequires` inside container:
+     - already installed packages
+     - local RPM reuse from `<topdir>/RPMS`
+     - distro/core repos with unavailable-repo tolerance
+   - Rebuild RPM from SRPM (`rpmbuild --rebuild <generated.src.rpm>`).
+
+For each package build step:
 
 1. Resolve/prepare sources from Bioconda metadata.
 2. Build SRPM inside container:
@@ -95,9 +119,9 @@ Under `<topdir>`:
 - `SOURCES/` staged `build.sh` and downloaded source archives
 - `SRPMS/` generated source RPMs
 - `RPMS/` rebuilt binary RPMs
-- `reports/priority_spec_generation.json`
-- `reports/priority_spec_generation.csv`
-- `reports/priority_spec_generation.md`
+- `reports/build_<tool>.json`
+- `reports/build_<tool>.csv`
+- `reports/build_<tool>.md`
 - `reports/dependency_graphs/*.json` per-package dependency resolution graph
 - `reports/dependency_graphs/*.md` per-package dependency resolution graph
 - `BAD_SPEC/` quarantine notes for failed/unresolved items
@@ -140,7 +164,7 @@ Set engine explicitly or install Docker:
 
 Check:
 
-- `<topdir>/reports/priority_spec_generation.md`
+- `<topdir>/reports/build_<tool>.md`
 - `<topdir>/reports/dependency_graphs/<tool>.md`
 - `<topdir>/BAD_SPEC/<tool>.txt`
 - container logs printed during run
@@ -155,7 +179,7 @@ Ensure network access is available for `spectool -g -R` to fetch `Source0`.
 
 ## 10. Recommended Enterprise Run Pattern
 
-1. Run generation in a clean dedicated topdir.
+1. Run `build <tool>` in a clean dedicated topdir.
 2. Keep one topdir per build campaign/date.
 3. Archive JSON/CSV/MD reports with produced SRPM/RPM artifacts.
 4. Use dedicated hosts/runners per architecture while keeping one SPEC per software with `%ifarch` gating.

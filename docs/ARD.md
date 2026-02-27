@@ -40,6 +40,11 @@ The product is structured as layered components:
 6. Build Execution Layer
 - Runs stage-selected build steps (`spec`/`srpm`/`rpm`) in containers.
 - Default container mode: ephemeral per build.
+- Production `build <tool>` path executes dependency-first:
+  - discover Bioconda dependency closure
+  - build dependency packages first
+  - build requested package last
+  - enforce per-package `SPEC -> SRPM -> RPM` chain
 - For generated priority specs, execution is strictly ordered per spec as:
   - SPEC generation
   - SRPM build (`rpmbuild -bs`) in container

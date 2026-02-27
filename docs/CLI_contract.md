@@ -6,6 +6,11 @@
 bioconda2rpm build <package> --recipe-root <path>
 ```
 
+Production expectation:
+- `build` is the canonical end-user command.
+- Build order is dependency-first for Bioconda packages, then target package.
+- Stage order per package is `SPEC -> SRPM -> RPM`.
+
 ## Priority SPEC Generation Command
 
 ```bash
@@ -33,6 +38,12 @@ bioconda2rpm generate-priority-specs \
   - Disables dependency closure for the requested package.
 - `--container-mode <ephemeral|running|auto>`
   - Default: `ephemeral`
+- `--container-image <image[:tag]>`
+  - Optional for `build`.
+  - Default: `dropworm_dev_almalinux_9_5:0.1.2`.
+  - Used to execute SRPM/RPM builds in-container.
+- `--container-engine <docker|podman|...>`
+  - Optional. Default: `docker`.
 - `--missing-dependency <fail|skip|quarantine>`
   - Default: `quarantine`
 - `--arch <host|x86-64|aarch64>`
@@ -43,11 +54,6 @@ bioconda2rpm generate-priority-specs \
   - Optional. Default resolves to `<topdir>/BAD_SPEC` (auto-created if missing).
 - `--reports-dir <path>`
   - Optional. Default resolves to `<topdir>/reports` (auto-created if missing).
-- `--container-image <image[:tag]>`
-  - Required for `generate-priority-specs`.
-  - Used to execute SRPM/RPM builds in-container.
-- `--container-engine <docker|podman|...>`
-  - Optional. Default: `docker`.
 - `--naming-profile <phoreus>`
   - Default: `phoreus`
 - `--render-strategy <jinja-full>`
@@ -67,3 +73,4 @@ bioconda2rpm generate-priority-specs \
 - Priority SPEC generation performs overlap resolution and SPEC creation in parallel workers.
 - For each generated SPEC, build order is always `SPEC -> SRPM -> RPM` in the selected container image.
 - RPM stage is executed as SRPM rebuild (`rpmbuild --rebuild <src.rpm>`).
+- Successful package builds clear stale `<topdir>/BAD_SPEC/<tool>.txt` quarantine notes.
