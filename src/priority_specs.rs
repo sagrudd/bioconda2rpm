@@ -1583,12 +1583,12 @@ fn render_payload_spec(
 
     let mut build_requires = BTreeSet::new();
     build_requires.insert("bash".to_string());
-    build_requires.extend(parsed.build_deps.iter().cloned());
-    build_requires.extend(parsed.host_deps.iter().cloned());
+    build_requires.extend(parsed.build_deps.iter().map(|d| map_build_dependency(d)));
+    build_requires.extend(parsed.host_deps.iter().map(|d| map_build_dependency(d)));
 
     let mut runtime_requires = BTreeSet::new();
     runtime_requires.insert("phoreus".to_string());
-    runtime_requires.extend(parsed.run_deps.iter().cloned());
+    runtime_requires.extend(parsed.run_deps.iter().map(|d| map_runtime_dependency(d)));
 
     let build_requires_lines = format_dep_lines("BuildRequires", &build_requires);
     let requires_lines = format_dep_lines("Requires", &runtime_requires);
@@ -1782,6 +1782,22 @@ fn normalize_name(name: &str) -> String {
 
 fn normalize_identifier_key(name: &str) -> String {
     normalize_name(name).replace("-plus", "")
+}
+
+fn map_build_dependency(dep: &str) -> String {
+    match dep {
+        "boost-cpp" => "boost-devel".to_string(),
+        "python" => "python3".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn map_runtime_dependency(dep: &str) -> String {
+    match dep {
+        "boost-cpp" => "boost".to_string(),
+        "python" => "python3".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn payload_version_state(
@@ -2383,6 +2399,14 @@ mod tests {
             normalize_dependency_name("openjdk >=11.0.1"),
             Some("java-11-openjdk".to_string())
         );
+    }
+
+    #[test]
+    fn dependency_mapping_handles_conda_aliases() {
+        assert_eq!(map_build_dependency("boost-cpp"), "boost-devel".to_string());
+        assert_eq!(map_runtime_dependency("boost-cpp"), "boost".to_string());
+        assert_eq!(map_build_dependency("python"), "python3".to_string());
+        assert_eq!(map_runtime_dependency("python"), "python3".to_string());
     }
 
     #[test]
