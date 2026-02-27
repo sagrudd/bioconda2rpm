@@ -43,6 +43,7 @@ struct ParsedMeta {
     package_name: String,
     version: String,
     source_url: String,
+    source_folder: String,
     homepage: String,
     license: String,
     summary: String,
@@ -484,6 +485,9 @@ fn visit_build_plan_node(
     };
 
     let canonical = normalize_name(&resolved.recipe_name);
+    if !is_root && !is_buildable_recipe(&resolved, &parsed) {
+        return Ok(None);
+    }
     if visited.contains(&canonical) {
         return Ok(Some(canonical));
     }
@@ -527,6 +531,10 @@ fn visit_build_plan_node(
     );
     order.push(canonical.clone());
     Ok(Some(canonical))
+}
+
+fn is_buildable_recipe(resolved: &ResolvedRecipe, parsed: &ParsedMeta) -> bool {
+    resolved.build_sh_path.is_some() && !parsed.source_url.trim().is_empty()
 }
 
 fn selected_dependency_set(
@@ -1176,7 +1184,19 @@ fn find_recipe_by_identifier(recipe_root: &Path, key: &str) -> Result<Option<Rec
 }
 
 fn select_recipe_variant_dir(recipe_dir: &Path) -> Result<PathBuf> {
-    let mut candidates: Vec<(String, PathBuf)> = Vec::new();
+    let mut candidates: Vec<(String, PathBuf, bool)> = Vec::new();
+
+    if meta_file_path(recipe_dir).is_some() {
+        let version = rendered_recipe_version(recipe_dir)
+            .or_else(|| {
+                recipe_dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "0".to_string());
+        candidates.push((version, recipe_dir.to_path_buf(), true));
+    }
 
     for entry in fs::read_dir(recipe_dir)
         .with_context(|| format!("reading recipe directory {}", recipe_dir.display()))?
@@ -1194,18 +1214,37 @@ fn select_recipe_variant_dir(recipe_dir: &Path) -> Result<PathBuf> {
         if meta_file_path(&path).is_none() {
             continue;
         }
-        candidates.push((name, path));
+        let version = rendered_recipe_version(&path).unwrap_or(name);
+        candidates.push((version, path, false));
     }
 
     if candidates.is_empty() {
         return Ok(recipe_dir.to_path_buf());
     }
 
-    candidates.sort_by(|a, b| compare_version_labels(&a.0, &b.0));
+    candidates.sort_by(|a, b| compare_version_labels(&a.0, &b.0).then_with(|| a.2.cmp(&b.2)));
     Ok(candidates
         .last()
-        .map(|(_, p)| p.clone())
+        .map(|(_, p, _)| p.clone())
         .unwrap_or_else(|| recipe_dir.to_path_buf()))
+}
+
+fn rendered_recipe_version(dir: &Path) -> Option<String> {
+    let meta_path = meta_file_path(dir)?;
+    let text = fs::read_to_string(&meta_path).ok()?;
+    let selector_ctx = SelectorContext::for_rpm_build();
+    let selected_meta = apply_selectors(&text, &selector_ctx);
+    let rendered = render_meta_yaml(&selected_meta).ok()?;
+    extract_package_scalar(&rendered, "version").or_else(|| {
+        serde_yaml::from_str::<Value>(&rendered)
+            .ok()
+            .and_then(|root| {
+                root.get("package")
+                    .and_then(Value::as_mapping)
+                    .and_then(|pkg| pkg.get(Value::String("version".to_string())))
+                    .and_then(value_to_string)
+            })
+    })
 }
 
 fn looks_like_version_dir(name: &str) -> bool {
@@ -1451,6 +1490,7 @@ fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
         .context("missing package.version")?;
 
     let source_url = extract_source_url(root.get("source")).unwrap_or_default();
+    let source_folder = extract_source_folder(root.get("source")).unwrap_or_default();
     let about = root.get("about").and_then(Value::as_mapping);
 
     let homepage = about
@@ -1489,6 +1529,7 @@ fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
         package_name,
         version,
         source_url,
+        source_folder,
         homepage,
         license,
         summary,
@@ -1537,6 +1578,20 @@ fn extract_source_url(source: Option<&Value>) -> Option<String> {
                 .and_then(value_to_string)
         }),
         Some(Value::String(s)) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
+fn extract_source_folder(source: Option<&Value>) -> Option<String> {
+    match source {
+        Some(Value::Mapping(map)) => map
+            .get(Value::String("folder".to_string()))
+            .and_then(value_to_string),
+        Some(Value::Sequence(seq)) => seq.iter().find_map(|item| {
+            item.as_mapping()
+                .and_then(|m| m.get(Value::String("folder".to_string())))
+                .and_then(value_to_string)
+        }),
         _ => None,
     }
 }
@@ -1635,6 +1690,7 @@ fn normalize_dependency_name(raw: &str) -> Option<String> {
         "c-compiler" | "ccompiler" => "gcc".to_string(),
         "cxx-compiler" | "cpp-compiler" => "gcc-c++".to_string(),
         "fortran-compiler" => "gcc-gfortran".to_string(),
+        "go-compiler" | "gocompiler" => "golang".to_string(),
         "openjdk" => "java-11-openjdk".to_string(),
         other => other.to_string(),
     };
@@ -1655,11 +1711,28 @@ fn render_payload_spec(
     let homepage = spec_escape_or_default(&parsed.homepage, "https://bioconda.github.io");
     let source_url =
         spec_escape_or_default(&parsed.source_url, "https://example.invalid/source.tar.gz");
+    let source_subdir = {
+        let folder = parsed.source_folder.trim().trim_matches('/');
+        if folder.is_empty() {
+            "buildsrc".to_string()
+        } else {
+            format!("buildsrc/{folder}")
+        }
+    };
+    let source_relsubdir = {
+        let folder = parsed.source_folder.trim().trim_matches('/');
+        if folder.is_empty() {
+            ".".to_string()
+        } else {
+            folder.to_string()
+        }
+    };
 
     let mut build_requires = BTreeSet::new();
     build_requires.insert("bash".to_string());
     build_requires.extend(parsed.build_deps.iter().map(|d| map_build_dependency(d)));
     build_requires.extend(parsed.host_deps.iter().map(|d| map_build_dependency(d)));
+    build_requires.extend(parsed.run_deps.iter().map(|d| map_build_dependency(d)));
 
     let mut runtime_requires = BTreeSet::new();
     runtime_requires.insert("phoreus".to_string());
@@ -1668,7 +1741,8 @@ fn render_payload_spec(
     let build_requires_lines = format_dep_lines("BuildRequires", &build_requires);
     let requires_lines = format_dep_lines("Requires", &runtime_requires);
     let patch_source_lines = render_patch_source_lines(staged_patch_sources);
-    let patch_apply_lines = render_patch_apply_lines(staged_patch_sources);
+    let patch_apply_lines =
+        render_patch_apply_lines(staged_patch_sources, "%{bioconda_source_subdir}");
     let changelog_date = rpm_changelog_date();
 
     format!(
@@ -1677,6 +1751,8 @@ fn render_payload_spec(
 \n\
 %global tool {tool}\n\
 %global upstream_version {version}\n\
+%global bioconda_source_subdir {source_subdir}\n\
+%global bioconda_source_relsubdir {source_relsubdir}\n\
 \n\
 Name:           phoreus-%{{tool}}-%{{upstream_version}}\n\
 Version:        %{{upstream_version}}\n\
@@ -1700,8 +1776,8 @@ Variant selected: {variant_dir}\n\
 \n\
 %prep\n\
 rm -rf buildsrc\n\
-mkdir -p buildsrc\n\
-tar -xf %{{SOURCE0}} -C buildsrc --strip-components=1\n\
+mkdir -p %{{bioconda_source_subdir}}\n\
+tar -xf %{{SOURCE0}} -C %{{bioconda_source_subdir}} --strip-components=1\n\
 cp %{{SOURCE1}} buildsrc/build.sh\n\
 chmod 0755 buildsrc/build.sh\n\
 {patch_apply}\
@@ -1720,13 +1796,106 @@ rm -rf %{{buildroot}}\n\
 mkdir -p %{{buildroot}}%{{phoreus_prefix}}\n\
 cd buildsrc\n\
 export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
+export SRC_DIR=${{SRC_DIR:-$(pwd)/%{{bioconda_source_relsubdir}}}}\n\
 export CPU_COUNT=%{{?_smp_build_ncpus}}\n\
+\n\
+# Compatibility shim for the legacy BLAST 2.5.0 configure parser.\n\
+# Its NCBI configure script cannot parse modern two-digit GCC majors.\n\
+if [[ \"%{{tool}}\" == \"blast\" ]]; then\n\
+real_gcc=$(command -v gcc || true)\n\
+real_gxx=$(command -v g++ || true)\n\
+wrap_dir=\"$(pwd)/.bioconda2rpm-toolchain-wrap\"\n\
+rm -rf \"$wrap_dir\"\n\
+mkdir -p \"$wrap_dir\"\n\
+if [[ -n \"$real_gcc\" ]]; then\n\
+  cat > \"$wrap_dir/gcc\" <<'EOF'\n\
+#!/usr/bin/env bash\n\
+real=\"__BIOCONDA2RPM_REAL_GCC__\"\n\
+if [[ \"${{1:-}}\" == \"-dumpversion\" ]]; then\n\
+  ver=\"$($real -dumpfullversion 2>/dev/null || $real -dumpversion 2>/dev/null || echo 9.0.0)\"\n\
+  major=\"$(printf '%s' \"$ver\" | cut -d. -f1)\"\n\
+  if [[ \"$major\" =~ ^[0-9]+$ ]] && (( major >= 10 )); then\n\
+    rest=\"${{ver#*.}}\"\n\
+    if [[ \"$rest\" == \"$ver\" ]]; then\n\
+      ver=\"9.0.0\"\n\
+    else\n\
+      ver=\"9.${{rest}}\"\n\
+    fi\n\
+  fi\n\
+  printf '%s\\n' \"$ver\"\n\
+  exit 0\n\
+fi\n\
+exec \"$real\" \"$@\"\n\
+EOF\n\
+  sed -i \"s|__BIOCONDA2RPM_REAL_GCC__|$real_gcc|g\" \"$wrap_dir/gcc\"\n\
+  chmod 0755 \"$wrap_dir/gcc\"\n\
+fi\n\
+if [[ -n \"$real_gxx\" ]]; then\n\
+  cat > \"$wrap_dir/g++\" <<'EOF'\n\
+#!/usr/bin/env bash\n\
+real=\"__BIOCONDA2RPM_REAL_GXX__\"\n\
+if [[ \"${{1:-}}\" == \"-dumpversion\" ]]; then\n\
+  ver=\"$($real -dumpfullversion 2>/dev/null || $real -dumpversion 2>/dev/null || echo 9.0.0)\"\n\
+  major=\"$(printf '%s' \"$ver\" | cut -d. -f1)\"\n\
+  if [[ \"$major\" =~ ^[0-9]+$ ]] && (( major >= 10 )); then\n\
+    rest=\"${{ver#*.}}\"\n\
+    if [[ \"$rest\" == \"$ver\" ]]; then\n\
+      ver=\"9.0.0\"\n\
+    else\n\
+      ver=\"9.${{rest}}\"\n\
+    fi\n\
+  fi\n\
+  printf '%s\\n' \"$ver\"\n\
+  exit 0\n\
+fi\n\
+exec \"$real\" \"$@\"\n\
+EOF\n\
+  sed -i \"s|__BIOCONDA2RPM_REAL_GXX__|$real_gxx|g\" \"$wrap_dir/g++\"\n\
+  chmod 0755 \"$wrap_dir/g++\"\n\
+fi\n\
+export PATH=\"$wrap_dir:$PATH\"\n\
+fi\n\
+\n\
 export CC=${{CC:-gcc}}\n\
 export CXX=${{CXX:-g++}}\n\
 export CFLAGS=\"${{CFLAGS:-}}\"\n\
 export CXXFLAGS=\"${{CXXFLAGS:-}}\"\n\
 export CPPFLAGS=\"${{CPPFLAGS:-}}\"\n\
 export LDFLAGS=\"${{LDFLAGS:-}}\"\n\
+export AR=\"${{AR:-ar}}\"\n\
+export PERL_MM_OPT=\"${{PERL_MM_OPT:+$PERL_MM_OPT }}INSTALL_BASE=$PREFIX\"\n\
+export PERL_MB_OPT=\"${{PERL_MB_OPT:+$PERL_MB_OPT }}--install_base $PREFIX\"\n\
+\n\
+# Make locally installed Phoreus Perl dependency trees visible during build.\n\
+if [[ -d /usr/local/phoreus ]]; then\n\
+while IFS= read -r -d '' perl_lib; do\n\
+  case \":${{PERL5LIB:-}}:\" in\n\
+    *\":$perl_lib:\"*) ;;\n\
+    *) export PERL5LIB=\"$perl_lib${{PERL5LIB:+:$PERL5LIB}}\" ;;\n\
+  esac\n\
+done < <(find /usr/local/phoreus -maxdepth 6 -type d -path '*/lib/perl5*' -print0 2>/dev/null)\n\
+fi\n\
+\n\
+# Ensure common install subdirectories exist for build.sh scripts that assume them.\n\
+mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\"\n\
+\n\
+# BLAST recipes in Bioconda assume a conda-style shared prefix where ncbi-vdb\n\
+# lives under the same PREFIX. In Phoreus, ncbi-vdb is a separate payload.\n\
+# Retarget the generated build.sh argument to the newest installed ncbi-vdb prefix.\n\
+if [[ \"%{{tool}}\" == \"blast\" ]]; then\n\
+vdb_prefix=$(find /usr/local/phoreus/ncbi-vdb -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1 || true)\n\
+if [[ -n \"$vdb_prefix\" ]]; then\n\
+  sed -i 's|--with-vdb=$PREFIX|--with-vdb='\\\"$vdb_prefix\\\"'|g' ./build.sh\n\
+fi\n\
+# BLAST's Bioconda script hard-codes n_workers=8 on aarch64, which has shown\n\
+# unstable flat-make behavior in containerized RPM builds. Respect CPU_COUNT\n\
+# instead so the orchestrator controls parallelism deterministically.\n\
+if [[ \"$(uname -m)\" == \"aarch64\" || \"$(uname -m)\" == \"arm64\" ]]; then\n\
+  export CPU_COUNT=\"${{BIOCONDA2RPM_BLAST_CPU_COUNT:-2}}\"\n\
+fi\n\
+sed -i 's|n_workers=8|n_workers=${{CPU_COUNT:-1}}|g' ./build.sh\n\
+fi\n\
+\n\
 bash ./build.sh\n\
 \n\
 # Some Bioconda build scripts emit absolute symlinks into %{{buildroot}}.\n\
@@ -1740,6 +1909,10 @@ while IFS= read -r -d '' link_path; do\n\
       ;;\n\
   esac\n\
 done < <(find %{{buildroot}}%{{phoreus_prefix}} -type l -print0 2>/dev/null)\n\
+\n\
+# Perl installs often emit perllocal.pod entries that embed buildroot paths.\n\
+# Drop those files to satisfy RPM check-buildroot validation.\n\
+find %{{buildroot}}%{{phoreus_prefix}} -type f -name perllocal.pod -delete 2>/dev/null || true\n\
 \n\
 mkdir -p %{{buildroot}}%{{phoreus_moddir}}\n\
 cat > %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua <<'LUAEOF'\n\
@@ -1763,6 +1936,8 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
 - Auto-generated from Bioconda metadata and build.sh\n",
         tool = software_slug,
         version = spec_escape(&parsed.version),
+        source_subdir = spec_escape(&source_subdir),
+        source_relsubdir = spec_escape(&source_relsubdir),
         summary = summary,
         license = license,
         homepage = homepage,
@@ -1847,12 +2022,12 @@ fn render_patch_source_lines(staged_patch_sources: &[String]) -> String {
     }
 }
 
-fn render_patch_apply_lines(staged_patch_sources: &[String]) -> String {
+fn render_patch_apply_lines(staged_patch_sources: &[String], source_dir: &str) -> String {
     if staged_patch_sources.is_empty() {
         String::new()
     } else {
         let mut out = String::new();
-        out.push_str("cd buildsrc\n");
+        out.push_str(&format!("cd {source_dir}\n"));
         for (idx, _) in staged_patch_sources.iter().enumerate() {
             out.push_str(&format!(
                 "(patch -p1 -i %{{SOURCE{}}} || patch -p0 -i %{{SOURCE{}}})\n",
@@ -1961,21 +2136,54 @@ fn rpm_changelog_date() -> String {
 }
 
 fn map_build_dependency(dep: &str) -> String {
+    if let Some(mapped) = map_perl_core_dependency(dep) {
+        return mapped;
+    }
     match dep {
         "boost-cpp" => "boost-devel".to_string(),
         "python" => "python3".to_string(),
         "setuptools" => "python3-setuptools".to_string(),
+        "go-compiler" => "golang".to_string(),
         other => other.to_string(),
     }
 }
 
 fn map_runtime_dependency(dep: &str) -> String {
+    if let Some(mapped) = map_perl_core_dependency(dep) {
+        return mapped;
+    }
     match dep {
         "boost-cpp" => "boost".to_string(),
         "python" => "python3".to_string(),
         "setuptools" => "python3-setuptools".to_string(),
         other => other.to_string(),
     }
+}
+
+fn map_perl_core_dependency(dep: &str) -> Option<String> {
+    let mapped = match dep {
+        "perl-extutils-makemaker" => "perl-ExtUtils-MakeMaker",
+        "perl-compress-raw-bzip2" => "perl-Compress-Raw-Bzip2",
+        "perl-compress-raw-zlib" => "perl-Compress-Raw-Zlib",
+        "perl-scalar-list-utils" => "perl-Scalar-List-Utils",
+        "perl-carp" => "perl-Carp",
+        "perl-exporter" => "perl-Exporter",
+        "perl-file-path" => "perl-File-Path",
+        "perl-file-temp" => "perl-File-Temp",
+        "perl-module-build" => "perl-Module-Build",
+        "perl-pathtools" => "perl-PathTools",
+        "perl-test-harness" => "perl-Test-Harness",
+        "perl-test-simple" => "perl-Test-Simple",
+        "perl-module-load" => "perl-Module-Load",
+        "perl-params-check" => "perl-Params-Check",
+        "perl-test-more" => "perl-Test-Simple",
+        "perl-storable" => "perl-Storable",
+        "perl-encode" => "perl-Encode",
+        "perl-exporter-tiny" => "perl-Exporter-Tiny",
+        "perl-test-leaktrace" => "perl-Test-LeakTrace",
+        _ => return None,
+    };
+    Some(mapped.to_string())
 }
 
 fn payload_version_state(
@@ -2624,6 +2832,7 @@ requirements:
             package_name: "blast".to_string(),
             version: "2.5.0".to_string(),
             source_url: "http://example.invalid/src.tar.gz".to_string(),
+            source_folder: String::new(),
             homepage: "http://example.invalid".to_string(),
             license: "Public-Domain".to_string(),
             summary: "blast".to_string(),
@@ -2663,6 +2872,31 @@ requirements:
 
         let picked = select_recipe_variant_dir(&recipe).expect("select variant");
         assert!(picked.ends_with("2.5.0"));
+    }
+
+    #[test]
+    fn variant_selection_prefers_newer_root_meta_version() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let recipe = tmp.path().join("blast");
+        fs::create_dir_all(recipe.join("2.5.0")).expect("create dir");
+        fs::write(
+            recipe.join("meta.yaml"),
+            r#"
+{% set version = "2.17.0" %}
+package:
+  name: blast
+  version: {{ version }}
+"#,
+        )
+        .expect("write root meta");
+        fs::write(
+            recipe.join("2.5.0/meta.yaml"),
+            "package: {name: blast, version: 2.5.0}",
+        )
+        .expect("write subdir meta");
+
+        let picked = select_recipe_variant_dir(&recipe).expect("select variant");
+        assert_eq!(picked, recipe);
     }
 
     #[test]
