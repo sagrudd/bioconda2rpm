@@ -2342,7 +2342,8 @@ export BIOCONDA_TARGET_ARCH=aarch64\n\
 %else\n\
 export BIOCONDA_TARGET_ARCH=x86_64\n\
 %endif\n\
-export CPU_COUNT=%{{?_smp_build_ncpus}}\n\
+export CPU_COUNT=1\n\
+export MAKEFLAGS=-j1\n\
 \n\
 %install\n\
 rm -rf %{{buildroot}}\n\
@@ -2350,7 +2351,10 @@ mkdir -p %{{buildroot}}%{{phoreus_prefix}}\n\
 cd buildsrc\n\
 export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
 export SRC_DIR=${{SRC_DIR:-$(pwd)/%{{bioconda_source_relsubdir}}}}\n\
-export CPU_COUNT=%{{?_smp_build_ncpus}}\n\
+export CPU_COUNT=1\n\
+export MAKEFLAGS=-j1\n\
+export CMAKE_BUILD_PARALLEL_LEVEL=1\n\
+export NINJAFLAGS=-j1\n\
 \n\
 # Compatibility shim for the legacy BLAST 2.5.0 configure parser.\n\
 # Its NCBI configure script cannot parse modern two-digit GCC majors.\n\
@@ -2457,19 +2461,15 @@ if [[ -n \"$vdb_prefix\" ]]; then\n\
   sed -i 's|--with-vdb=$PREFIX|--with-vdb='\\\"$vdb_prefix\\\"'|g' ./build.sh\n\
 fi\n\
 # BLAST's Bioconda script hard-codes n_workers=8 on aarch64, which has shown\n\
-# unstable flat-make behavior in containerized RPM builds. Respect CPU_COUNT\n\
-# instead so the orchestrator controls parallelism deterministically.\n\
-if [[ \"$(uname -m)\" == \"aarch64\" || \"$(uname -m)\" == \"arm64\" ]]; then\n\
-  export CPU_COUNT=\"${{BIOCONDA2RPM_BLAST_CPU_COUNT:-2}}\"\n\
-fi\n\
+# unstable flat-make behavior in containerized RPM builds. Enforce single-core\n\
+# policy so the orchestrator remains deterministic across all architectures.\n\
+export CPU_COUNT=1\n\
 sed -i 's|n_workers=8|n_workers=${{CPU_COUNT:-1}}|g' ./build.sh\n\
 fi\n\
 \n\
-# A number of upstream scripts hardcode aggressive THREADS values on aarch64;\n\
-# cap known THREADS assignments to improve deterministic container builds.\n\
-if [[ \"$(uname -m)\" == \"aarch64\" || \"$(uname -m)\" == \"arm64\" ]]; then\n\
-  sed -i -E 's/THREADS=\"-j[0-9]+\"/THREADS=\"-j1\"/g' ./build.sh || true\n\
-fi\n\
+# A number of upstream scripts hardcode aggressive THREADS values;\n\
+# force single-core policy for deterministic container builds.\n\
+sed -i -E 's/THREADS=\"-j[0-9]+\"/THREADS=\"-j1\"/g' ./build.sh || true\n\
 \n\
 # Capture a pristine buildsrc snapshot so serial retries run from a clean tree,\n\
 # not from a partially mutated/failed first attempt.\n\
@@ -3139,6 +3139,7 @@ if ! command -v spectool >/dev/null 2>&1; then\n\
   else echo 'spectool unavailable and rpmdevtools cannot be installed' >&2; exit 3; fi\n\
 fi\n\
 touch /work/.build-start-{label}.ts\n\
+rpm_single_core_flags=(--define '_smp_mflags -j1' --define '_smp_build_ncpus 1')\n\
 spectool_ok=0\n\
 for attempt in 1 2 3; do\n\
   if spectool -g -R --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}'; then\n\
@@ -3153,7 +3154,7 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
 fi\n\
 find /work/SPECS -type f -name '*.spec' -exec chmod 0644 {{}} + || true\n\
 find /work/SOURCES -type f -exec chmod 0644 {{}} + || true\n\
-rpmbuild -bs --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}'\n\
+rpmbuild -bs --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' \"${{rpm_single_core_flags[@]}}\" '{spec}'\n\
 srpm_path=$(find \"$build_root/SRPMS\" -type f -name '*.src.rpm' | sort | tail -n 1)\n\
 if [[ -z \"${{srpm_path}}\" ]]; then\n\
   echo 'no SRPM produced from spec build step' >&2\n\
@@ -3190,7 +3191,7 @@ while IFS= read -r -d '' rpmf; do\n\
   done < <(rpm -qp --provides \"$rpmf\" 2>/dev/null || true)\n\
 done < <(find /work/RPMS -type f -name '*.rpm' -print0 2>/dev/null)\n\
 \n\
-mapfile -t build_requires < <(rpmspec -q --buildrequires --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}' | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
+mapfile -t build_requires < <(rpmspec -q --buildrequires --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' --define '_smp_build_ncpus 1' '{spec}' | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
 dep_log=\"/tmp/bioconda2rpm-dep-{label}.log\"\n\
 for dep in \"${{build_requires[@]}}\"; do\n\
   if rpm -q --whatprovides \"$dep\" >/dev/null 2>&1; then\n\
@@ -3225,7 +3226,7 @@ for dep in \"${{build_requires[@]}}\"; do\n\
   fi\n\
 done\n\
 \n\
-rpmbuild --rebuild --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' \"${{srpm_path}}\"\n\
+rpmbuild --rebuild --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' \"${{rpm_single_core_flags[@]}}\" \"${{srpm_path}}\"\n\
 find \"$build_root/SRPMS\" -type f -name '*.src.rpm' -exec cp -f {{}} /work/SRPMS/ \\;\n\
 while IFS= read -r rpmf; do\n\
   rel=\"${{rpmf#$build_root/RPMS/}}\"\n\
@@ -3673,6 +3674,8 @@ requirements:
         assert!(spec.contains("patch -p1 -i %{SOURCE2}"));
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(spec.contains("retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\""));
+        assert!(spec.contains("export CPU_COUNT=1"));
+        assert!(spec.contains("export MAKEFLAGS=-j1"));
     }
 
     #[test]
