@@ -37,3 +37,6 @@
 
 ### Q7 - Version selection in versioned recipe subdirectories
 - When versioned subdirectories are present, always select the highest versioned subdirectory.
+
+### Q8 - Missing/unresolvable dependency behavior
+- Default behavior: quarantine unresolved packages and continue building the resolvable subset.
