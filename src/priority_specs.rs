@@ -2471,6 +2471,12 @@ if [[ \"$(uname -m)\" == \"aarch64\" || \"$(uname -m)\" == \"arm64\" ]]; then\n\
   sed -i -E 's/THREADS=\"-j[0-9]+\"/THREADS=\"-j1\"/g' ./build.sh || true\n\
 fi\n\
 \n\
+# Capture a pristine buildsrc snapshot so serial retries run from a clean tree,\n\
+# not from a partially mutated/failed first attempt.\n\
+retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\"\n\
+rm -f \"$retry_snapshot\"\n\
+tar --exclude='.bioconda2rpm-retry-snapshot.tar' -cf \"$retry_snapshot\" .\n\
+\n\
 # Canonical fallback for flaky parallel builds: retry once serially.\n\
 # Enforce fail-fast shell behavior for staged recipe scripts so downstream\n\
 # commands do not mask the primary failure reason.\n\
@@ -2481,8 +2487,11 @@ if ! bash -eo pipefail ./build.sh; then\n\
   export BIOCONDA2RPM_RETRIED_SERIAL=1\n\
   export CPU_COUNT=1\n\
   export MAKEFLAGS=-j1\n\
+  find . -mindepth 1 -maxdepth 1 ! -name \"$(basename \"$retry_snapshot\")\" -exec rm -rf {{}} +\n\
+  tar -xf \"$retry_snapshot\"\n\
   bash -eo pipefail ./build.sh\n\
 fi\n\
+rm -f \"$retry_snapshot\"\n\
 \n\
 # Some Bioconda build scripts emit absolute symlinks into %{{buildroot}}.\n\
 # Rewrite those targets so RPM payload validation does not see buildroot leaks.\n\
@@ -3663,6 +3672,7 @@ requirements:
         assert!(spec.contains("Source2:"));
         assert!(spec.contains("patch -p1 -i %{SOURCE2}"));
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
+        assert!(spec.contains("retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\""));
     }
 
     #[test]
