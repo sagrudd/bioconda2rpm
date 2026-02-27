@@ -662,6 +662,13 @@ fn visit_build_plan_node(
                 ));
                 continue;
             }
+            if is_conda_only_dependency(&dep) {
+                log_progress(format!(
+                    "phase=dependency action=skip from={} to={} reason=conda-helper-not-rpm",
+                    canonical, dep
+                ));
+                continue;
+            }
             if is_rust_ecosystem_dependency_name(&dep) {
                 log_progress(format!(
                     "phase=dependency action=skip from={} to={} reason=rust-runtime-provided",
@@ -716,7 +723,9 @@ fn visit_build_plan_node(
 }
 
 fn is_buildable_recipe(resolved: &ResolvedRecipe, parsed: &ParsedMeta) -> bool {
-    (resolved.build_sh_path.is_some() || parsed.build_script.is_some())
+    (resolved.build_sh_path.is_some()
+        || parsed.build_script.is_some()
+        || synthesize_fallback_build_sh(parsed).is_some())
         && !parsed.source_url.trim().is_empty()
 }
 
@@ -729,7 +738,12 @@ fn selected_dependency_set(
     // Their runtime requirements are sufficient for dependency planning.
     let package_slug = normalize_name(&parsed.package_name);
     if precompiled_binary_override(&package_slug, parsed).is_some() {
-        return parsed.run_deps.clone();
+        return parsed
+            .run_deps
+            .iter()
+            .filter(|dep| !is_conda_only_dependency(dep))
+            .cloned()
+            .collect();
     }
 
     if is_python_recipe(parsed) {
@@ -738,6 +752,7 @@ fn selected_dependency_set(
             parsed
                 .build_deps
                 .iter()
+                .filter(|dep| !is_conda_only_dependency(dep))
                 .filter(|dep| should_keep_rpm_dependency_for_python(dep))
                 .cloned(),
         );
@@ -745,6 +760,7 @@ fn selected_dependency_set(
             parsed
                 .host_deps
                 .iter()
+                .filter(|dep| !is_conda_only_dependency(dep))
                 .filter(|dep| should_keep_rpm_dependency_for_python(dep))
                 .cloned(),
         );
@@ -752,6 +768,7 @@ fn selected_dependency_set(
             parsed
                 .run_deps
                 .iter()
+                .filter(|dep| !is_conda_only_dependency(dep))
                 .filter(|dep| should_keep_rpm_dependency_for_python(dep))
                 .cloned(),
         );
@@ -759,23 +776,69 @@ fn selected_dependency_set(
     }
 
     match policy {
-        DependencyPolicy::RunOnly => parsed.run_deps.clone(),
+        DependencyPolicy::RunOnly => parsed
+            .run_deps
+            .iter()
+            .filter(|dep| !is_conda_only_dependency(dep))
+            .cloned()
+            .collect(),
         DependencyPolicy::BuildHostRun => {
             let mut out = BTreeSet::new();
-            out.extend(parsed.build_deps.iter().cloned());
-            out.extend(parsed.host_deps.iter().cloned());
-            out.extend(parsed.run_deps.iter().cloned());
+            out.extend(
+                parsed
+                    .build_deps
+                    .iter()
+                    .filter(|dep| !is_conda_only_dependency(dep))
+                    .cloned(),
+            );
+            out.extend(
+                parsed
+                    .host_deps
+                    .iter()
+                    .filter(|dep| !is_conda_only_dependency(dep))
+                    .cloned(),
+            );
+            out.extend(
+                parsed
+                    .run_deps
+                    .iter()
+                    .filter(|dep| !is_conda_only_dependency(dep))
+                    .cloned(),
+            );
             out
         }
         DependencyPolicy::RuntimeTransitiveRootBuildHost => {
             if is_root {
                 let mut out = BTreeSet::new();
-                out.extend(parsed.build_deps.iter().cloned());
-                out.extend(parsed.host_deps.iter().cloned());
-                out.extend(parsed.run_deps.iter().cloned());
+                out.extend(
+                    parsed
+                        .build_deps
+                        .iter()
+                        .filter(|dep| !is_conda_only_dependency(dep))
+                        .cloned(),
+                );
+                out.extend(
+                    parsed
+                        .host_deps
+                        .iter()
+                        .filter(|dep| !is_conda_only_dependency(dep))
+                        .cloned(),
+                );
+                out.extend(
+                    parsed
+                        .run_deps
+                        .iter()
+                        .filter(|dep| !is_conda_only_dependency(dep))
+                        .cloned(),
+                );
                 out
             } else {
-                parsed.run_deps.clone()
+                parsed
+                    .run_deps
+                    .iter()
+                    .filter(|dep| !is_conda_only_dependency(dep))
+                    .cloned()
+                    .collect()
             }
         }
     }
@@ -1085,6 +1148,28 @@ fn process_tool(
         if let Err(err) = fs::write(&staged_build_sh, generated) {
             let reason = format!(
                 "failed to synthesize build.sh from meta.yaml build.script for {}: {err}",
+                resolved.meta_path.display()
+            );
+            quarantine_note(bad_spec_dir, &software_slug, &reason);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "quarantined".to_string(),
+                reason,
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: String::new(),
+            };
+        }
+    } else if let Some(generated) = synthesize_fallback_build_sh(&parsed) {
+        if let Err(err) = fs::write(&staged_build_sh, generated) {
+            let reason = format!(
+                "failed to synthesize default build.sh for {}: {err}",
                 resolved.meta_path.display()
             );
             quarantine_note(bad_spec_dir, &software_slug, &reason);
@@ -1555,6 +1640,10 @@ fn resolve_recipe_for_tool_mode(
         return build_resolved(recipe, "plus-normalization-match");
     }
 
+    if let Some(recipe) = select_fallback_recipe(&lower, recipe_dirs) {
+        return build_resolved(recipe, "fallback-directory-match");
+    }
+
     if allow_identifier_lookup {
         let key = normalize_identifier_key(&lower);
         if let Some(recipe) = find_recipe_by_identifier(recipe_root, &key)? {
@@ -1563,6 +1652,35 @@ fn resolve_recipe_for_tool_mode(
     }
 
     Ok(None)
+}
+
+fn select_fallback_recipe<'a>(
+    tool_lower: &str,
+    recipe_dirs: &'a [RecipeDir],
+) -> Option<&'a RecipeDir> {
+    // Prefer explicit package namespaces when users request a base tool name.
+    let direct_prefix = format!("{tool_lower}-");
+    let direct_matches: Vec<&RecipeDir> = recipe_dirs
+        .iter()
+        .filter(|r| r.name.to_lowercase().starts_with(&direct_prefix))
+        .collect();
+    if direct_matches.len() == 1 {
+        return direct_matches.first().copied();
+    }
+
+    for candidate in [
+        format!("r-{tool_lower}"),
+        format!("bioconductor-{tool_lower}"),
+    ] {
+        if let Some(recipe) = recipe_dirs
+            .iter()
+            .find(|r| r.name.eq_ignore_ascii_case(&candidate))
+        {
+            return Some(recipe);
+        }
+    }
+
+    None
 }
 
 fn build_resolved(recipe: &RecipeDir, overlap_reason: &str) -> Result<Option<ResolvedRecipe>> {
@@ -2151,12 +2269,12 @@ fn recipe_requires_r_runtime(parsed: &ParsedMeta) -> bool {
 }
 
 fn is_r_base_dependency_name(dep: &str) -> bool {
-    let normalized = dep.trim().replace('_', "-").to_lowercase();
+    let normalized = normalize_dependency_token(dep);
     matches!(normalized.as_str(), "r" | "r-base" | "r-essentials")
 }
 
 fn is_cran_r_dependency_name(dep: &str) -> bool {
-    let normalized = dep.trim().replace('_', "-").to_lowercase();
+    let normalized = normalize_dependency_token(dep);
     normalized.starts_with("r-") && !is_r_base_dependency_name(&normalized)
 }
 
@@ -2169,7 +2287,7 @@ fn build_r_cran_requirements(parsed: &ParsedMeta) -> Vec<String> {
         .chain(parsed.run_deps.iter())
     {
         if is_cran_r_dependency_name(dep) {
-            let normalized = dep.trim().replace('_', "-").to_lowercase();
+            let normalized = normalize_dependency_token(dep);
             if let Some(pkg) = normalized.strip_prefix("r-")
                 && !pkg.is_empty()
             {
@@ -2699,7 +2817,7 @@ fn normalize_dependency_name(raw: &str) -> Option<String> {
         return None;
     }
 
-    let normalized = token.replace('_', "-").to_lowercase();
+    let normalized = normalize_dependency_token(token);
     if is_phoreus_python_toolchain_dependency(&normalized) {
         return Some(PHOREUS_PYTHON_PACKAGE.to_string());
     }
@@ -2767,11 +2885,8 @@ fn render_payload_spec(
         Vec::new()
     };
     let python_venv_setup = render_python_venv_setup_block(python_recipe, &python_requirements);
-    let r_runtime_setup = render_r_runtime_setup_block(
-        r_runtime_required,
-        r_project_recipe,
-        &r_cran_requirements,
-    );
+    let r_runtime_setup =
+        render_r_runtime_setup_block(r_runtime_required, r_project_recipe, &r_cran_requirements);
     let rust_runtime_setup = render_rust_runtime_setup_block(rust_runtime_required);
     let nim_runtime_setup = render_nim_runtime_setup_block(nim_runtime_required);
     let module_lua_env = render_module_lua_env_block(
@@ -2794,6 +2909,17 @@ fn render_payload_spec(
     }
     if r_runtime_required {
         build_requires.insert(PHOREUS_R_PACKAGE.to_string());
+        // Common native stack required by many CRAN/Bioconductor graphics/text packages
+        // (for example systemfonts/textshaping/ragg/ggrastr).
+        build_requires.insert("cairo-devel".to_string());
+        build_requires.insert("fontconfig-devel".to_string());
+        build_requires.insert("freetype-devel".to_string());
+        build_requires.insert("fribidi-devel".to_string());
+        build_requires.insert("harfbuzz-devel".to_string());
+        build_requires.insert("libjpeg-turbo-devel".to_string());
+        build_requires.insert("libpng-devel".to_string());
+        build_requires.insert("libtiff-devel".to_string());
+        build_requires.insert("libwebp-devel".to_string());
     }
     if rust_runtime_required {
         build_requires.insert(PHOREUS_RUST_PACKAGE.to_string());
@@ -2806,6 +2932,7 @@ fn render_payload_spec(
         parsed
             .build_deps
             .iter()
+            .filter(|dep| !is_conda_only_dependency(dep))
             .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
             .map(|d| map_build_dependency(d)),
     );
@@ -2813,11 +2940,18 @@ fn render_payload_spec(
         parsed
             .host_deps
             .iter()
+            .filter(|dep| !is_conda_only_dependency(dep))
             .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
             .map(|d| map_build_dependency(d)),
     );
     if !python_recipe {
-        build_requires.extend(parsed.run_deps.iter().map(|d| map_build_dependency(d)));
+        build_requires.extend(
+            parsed
+                .run_deps
+                .iter()
+                .filter(|dep| !is_conda_only_dependency(dep))
+                .map(|d| map_build_dependency(d)),
+        );
     }
 
     let mut runtime_requires = BTreeSet::new();
@@ -2831,6 +2965,7 @@ fn render_payload_spec(
             parsed
                 .run_deps
                 .iter()
+                .filter(|dep| !is_conda_only_dependency(dep))
                 .filter(|dep| should_keep_rpm_dependency_for_python(dep))
                 .map(|d| map_runtime_dependency(d)),
         );
@@ -2838,7 +2973,13 @@ fn render_payload_spec(
         if r_runtime_required {
             runtime_requires.insert(PHOREUS_R_PACKAGE.to_string());
         }
-        runtime_requires.extend(parsed.run_deps.iter().map(|d| map_runtime_dependency(d)));
+        runtime_requires.extend(
+            parsed
+                .run_deps
+                .iter()
+                .filter(|dep| !is_conda_only_dependency(dep))
+                .map(|d| map_runtime_dependency(d)),
+        );
     }
 
     let build_requires_lines = format_dep_lines("BuildRequires", &build_requires);
@@ -3233,6 +3374,23 @@ mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\"\n\
     )
 }
 
+fn synthesize_fallback_build_sh(parsed: &ParsedMeta) -> Option<String> {
+    let package = normalize_name(&parsed.package_name);
+    if package == "r"
+        || package == "r-base"
+        || package.starts_with("r-")
+        || package.starts_with("bioconductor-")
+    {
+        return Some(
+            "#!/usr/bin/env bash\n\
+set -euxo pipefail\n\
+\"$R\" CMD INSTALL --build .\n"
+                .to_string(),
+        );
+    }
+    None
+}
+
 fn source_archive_is_zip(source_url: &str) -> bool {
     let lowered = source_url.trim().to_ascii_lowercase();
     let trimmed = lowered
@@ -3338,22 +3496,69 @@ fn render_r_runtime_setup_block(
         return String::new();
     }
 
-    let cran_restore = if cran_requirements.is_empty() {
-        String::new()
+    let requested_pkgs = if cran_requirements.is_empty() {
+        "character()".to_string()
     } else {
         let pkgs = cran_requirements
             .iter()
             .map(|pkg| format!("\"{pkg}\""))
             .collect::<Vec<_>>()
             .join(", ");
-        format!(
-            "\"$RSCRIPT\" -e 'options(repos = c(CRAN = \"https://cloud.r-project.org\")); \
-pkgs <- c({pkgs}); lib <- Sys.getenv(\"R_LIBS_USER\"); \
-inst <- rownames(installed.packages(lib.loc = lib)); \
-missing <- setdiff(pkgs, inst); \
-if (length(missing) > 0) install.packages(missing, lib = lib)'\n"
-        )
+        format!("c({pkgs})")
     };
+    let cran_restore = format!(
+        "cat > ./.bioconda2rpm-r-deps.R <<'REOF'\n\
+base_pkgs <- c(\"R\", \"base\", \"stats\", \"utils\", \"methods\", \"graphics\", \"grDevices\", \"datasets\", \"tools\", \"grid\", \"compiler\", \"parallel\", \"splines\", \"tcltk\")\n\
+req <- unique({requested_pkgs})\n\
+desc_candidates <- c(\"DESCRIPTION\", file.path(Sys.getenv(\"SRC_DIR\", \".\"), \"DESCRIPTION\"))\n\
+desc_path <- desc_candidates[file.exists(desc_candidates)][1]\n\
+if (!is.na(desc_path) && nzchar(desc_path)) {{\n\
+  d <- tryCatch(read.dcf(desc_path), error = function(e) NULL)\n\
+  if (!is.null(d) && nrow(d) > 0) {{\n\
+    fields <- intersect(c(\"Depends\", \"Imports\", \"LinkingTo\"), colnames(d))\n\
+    for (f in fields) {{\n\
+      raw <- d[1, f]\n\
+      if (is.na(raw) || !nzchar(raw)) next\n\
+      pieces <- unlist(strsplit(raw, \",\", fixed = TRUE), use.names = FALSE)\n\
+      pieces <- trimws(gsub(\"\\\\s*\\\\([^)]*\\\\)\", \"\", pieces))\n\
+      pieces <- pieces[nzchar(pieces)]\n\
+      req <- unique(c(req, pieces))\n\
+    }}\n\
+  }}\n\
+}}\n\
+req <- setdiff(req[nzchar(req)], base_pkgs)\n\
+if (!length(req)) quit(save = \"no\", status = 0)\n\
+lib <- Sys.getenv(\"R_LIBS_USER\")\n\
+if (!nzchar(lib)) lib <- .libPaths()[1]\n\
+if (!dir.exists(lib)) dir.create(lib, recursive = TRUE, showWarnings = FALSE)\n\
+if (!requireNamespace(\"BiocManager\", quietly = TRUE)) {{\n\
+  install.packages(\"BiocManager\", repos = \"https://cloud.r-project.org\", lib = lib)\n\
+}}\n\
+repos <- tryCatch(BiocManager::repositories(), error = function(e) c(CRAN = \"https://cloud.r-project.org\"))\n\
+avail <- tryCatch(rownames(available.packages(repos = repos)), error = function(e) character())\n\
+resolve_case <- function(pkg) {{\n\
+  if (!length(avail)) return(pkg)\n\
+  if (pkg %in% avail) return(pkg)\n\
+  hit <- avail[tolower(avail) == tolower(pkg)]\n\
+  if (length(hit)) return(hit[[1]])\n\
+  pkg\n\
+}}\n\
+resolved <- unique(vapply(req, resolve_case, character(1)))\n\
+installed <- rownames(installed.packages(lib.loc = unique(c(.libPaths(), lib))))\n\
+missing <- setdiff(resolved, installed)\n\
+if (length(missing)) {{\n\
+  BiocManager::install(missing, ask = FALSE, update = FALSE, lib = lib, Ncpus = 1)\n\
+}}\n\
+installed_after <- rownames(installed.packages(lib.loc = unique(c(.libPaths(), lib))))\n\
+still_missing <- setdiff(resolved, installed_after)\n\
+if (length(still_missing)) {{\n\
+  message(\"bioconda2rpm unresolved R deps after restore (continuing): \", paste(still_missing, collapse = \",\"))\n\
+}}\n\
+REOF\n\
+\"$RSCRIPT\" ./.bioconda2rpm-r-deps.R\n\
+rm -f ./.bioconda2rpm-r-deps.R\n",
+        requested_pkgs = requested_pkgs
+    );
 
     let renv_restore = if r_project_recipe {
         "if [[ -f \"renv.lock\" ]]; then\n\
@@ -3375,6 +3580,7 @@ fi\n\
 export PATH=\"$PHOREUS_R_PREFIX/bin:$PATH\"\n\
 export R=\"$PHOREUS_R_PREFIX/bin/R\"\n\
 export RSCRIPT=\"$PHOREUS_R_PREFIX/bin/Rscript\"\n\
+export R_ARGS=\"${{R_ARGS:-}}\"\n\
 export LD_LIBRARY_PATH=\"$PHOREUS_R_PREFIX/lib64:$PHOREUS_R_PREFIX/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n\
 export R_HOME=\"$PHOREUS_R_PREFIX/lib64/R\"\n\
 export R_LIBS_USER=\"$PREFIX/R/library\"\n\
@@ -3704,6 +3910,13 @@ fn normalize_name(name: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
+fn normalize_dependency_token(dep: &str) -> String {
+    dep.trim()
+        .replace('_', "-")
+        .replace('.', "-")
+        .to_lowercase()
+}
+
 fn normalize_identifier_key(name: &str) -> String {
     normalize_name(name).replace("-plus", "")
 }
@@ -3720,7 +3933,7 @@ fn map_build_dependency(dep: &str) -> String {
         if is_r_base_dependency_name(dep) {
             return PHOREUS_R_PACKAGE.to_string();
         }
-        let normalized = dep.trim().replace('_', "-").to_lowercase();
+        let normalized = normalize_dependency_token(dep);
         if normalized.starts_with("bioconductor-") {
             return normalized;
         }
@@ -3749,6 +3962,7 @@ fn map_build_dependency(dep: &str) -> String {
         "cereal" => "cereal-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
+        "mscorefonts" => "dejavu-sans-fonts".to_string(),
         "go-compiler" => "golang".to_string(),
         "gnuconfig" => "automake".to_string(),
         "isa-l" => "isa-l-devel".to_string(),
@@ -3777,7 +3991,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         if is_r_base_dependency_name(dep) {
             return PHOREUS_R_PACKAGE.to_string();
         }
-        let normalized = dep.trim().replace('_', "-").to_lowercase();
+        let normalized = normalize_dependency_token(dep);
         if normalized.starts_with("bioconductor-") {
             return normalized;
         }
@@ -3803,6 +4017,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "cereal" => "cereal-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
+        "mscorefonts" => "dejavu-sans-fonts".to_string(),
         "gnuconfig" => "automake".to_string(),
         "libblas" => "openblas".to_string(),
         "libiconv" => "glibc".to_string(),
@@ -3814,7 +4029,7 @@ fn map_runtime_dependency(dep: &str) -> String {
 }
 
 fn is_phoreus_python_toolchain_dependency(dep: &str) -> bool {
-    let normalized = dep.trim().replace('_', "-").to_lowercase();
+    let normalized = normalize_dependency_token(dep);
     matches!(
         normalized.as_str(),
         "python"
@@ -3829,8 +4044,13 @@ fn is_phoreus_python_toolchain_dependency(dep: &str) -> bool {
     )
 }
 
+fn is_conda_only_dependency(dep: &str) -> bool {
+    let normalized = normalize_dependency_token(dep);
+    matches!(normalized.as_str(), "bioconductor-data-packages")
+}
+
 fn is_r_ecosystem_dependency_name(dep: &str) -> bool {
-    let normalized = dep.trim().replace('_', "-").to_lowercase();
+    let normalized = normalize_dependency_token(dep);
     normalized == "r"
         || normalized == "r-base"
         || normalized == "r-essentials"
@@ -3840,7 +4060,7 @@ fn is_r_ecosystem_dependency_name(dep: &str) -> bool {
 }
 
 fn is_rust_ecosystem_dependency_name(dep: &str) -> bool {
-    let normalized = dep.trim().replace('_', "-").to_lowercase();
+    let normalized = normalize_dependency_token(dep);
     normalized == "rust"
         || normalized == "rustc"
         || normalized == "cargo"
@@ -3851,7 +4071,7 @@ fn is_rust_ecosystem_dependency_name(dep: &str) -> bool {
 }
 
 fn is_nim_ecosystem_dependency_name(dep: &str) -> bool {
-    let normalized = dep.trim().replace('_', "-").to_lowercase();
+    let normalized = normalize_dependency_token(dep);
     normalized == "nim"
         || normalized == "nimble"
         || normalized.starts_with("nim-")
@@ -4575,6 +4795,61 @@ while IFS= read -r -d '' rpmf; do\n\
   done < <(rpm -qp --provides \"$rpmf\" 2>/dev/null || true)\n\
 done < <(find /work/RPMS -type f -name '*.rpm' -print0 2>/dev/null)\n\
 \n\
+declare -A local_installed\n\
+install_local_with_hydration() {{\n\
+  local req_key=\"$1\"\n\
+  local local_rpm=\"${{local_candidates[$req_key]:-}}\"\n\
+  if [[ -z \"$local_rpm\" ]]; then\n\
+    return 1\n\
+  fi\n\
+  local queue=(\"$local_rpm\")\n\
+  while [[ \"${{#queue[@]}}\" -gt 0 ]]; do\n\
+    local rpmf=\"${{queue[0]}}\"\n\
+    queue=(\"${{queue[@]:1}}\")\n\
+    if [[ -z \"$rpmf\" || -n \"${{local_installed[$rpmf]:-}}\" ]]; then\n\
+      continue\n\
+    fi\n\
+    if ! rpm -Uvh --nodeps --force \"$rpmf\" >>\"$dep_log\" 2>&1; then\n\
+      return 1\n\
+    fi\n\
+    local_installed[\"$rpmf\"]=1\n\
+    mapfile -t local_requires < <(rpm -qpR \"$rpmf\" 2>/dev/null | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
+    for req in \"${{local_requires[@]}}\"; do\n\
+      case \"$req\" in\n\
+        \"\"|rpmlib*|rtld*|ld-linux*|phoreus)\n\
+          continue\n\
+          ;;\n\
+      esac\n\
+      candidate=\"$req\"\n\
+      if [[ \"$candidate\" == *\"(\"* || \"$candidate\" == *\")\"* || \"$candidate\" == *\":\"* ]]; then\n\
+        if [[ \"$candidate\" == lib*.so* ]]; then\n\
+          candidate=\"${{candidate%%.so*}}\"\n\
+        else\n\
+          continue\n\
+        fi\n\
+      fi\n\
+      if [[ \"$candidate\" == /* ]]; then\n\
+        continue\n\
+      fi\n\
+      if rpm -q --whatprovides \"$req\" >/dev/null 2>&1 || rpm -q --whatprovides \"$candidate\" >/dev/null 2>&1; then\n\
+        continue\n\
+      fi\n\
+      nested_local_rpm=\"${{local_candidates[$req]:-}}\"\n\
+      if [[ -z \"$nested_local_rpm\" ]]; then\n\
+        nested_local_rpm=\"${{local_candidates[$candidate]:-}}\"\n\
+      fi\n\
+      if [[ -n \"$nested_local_rpm\" ]]; then\n\
+        if [[ -z \"${{local_installed[$nested_local_rpm]:-}}\" ]]; then\n\
+          queue+=(\"$nested_local_rpm\")\n\
+        fi\n\
+        continue\n\
+      fi\n\
+      pm_install \"$candidate\" >>\"$dep_log\" 2>&1 || true\n\
+    done\n\
+  done\n\
+  return 0\n\
+}}\n\
+\n\
 mapfile -t build_requires < <(rpmspec -q --buildrequires --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' --define '_smp_build_ncpus 1' '{spec}' | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
 dep_log=\"/tmp/bioconda2rpm-dep-{label}.log\"\n\
 for dep in \"${{build_requires[@]}}\"; do\n\
@@ -4592,33 +4867,10 @@ for dep in \"${{build_requires[@]}}\"; do\n\
         emit_depgraph \"$dep\" 'resolved' 'local_rpm' \"$provider\" \"installed_from_$(basename \"$local_rpm\")\"\n\
         continue\n\
       fi\n\
-    elif rpm -Uvh --nodeps --force \"$local_rpm\" >\"$dep_log\" 2>&1; then\n\
+    elif install_local_with_hydration \"$dep\"; then\n\
       # Attempt best-effort hydration of runtime deps after nodeps install so\n\
       # local RPM reuse remains functional even when non-repo capabilities\n\
       # (for example 'phoreus') block strict package-manager resolution.\n\
-      mapfile -t local_requires < <(rpm -qpR \"$local_rpm\" 2>/dev/null | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
-      for req in \"${{local_requires[@]}}\"; do\n\
-        case \"$req\" in\n\
-          \"\"|rpmlib*|rtld*|ld-linux*|phoreus|$dep)\n\
-            continue\n\
-            ;;\n\
-        esac\n\
-        candidate=\"$req\"\n\
-        if [[ \"$candidate\" == *\"(\"* || \"$candidate\" == *\")\"* || \"$candidate\" == *\":\"* ]]; then\n\
-          if [[ \"$candidate\" == lib*.so* ]]; then\n\
-            candidate=\"${{candidate%%.so*}}\"\n\
-          else\n\
-            continue\n\
-          fi\n\
-        fi\n\
-        if [[ \"$candidate\" == /* ]]; then\n\
-          continue\n\
-        fi\n\
-        if rpm -q --whatprovides \"$req\" >/dev/null 2>&1 || rpm -q --whatprovides \"$candidate\" >/dev/null 2>&1; then\n\
-          continue\n\
-        fi\n\
-        pm_install \"$candidate\" >>\"$dep_log\" 2>&1 || true\n\
-      done\n\
       if rpm -q --whatprovides \"$dep\" >/dev/null 2>&1; then\n\
         provider=$(rpm -q --whatprovides \"$dep\" | head -n 1 || true)\n\
         emit_depgraph \"$dep\" 'resolved' 'local_rpm' \"$provider\" \"installed_nodeps_from_$(basename \"$local_rpm\")_with_repo_hydration\"\n\
@@ -5101,9 +5353,18 @@ mod tests {
         assert_eq!(map_build_dependency("isa-l"), "isa-l-devel".to_string());
         assert_eq!(map_build_dependency("xz"), "xz-devel".to_string());
         assert_eq!(map_build_dependency("libcurl"), "libcurl-devel".to_string());
-        assert_eq!(map_build_dependency("libblas"), "openblas-devel".to_string());
-        assert_eq!(map_build_dependency("liblapack"), "lapack-devel".to_string());
-        assert_eq!(map_build_dependency("liblzma-devel"), "xz-devel".to_string());
+        assert_eq!(
+            map_build_dependency("libblas"),
+            "openblas-devel".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("liblapack"),
+            "lapack-devel".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("liblzma-devel"),
+            "xz-devel".to_string()
+        );
         assert_eq!(map_build_dependency("ninja"), "ninja-build".to_string());
         assert_eq!(map_build_dependency("cereal"), "cereal-devel".to_string());
         assert_eq!(map_build_dependency("gnuconfig"), "automake".to_string());
@@ -5583,7 +5844,9 @@ source:
             license: "MIT".to_string(),
             summary: "stringtie".to_string(),
             source_patches: Vec::new(),
-            build_script: Some("make -j${CPU_COUNT}\ninstall -m 0755 stringtie $PREFIX/bin".to_string()),
+            build_script: Some(
+                "make -j${CPU_COUNT}\ninstall -m 0755 stringtie $PREFIX/bin".to_string(),
+            ),
             noarch_python: false,
             build_dep_specs_raw: vec!["automake".to_string()],
             host_dep_specs_raw: vec!["htslib".to_string()],
@@ -5958,6 +6221,31 @@ requirements:
         let rendered = render_meta_yaml(src).expect("render jinja");
         assert!(rendered.contains("bwa"));
         assert!(rendered.contains("c-compiler"));
+    }
+
+    #[test]
+    fn fallback_recipe_selection_prefers_direct_prefix_match() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let recipes = vec![
+            RecipeDir {
+                name: "r-seurat-data".to_string(),
+                normalized: normalize_name("r-seurat-data"),
+                path: tmp.path().join("r-seurat-data"),
+            },
+            RecipeDir {
+                name: "r-seurat-disk".to_string(),
+                normalized: normalize_name("r-seurat-disk"),
+                path: tmp.path().join("r-seurat-disk"),
+            },
+            RecipeDir {
+                name: "seurat-scripts".to_string(),
+                normalized: normalize_name("seurat-scripts"),
+                path: tmp.path().join("seurat-scripts"),
+            },
+        ];
+
+        let selected = select_fallback_recipe("seurat", &recipes).expect("fallback recipe");
+        assert_eq!(selected.name, "seurat-scripts");
     }
 
     #[test]
