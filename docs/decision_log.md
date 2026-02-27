@@ -92,3 +92,8 @@
 - SRPM and RPM stages run inside a user-selected container image.
 - CLI now exposes container image selection for this workflow.
 - Current reference image in use: `dropworm_dev_almalinux_9_5:0.1.2`.
+
+### 2026-02-27 Amendment - Architecture restriction policy
+- Architecture/toolchain incompatibility should be classified explicitly, not treated as a global rollout blocker.
+- Example: missing x86 SIMD headers (`emmintrin.h`) on `aarch64` is classified as `amd64_only`.
+- Classification is recorded in failure reasons and build logs for traceable compatibility reporting.

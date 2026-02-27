@@ -109,6 +109,12 @@ Each report entry includes:
 
 Use the Markdown report for quick review and JSON/CSV for automation.
 
+Architecture restriction policy:
+
+- If build logs show known intrinsic/header incompatibilities (for example `emmintrin.h` on `aarch64`), the run classifies the package as architecture-restricted.
+- Example classification: `arch_policy=amd64_only`.
+- This is treated as a package-level compatibility outcome, not a global run blocker.
+
 ## 9. Troubleshooting
 
 ### Container engine not found
@@ -128,6 +134,7 @@ Check:
 - container logs printed during run
 
 Failures typically reflect recipe/toolchain incompatibilities for the target architecture, not workflow failure.
+When detected, the error reason includes `arch_policy=...` to capture compatibility constraints.
 
 ### Wrong or missing sources
 

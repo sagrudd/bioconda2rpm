@@ -93,6 +93,11 @@ FR-015 Containerized build chain
 - RPM generation shall rebuild from the generated SRPM (not direct SPEC-to-RPM).
 - The CLI shall expose a container image flag for this selection.
 
+FR-016 Architecture restriction capture policy
+- When build logs indicate architecture-intrinsic incompatibility (for example, `emmintrin.h` missing on `aarch64`), the system shall classify the result as an architecture restriction (for example, `amd64_only`).
+- The classification shall be recorded in run reports and quarantine notes/reasons.
+- Architecture restrictions shall not block processing of other packages in the same run.
+
 ## 4. Non-Functional Requirements
 
 NFR-001 Reproducibility

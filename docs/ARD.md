@@ -44,6 +44,7 @@ The product is structured as layered components:
 7. Compliance and Quarantine Layer
 - SPDX normalization and policy evaluation.
 - Quarantines unresolved dependencies and non-compliant packages.
+- Applies architecture-compatibility classification from build logs (for example, `amd64_only`) and records this in failure reporting.
 
 8. Reporting Layer
 - Emits JSON, CSV, Markdown summaries plus console logs.
