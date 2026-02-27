@@ -2648,254 +2648,271 @@ fn render_payload_spec(
 
     format!(
         "%global debug_package %{{nil}}\n\
-%global __brp_mangle_shebangs %{{nil}}\n\
-\n\
-%global tool {tool}\n\
-%global upstream_version {version}\n\
-%global bioconda_source_subdir {source_subdir}\n\
-%global bioconda_source_relsubdir {source_relsubdir}\n\
-\n\
-Name:           phoreus-%{{tool}}-%{{upstream_version}}\n\
-Version:        %{{upstream_version}}\n\
-Release:        1%{{?dist}}\n\
-Provides:       %{{tool}} = %{{version}}-%{{release}}\n\
-Summary:        {summary}\n\
-License:        {license}\n\
-URL:            {homepage}\n\
-{build_arch}\
-Source0:        {source_url}\n\
-Source1:        {build_sh}\n\
-{patch_sources}\n\
-{build_requires}\n\
-{requires}\n\
-%global phoreus_prefix /usr/local/phoreus/%{{tool}}/%{{version}}\n\
-%global phoreus_moddir /usr/local/phoreus/modules/%{{tool}}\n\
-\n\
-%description\n\
-Auto-generated from Bioconda metadata only.\n\
-Recipe metadata source: {meta_path}\n\
-Variant selected: {variant_dir}\n\
-\n\
-%prep\n\
-{source_unpack_prep}\
-cp %{{SOURCE1}} buildsrc/build.sh\n\
-chmod 0755 buildsrc/build.sh\n\
-{patch_apply}\
-\n\
-%build\n\
-cd buildsrc\n\
-%ifarch aarch64\n\
-export BIOCONDA_TARGET_ARCH=aarch64\n\
-%else\n\
-export BIOCONDA_TARGET_ARCH=x86_64\n\
-%endif\n\
-export CPU_COUNT=1\n\
-export MAKEFLAGS=-j1\n\
-\n\
-%install\n\
-rm -rf %{{buildroot}}\n\
-mkdir -p %{{buildroot}}%{{phoreus_prefix}}\n\
-cd buildsrc\n\
-export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
-export SRC_DIR=${{SRC_DIR:-$(pwd)/%{{bioconda_source_relsubdir}}}}\n\
-export CPU_COUNT=1\n\
-export MAKEFLAGS=-j1\n\
-export CMAKE_BUILD_PARALLEL_LEVEL=1\n\
-export NINJAFLAGS=-j1\n\
-\n\
-# Compatibility shim for the legacy BLAST 2.5.0 configure parser.\n\
-# Its NCBI configure script cannot parse modern two-digit GCC majors.\n\
-if [[ \"%{{tool}}\" == \"blast\" ]]; then\n\
-real_gcc=$(command -v gcc || true)\n\
-real_gxx=$(command -v g++ || true)\n\
-wrap_dir=\"$(pwd)/.bioconda2rpm-toolchain-wrap\"\n\
-rm -rf \"$wrap_dir\"\n\
-mkdir -p \"$wrap_dir\"\n\
-if [[ -n \"$real_gcc\" ]]; then\n\
-  cat > \"$wrap_dir/gcc\" <<'EOF'\n\
-#!/usr/bin/env bash\n\
-real=\"__BIOCONDA2RPM_REAL_GCC__\"\n\
-if [[ \"${{1:-}}\" == \"-dumpversion\" ]]; then\n\
-  ver=\"$($real -dumpfullversion 2>/dev/null || $real -dumpversion 2>/dev/null || echo 9.0.0)\"\n\
-  major=\"$(printf '%s' \"$ver\" | cut -d. -f1)\"\n\
-  if [[ \"$major\" =~ ^[0-9]+$ ]] && (( major >= 10 )); then\n\
+    %global __brp_mangle_shebangs %{{nil}}\n\
+    \n\
+    %global tool {tool}\n\
+    %global upstream_version {version}\n\
+    %global bioconda_source_subdir {source_subdir}\n\
+    %global bioconda_source_relsubdir {source_relsubdir}\n\
+    \n\
+    Name:           phoreus-%{{tool}}-%{{upstream_version}}\n\
+    Version:        %{{upstream_version}}\n\
+    Release:        1%{{?dist}}\n\
+    Provides:       %{{tool}} = %{{version}}-%{{release}}\n\
+    Summary:        {summary}\n\
+    License:        {license}\n\
+    URL:            {homepage}\n\
+    {build_arch}\
+    Source0:        {source_url}\n\
+    Source1:        {build_sh}\n\
+    {patch_sources}\n\
+    {build_requires}\n\
+    {requires}\n\
+    %global phoreus_prefix /usr/local/phoreus/%{{tool}}/%{{version}}\n\
+    %global phoreus_moddir /usr/local/phoreus/modules/%{{tool}}\n\
+    \n\
+    %description\n\
+    Auto-generated from Bioconda metadata only.\n\
+    Recipe metadata source: {meta_path}\n\
+    Variant selected: {variant_dir}\n\
+    \n\
+    %prep\n\
+    {source_unpack_prep}\
+    cp %{{SOURCE1}} buildsrc/build.sh\n\
+    chmod 0755 buildsrc/build.sh\n\
+    {patch_apply}\
+    \n\
+    %build\n\
+    cd buildsrc\n\
+    %ifarch aarch64\n\
+    export BIOCONDA_TARGET_ARCH=aarch64\n\
+    %else\n\
+    export BIOCONDA_TARGET_ARCH=x86_64\n\
+    %endif\n\
+    export CPU_COUNT=1\n\
+    export MAKEFLAGS=-j1\n\
+    \n\
+    %install\n\
+    rm -rf %{{buildroot}}\n\
+    mkdir -p %{{buildroot}}%{{phoreus_prefix}}\n\
+    cd buildsrc\n\
+    export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
+    export SRC_DIR=${{SRC_DIR:-$(pwd)/%{{bioconda_source_relsubdir}}}}\n\
+    export CPU_COUNT=1\n\
+    export MAKEFLAGS=-j1\n\
+    export CMAKE_BUILD_PARALLEL_LEVEL=1\n\
+    export NINJAFLAGS=-j1\n\
+    \n\
+    # Compatibility shim for the legacy BLAST 2.5.0 configure parser.\n\
+    # Its NCBI configure script cannot parse modern two-digit GCC majors.\n\
+    if [[ \"%{{tool}}\" == \"blast\" ]]; then\n\
+    real_gcc=$(command -v gcc || true)\n\
+    real_gxx=$(command -v g++ || true)\n\
+    wrap_dir=\"$(pwd)/.bioconda2rpm-toolchain-wrap\"\n\
+    rm -rf \"$wrap_dir\"\n\
+    mkdir -p \"$wrap_dir\"\n\
+    if [[ -n \"$real_gcc\" ]]; then\n\
+    cat > \"$wrap_dir/gcc\" <<'EOF'\n\
+    #!/usr/bin/env bash\n\
+    real=\"__BIOCONDA2RPM_REAL_GCC__\"\n\
+    if [[ \"${{1:-}}\" == \"-dumpversion\" ]]; then\n\
+    ver=\"$($real -dumpfullversion 2>/dev/null || $real -dumpversion 2>/dev/null || echo 9.0.0)\"\n\
+    major=\"$(printf '%s' \"$ver\" | cut -d. -f1)\"\n\
+    if [[ \"$major\" =~ ^[0-9]+$ ]] && (( major >= 10 )); then\n\
     rest=\"${{ver#*.}}\"\n\
     if [[ \"$rest\" == \"$ver\" ]]; then\n\
       ver=\"9.0.0\"\n\
     else\n\
       ver=\"9.${{rest}}\"\n\
     fi\n\
-  fi\n\
-  printf '%s\\n' \"$ver\"\n\
-  exit 0\n\
-fi\n\
-exec \"$real\" \"$@\"\n\
-EOF\n\
-  sed -i \"s|__BIOCONDA2RPM_REAL_GCC__|$real_gcc|g\" \"$wrap_dir/gcc\"\n\
-  chmod 0755 \"$wrap_dir/gcc\"\n\
-fi\n\
-if [[ -n \"$real_gxx\" ]]; then\n\
-  cat > \"$wrap_dir/g++\" <<'EOF'\n\
-#!/usr/bin/env bash\n\
-real=\"__BIOCONDA2RPM_REAL_GXX__\"\n\
-if [[ \"${{1:-}}\" == \"-dumpversion\" ]]; then\n\
-  ver=\"$($real -dumpfullversion 2>/dev/null || $real -dumpversion 2>/dev/null || echo 9.0.0)\"\n\
-  major=\"$(printf '%s' \"$ver\" | cut -d. -f1)\"\n\
-  if [[ \"$major\" =~ ^[0-9]+$ ]] && (( major >= 10 )); then\n\
+    fi\n\
+    printf '%s\\n' \"$ver\"\n\
+    exit 0\n\
+    fi\n\
+    exec \"$real\" \"$@\"\n\
+    EOF\n\
+    sed -i \"s|__BIOCONDA2RPM_REAL_GCC__|$real_gcc|g\" \"$wrap_dir/gcc\"\n\
+    chmod 0755 \"$wrap_dir/gcc\"\n\
+    fi\n\
+    if [[ -n \"$real_gxx\" ]]; then\n\
+    cat > \"$wrap_dir/g++\" <<'EOF'\n\
+    #!/usr/bin/env bash\n\
+    real=\"__BIOCONDA2RPM_REAL_GXX__\"\n\
+    if [[ \"${{1:-}}\" == \"-dumpversion\" ]]; then\n\
+    ver=\"$($real -dumpfullversion 2>/dev/null || $real -dumpversion 2>/dev/null || echo 9.0.0)\"\n\
+    major=\"$(printf '%s' \"$ver\" | cut -d. -f1)\"\n\
+    if [[ \"$major\" =~ ^[0-9]+$ ]] && (( major >= 10 )); then\n\
     rest=\"${{ver#*.}}\"\n\
     if [[ \"$rest\" == \"$ver\" ]]; then\n\
       ver=\"9.0.0\"\n\
     else\n\
       ver=\"9.${{rest}}\"\n\
     fi\n\
-  fi\n\
-  printf '%s\\n' \"$ver\"\n\
-  exit 0\n\
-fi\n\
-exec \"$real\" \"$@\"\n\
-EOF\n\
-  sed -i \"s|__BIOCONDA2RPM_REAL_GXX__|$real_gxx|g\" \"$wrap_dir/g++\"\n\
-  chmod 0755 \"$wrap_dir/g++\"\n\
-fi\n\
-export PATH=\"$wrap_dir:$PATH\"\n\
-fi\n\
-\n\
-export CC=${{CC:-gcc}}\n\
-export CXX=${{CXX:-g++}}\n\
-export CFLAGS=\"${{CFLAGS:-}}\"\n\
-export CXXFLAGS=\"${{CXXFLAGS:-}}\"\n\
-export CPPFLAGS=\"${{CPPFLAGS:-}}\"\n\
-export LDFLAGS=\"${{LDFLAGS:-}}\"\n\
-export AR=\"${{AR:-ar}}\"\n\
-\n\
-# Canonical Python toolchain for Phoreus builds: never rely on system Python.\n\
-export PHOREUS_PYTHON_PREFIX=/usr/local/phoreus/python/{phoreus_python_version}\n\
-if [[ ! -x \"$PHOREUS_PYTHON_PREFIX/bin/python{phoreus_python_version}\" ]]; then\n\
-  echo \"missing Phoreus Python runtime at $PHOREUS_PYTHON_PREFIX\" >&2\n\
-  exit 41\n\
-fi\n\
-export PATH=\"$PHOREUS_PYTHON_PREFIX/bin:$PATH\"\n\
-export LD_LIBRARY_PATH=\"$PHOREUS_PYTHON_PREFIX/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n\
-export PYTHON=\"$PHOREUS_PYTHON_PREFIX/bin/python{phoreus_python_version}\"\n\
-export PYTHON3=\"$PHOREUS_PYTHON_PREFIX/bin/python{phoreus_python_version}\"\n\
-export PIP=\"$PHOREUS_PYTHON_PREFIX/bin/pip{phoreus_python_version}\"\n\
-export PYTHONNOUSERSITE=1\n\
-export RECIPE_DIR=/work/SOURCES\n\
-export PKG_NAME=\"${{PKG_NAME:-{conda_pkg_name}}}\"\n\
-export PKG_VERSION=\"${{PKG_VERSION:-{conda_pkg_version}}}\"\n\
-export PKG_BUILDNUM=\"${{PKG_BUILDNUM:-0}}\"\n\
-export PKG_BUILD_STRING=\"${{PKG_BUILD_STRING:-${{PKG_BUILDNUM}}}}\"\n\
-export PERL_MM_OPT=\"${{PERL_MM_OPT:+$PERL_MM_OPT }}INSTALL_BASE=$PREFIX\"\n\
-export PERL_MB_OPT=\"${{PERL_MB_OPT:+$PERL_MB_OPT }}--install_base $PREFIX\"\n\
-\n\
-# Make locally installed Phoreus Perl dependency trees visible during build.\n\
-if [[ -d /usr/local/phoreus ]]; then\n\
-while IFS= read -r -d '' perl_lib; do\n\
-  case \":${{PERL5LIB:-}}:\" in\n\
+    fi\n\
+    printf '%s\\n' \"$ver\"\n\
+    exit 0\n\
+    fi\n\
+    exec \"$real\" \"$@\"\n\
+    EOF\n\
+    sed -i \"s|__BIOCONDA2RPM_REAL_GXX__|$real_gxx|g\" \"$wrap_dir/g++\"\n\
+    chmod 0755 \"$wrap_dir/g++\"\n\
+    fi\n\
+    export PATH=\"$wrap_dir:$PATH\"\n\
+    fi\n\
+    \n\
+    export CC=${{CC:-gcc}}\n\
+    export CXX=${{CXX:-g++}}\n\
+    export CFLAGS=\"${{CFLAGS:-}}\"\n\
+    export CXXFLAGS=\"${{CXXFLAGS:-}}\"\n\
+    export CPPFLAGS=\"${{CPPFLAGS:-}}\"\n\
+    export LDFLAGS=\"${{LDFLAGS:-}}\"\n\
+    export AR=\"${{AR:-ar}}\"\n\
+    \n\
+    # Canonical Python toolchain for Phoreus builds: never rely on system Python.\n\
+    export PHOREUS_PYTHON_PREFIX=/usr/local/phoreus/python/{phoreus_python_version}\n\
+    if [[ ! -x \"$PHOREUS_PYTHON_PREFIX/bin/python{phoreus_python_version}\" ]]; then\n\
+    echo \"missing Phoreus Python runtime at $PHOREUS_PYTHON_PREFIX\" >&2\n\
+    exit 41\n\
+    fi\n\
+    export PATH=\"$PHOREUS_PYTHON_PREFIX/bin:$PATH\"\n\
+    export LD_LIBRARY_PATH=\"$PHOREUS_PYTHON_PREFIX/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n\
+    export PYTHON=\"$PHOREUS_PYTHON_PREFIX/bin/python{phoreus_python_version}\"\n\
+    export PYTHON3=\"$PHOREUS_PYTHON_PREFIX/bin/python{phoreus_python_version}\"\n\
+    export PIP=\"$PHOREUS_PYTHON_PREFIX/bin/pip{phoreus_python_version}\"\n\
+    export PYTHONNOUSERSITE=1\n\
+    export RECIPE_DIR=/work/SOURCES\n\
+    export PKG_NAME=\"${{PKG_NAME:-{conda_pkg_name}}}\"\n\
+    export PKG_VERSION=\"${{PKG_VERSION:-{conda_pkg_version}}}\"\n\
+    export PKG_BUILDNUM=\"${{PKG_BUILDNUM:-0}}\"\n\
+    export PKG_BUILD_STRING=\"${{PKG_BUILD_STRING:-${{PKG_BUILDNUM}}}}\"\n\
+# Some autotools recipes abort if CONFIG_SITE is the literal token NONE.\n\
+    if [[ \"${{CONFIG_SITE:-}}\" == \"NONE\" ]]; then\n\
+    unset CONFIG_SITE\n\
+    fi\n\
+    export PERL_MM_OPT=\"${{PERL_MM_OPT:+$PERL_MM_OPT }}INSTALL_BASE=$PREFIX\"\n\
+    export PERL_MB_OPT=\"${{PERL_MB_OPT:+$PERL_MB_OPT }}--install_base $PREFIX\"\n\
+    \n\
+    # Prefer Autoconf 2.71 toolchain when present (EL9 autoconf271 package).\n\
+    if [[ -x /opt/rh/autoconf271/bin/autoconf ]]; then\n\
+    export PATH=\"/opt/rh/autoconf271/bin:$PATH\"\n\
+    fi\n\
+    \n\
+    # Make locally installed Phoreus Perl dependency trees visible during build.\n\
+    if [[ -d /usr/local/phoreus ]]; then\n\
+    while IFS= read -r -d '' perl_lib; do\n\
+    case \":${{PERL5LIB:-}}:\" in\n\
     *\":$perl_lib:\"*) ;;\n\
     *) export PERL5LIB=\"$perl_lib${{PERL5LIB:+:$PERL5LIB}}\" ;;\n\
-  esac\n\
-done < <(find /usr/local/phoreus -maxdepth 6 -type d -path '*/lib/perl5*' -print0 2>/dev/null)\n\
-fi\n\
-\n\
-# Ensure common install subdirectories exist for build.sh scripts that assume them.\n\
-mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\"\n\
-\n\
-{python_venv_setup}\
-\n\
-{r_runtime_setup}\
-\n\
-# BLAST recipes in Bioconda assume a conda-style shared prefix where ncbi-vdb\n\
-# lives under the same PREFIX. In Phoreus, ncbi-vdb is a separate payload.\n\
-# Retarget the generated build.sh argument to the newest installed ncbi-vdb prefix.\n\
-if [[ \"%{{tool}}\" == \"blast\" ]]; then\n\
-vdb_prefix=$(find /usr/local/phoreus/ncbi-vdb -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1 || true)\n\
-if [[ -n \"$vdb_prefix\" ]]; then\n\
-  sed -i 's|--with-vdb=$PREFIX|--with-vdb='\\\"$vdb_prefix\\\"'|g' ./build.sh\n\
-fi\n\
-# BLAST's Bioconda script hard-codes n_workers=8 on aarch64, which has shown\n\
-# unstable flat-make behavior in containerized RPM builds. Enforce single-core\n\
-# policy so the orchestrator remains deterministic across all architectures.\n\
-export CPU_COUNT=1\n\
-sed -i 's|n_workers=8|n_workers=${{CPU_COUNT:-1}}|g' ./build.sh\n\
-fi\n\
-\n\
-# A number of upstream scripts hardcode aggressive THREADS values;\n\
-# force single-core policy for deterministic container builds.\n\
-sed -i -E 's/THREADS=\"-j[0-9]+\"/THREADS=\"-j1\"/g' ./build.sh || true\n\
-\n\
-# Capture a pristine buildsrc snapshot so serial retries run from a clean tree,\n\
-# not from a partially mutated/failed first attempt.\n\
-retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\"\n\
-rm -f \"$retry_snapshot\"\n\
-tar --exclude='.bioconda2rpm-retry-snapshot.tar' -cf \"$retry_snapshot\" .\n\
-\n\
-# Canonical fallback for flaky parallel builds: retry once serially.\n\
-# Enforce fail-fast shell behavior for staged recipe scripts so downstream\n\
-# commands do not mask the primary failure reason.\n\
-if bash -eo pipefail ./build.sh; then\n\
-  :\n\
-else\n\
-  rc=$?\n\
-  # Do not retry deterministic policy failures (missing pinned runtimes,\n\
-  # unsupported precompiled binary arch, missing precompiled payload).\n\
-  if [[ \"$rc\" == \"41\" || \"$rc\" == \"42\" || \"$rc\" == \"86\" || \"$rc\" == \"87\" ]]; then\n\
+    esac\n\
+    done < <(find /usr/local/phoreus -maxdepth 6 -type d -path '*/lib/perl5*' -print0 2>/dev/null)\n\
+    fi\n\
+    \n\
+    # Ensure common install subdirectories exist for build.sh scripts that assume them.\n\
+    mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\"\n\
+    \n\
+    {python_venv_setup}\
+    \n\
+    {r_runtime_setup}\
+    \n\
+    # BLAST recipes in Bioconda assume a conda-style shared prefix where ncbi-vdb\n\
+    # lives under the same PREFIX. In Phoreus, ncbi-vdb is a separate payload.\n\
+    # Retarget the generated build.sh argument to the newest installed ncbi-vdb prefix.\n\
+    if [[ \"%{{tool}}\" == \"blast\" ]]; then\n\
+    vdb_prefix=$(find /usr/local/phoreus/ncbi-vdb -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1 || true)\n\
+    if [[ -n \"$vdb_prefix\" ]]; then\n\
+    sed -i 's|--with-vdb=$PREFIX|--with-vdb='\\\"$vdb_prefix\\\"'|g' ./build.sh\n\
+    fi\n\
+    # BLAST's Bioconda script hard-codes n_workers=8 on aarch64, which has shown\n\
+    # unstable flat-make behavior in containerized RPM builds. Enforce single-core\n\
+    # policy so the orchestrator remains deterministic across all architectures.\n\
+    export CPU_COUNT=1\n\
+    sed -i 's|n_workers=8|n_workers=${{CPU_COUNT:-1}}|g' ./build.sh\n\
+    fi\n\
+    \n\
+    # GMAP upstream release tarballs already ship generated configure scripts.\n\
+    # Running autoreconf on EL9 toolchains has produced broken configure outputs\n\
+    # for recent GMAP snapshots; prefer the bundled configure script as Bioconda does.\n\
+    if [[ \"%{{tool}}\" == \"gmap\" ]]; then\n\
+    sed -i 's|^autoreconf -if$|# autoreconf -if (disabled by bioconda2rpm for EL9 compatibility)|g' ./build.sh || true\n\
+    sed -i 's|export LC_ALL=\"en_US.UTF-8\"|export LC_ALL=C|g' ./build.sh || true\n\
+    fi\n\
+    \n\
+    # A number of upstream scripts hardcode aggressive THREADS values;\n\
+    # force single-core policy for deterministic container builds.\n\
+    sed -i -E 's/THREADS=\"-j[0-9]+\"/THREADS=\"-j1\"/g' ./build.sh || true\n\
+    \n\
+    # Capture a pristine buildsrc snapshot so serial retries run from a clean tree,\n\
+    # not from a partially mutated/failed first attempt.\n\
+    retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\"\n\
+    rm -f \"$retry_snapshot\"\n\
+    tar --exclude='.bioconda2rpm-retry-snapshot.tar' -cf \"$retry_snapshot\" .\n\
+    \n\
+    # Canonical fallback for flaky parallel builds: retry once serially.\n\
+    # Enforce fail-fast shell behavior for staged recipe scripts so downstream\n\
+    # commands do not mask the primary failure reason.\n\
+    if bash -eo pipefail ./build.sh; then\n\
+    :\n\
+    else\n\
+    rc=$?\n\
+    # Do not retry deterministic policy failures (missing pinned runtimes,\n\
+    # unsupported precompiled binary arch, missing precompiled payload).\n\
+    if [[ \"$rc\" == \"41\" || \"$rc\" == \"42\" || \"$rc\" == \"86\" || \"$rc\" == \"87\" ]]; then\n\
     exit \"$rc\"\n\
-  fi\n\
-  if [[ \"${{BIOCONDA2RPM_RETRIED_SERIAL:-0}}\" == \"1\" ]]; then\n\
+    fi\n\
+    if [[ \"${{BIOCONDA2RPM_RETRIED_SERIAL:-0}}\" == \"1\" ]]; then\n\
     exit 1\n\
-  fi\n\
-  export BIOCONDA2RPM_RETRIED_SERIAL=1\n\
-  export CPU_COUNT=1\n\
-  export MAKEFLAGS=-j1\n\
-  find . -mindepth 1 -maxdepth 1 ! -name \"$(basename \"$retry_snapshot\")\" -exec rm -rf {{}} +\n\
-  tar -xf \"$retry_snapshot\"\n\
-  bash -eo pipefail ./build.sh\n\
-fi\n\
-rm -f \"$retry_snapshot\"\n\
-\n\
-# Some Bioconda build scripts emit absolute symlinks into %{{buildroot}}.\n\
-# Rewrite those targets so RPM payload validation does not see buildroot leaks.\n\
-while IFS= read -r -d '' link_path; do\n\
-  link_target=$(readlink \"$link_path\" || true)\n\
-  case \"$link_target\" in\n\
+    fi\n\
+    export BIOCONDA2RPM_RETRIED_SERIAL=1\n\
+    export CPU_COUNT=1\n\
+    export MAKEFLAGS=-j1\n\
+    find . -mindepth 1 -maxdepth 1 ! -name \"$(basename \"$retry_snapshot\")\" -exec rm -rf {{}} +\n\
+    tar -xf \"$retry_snapshot\"\n\
+    bash -eo pipefail ./build.sh\n\
+    fi\n\
+    rm -f \"$retry_snapshot\"\n\
+    \n\
+    # Some Bioconda build scripts emit absolute symlinks into %{{buildroot}}.\n\
+    # Rewrite those targets so RPM payload validation does not see buildroot leaks.\n\
+    while IFS= read -r -d '' link_path; do\n\
+    link_target=$(readlink \"$link_path\" || true)\n\
+    case \"$link_target\" in\n\
     %{{buildroot}}/*)\n\
       fixed_target=\"${{link_target#%{{buildroot}}}}\"\n\
       ln -snf \"$fixed_target\" \"$link_path\"\n\
       ;;\n\
-  esac\n\
-done < <(find %{{buildroot}}%{{phoreus_prefix}} -type l -print0 2>/dev/null)\n\
-\n\
-# Python virtualenv and some installers may record temporary buildroot prefixes\n\
-# in script shebangs/config files; rewrite to final install prefix for RPM checks.\n\
-buildroot_prefix=\"%{{buildroot}}%{{phoreus_prefix}}\"\n\
-final_prefix=\"%{{phoreus_prefix}}\"\n\
-while IFS= read -r -d '' text_path; do\n\
-  sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true\n\
-done < <(grep -RIlZ -- \"$buildroot_prefix\" %{{buildroot}}%{{phoreus_prefix}} 2>/dev/null || true)\n\
-\n\
-# Perl installs often emit perllocal.pod entries that embed buildroot paths.\n\
-# Drop those files to satisfy RPM check-buildroot validation.\n\
-find %{{buildroot}}%{{phoreus_prefix}} -type f -name perllocal.pod -delete 2>/dev/null || true\n\
-\n\
-mkdir -p %{{buildroot}}%{{phoreus_moddir}}\n\
-cat > %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua <<'LUAEOF'\n\
-help([[ {summary} ]])\n\
-whatis(\"Name: {tool}\")\n\
-whatis(\"Version: {version}\")\n\
-whatis(\"URL: {homepage}\")\n\
-local prefix = \"/usr/local/phoreus/{tool}/{version}\"\n\
-{module_lua_env}\
-LUAEOF\n\
-chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
-\n\
-%files\n\
-%{{phoreus_prefix}}/\n\
-%{{phoreus_moddir}}/%{{version}}.lua\n\
-\n\
-%changelog\n\
-* {changelog_date} bioconda2rpm <packaging@bioconda2rpm.local> - {version}-1\n\
-- Auto-generated from Bioconda metadata and build.sh\n",
+    esac\n\
+    done < <(find %{{buildroot}}%{{phoreus_prefix}} -type l -print0 2>/dev/null)\n\
+    \n\
+    # Python virtualenv and some installers may record temporary buildroot prefixes\n\
+    # in script shebangs/config files; rewrite to final install prefix for RPM checks.\n\
+    buildroot_prefix=\"%{{buildroot}}%{{phoreus_prefix}}\"\n\
+    final_prefix=\"%{{phoreus_prefix}}\"\n\
+    while IFS= read -r -d '' text_path; do\n\
+    sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true\n\
+    done < <(grep -RIlZ -- \"$buildroot_prefix\" %{{buildroot}}%{{phoreus_prefix}} 2>/dev/null || true)\n\
+    \n\
+    # Perl installs often emit perllocal.pod entries that embed buildroot paths.\n\
+    # Drop those files to satisfy RPM check-buildroot validation.\n\
+    find %{{buildroot}}%{{phoreus_prefix}} -type f -name perllocal.pod -delete 2>/dev/null || true\n\
+    \n\
+    mkdir -p %{{buildroot}}%{{phoreus_moddir}}\n\
+    cat > %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua <<'LUAEOF'\n\
+    help([[ {summary} ]])\n\
+    whatis(\"Name: {tool}\")\n\
+    whatis(\"Version: {version}\")\n\
+    whatis(\"URL: {homepage}\")\n\
+    local prefix = \"/usr/local/phoreus/{tool}/{version}\"\n\
+    {module_lua_env}\
+    LUAEOF\n\
+    chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
+    \n\
+    %files\n\
+    %{{phoreus_prefix}}/\n\
+    %{{phoreus_moddir}}/%{{version}}.lua\n\
+    \n\
+    %changelog\n\
+    * {changelog_date} bioconda2rpm <packaging@bioconda2rpm.local> - {version}-1\n\
+    - Auto-generated from Bioconda metadata and build.sh\n",
         tool = software_slug,
         version = spec_escape(&parsed.version),
         source_subdir = spec_escape(&source_subdir),
@@ -3287,6 +3304,7 @@ fn map_build_dependency(dep: &str) -> String {
         return PHOREUS_PYTHON_PACKAGE.to_string();
     }
     match dep {
+        "autoconf" => "autoconf271".to_string(),
         "boost-cpp" => "boost-devel".to_string(),
         "bzip2" => "bzip2-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
@@ -3530,8 +3548,11 @@ fn map_perl_core_dependency(dep: &str) -> Option<String> {
         "perl-file-path" => "perl-File-Path",
         "perl-file-temp" => "perl-File-Temp",
         "perl-module-build" => "perl-Module-Build",
+        "perl-autoloader" => "perl-AutoLoader",
         "perl-pathtools" => "perl-PathTools",
+        "perl-test" => "perl-Test",
         "perl-test-harness" => "perl-Test-Harness",
+        "perl-test-nowarnings" => "perl-Test-NoWarnings",
         "perl-test-simple" => "perl-Test-Simple",
         "perl-module-load" => "perl-Module-Load",
         "perl-params-check" => "perl-Params-Check",
@@ -4259,6 +4280,7 @@ mod tests {
     #[test]
     fn dependency_mapping_handles_conda_aliases() {
         assert_eq!(map_build_dependency("boost-cpp"), "boost-devel".to_string());
+        assert_eq!(map_build_dependency("autoconf"), "autoconf271".to_string());
         assert_eq!(map_runtime_dependency("boost-cpp"), "boost".to_string());
         assert_eq!(
             map_build_dependency("libdeflate"),
@@ -4285,6 +4307,15 @@ mod tests {
         assert_eq!(
             map_build_dependency("perl-types-serialiser"),
             "perl-Types-Serialiser".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl-autoloader"),
+            "perl-AutoLoader".to_string()
+        );
+        assert_eq!(map_build_dependency("perl-test"), "perl-Test".to_string());
+        assert_eq!(
+            map_build_dependency("perl-test-nowarnings"),
+            "perl-Test-NoWarnings".to_string()
         );
         assert_eq!(
             map_build_dependency("python"),
@@ -4368,6 +4399,9 @@ requirements:
         assert!(spec.contains("retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\""));
         assert!(spec.contains("export CPU_COUNT=1"));
         assert!(spec.contains("export MAKEFLAGS=-j1"));
+        assert!(spec.contains("/opt/rh/autoconf271/bin/autoconf"));
+        assert!(spec.contains("disabled by bioconda2rpm for EL9 compatibility"));
+        assert!(spec.contains("if [[ \"${CONFIG_SITE:-}\" == \"NONE\" ]]; then"));
         assert!(spec.contains("export PKG_NAME=\"${PKG_NAME:-blast}\""));
         assert!(spec.contains("export PKG_VERSION=\"${PKG_VERSION:-2.5.0}\""));
         assert!(spec.contains("export PKG_BUILDNUM=\"${PKG_BUILDNUM:-0}\""));
