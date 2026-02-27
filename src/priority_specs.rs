@@ -2973,20 +2973,61 @@ fn extract_package_scalar(rendered: &str, key: &str) -> Option<String> {
 
 fn extract_source_url(source: Option<&Value>) -> Option<String> {
     match source {
-        Some(Value::Mapping(map)) => map
-            .get(Value::String("url".to_string()))
-            .and_then(extract_first_string_or_sequence_item),
+        Some(Value::Mapping(map)) => {
+            if let Some(url) = map
+                .get(Value::String("url".to_string()))
+                .and_then(extract_first_string_or_sequence_item)
+            {
+                return Some(url);
+            }
+            if let Some(git_url) = map
+                .get(Value::String("git_url".to_string()))
+                .and_then(value_to_string)
+            {
+                let git_rev = map
+                    .get(Value::String("git_rev".to_string()))
+                    .and_then(value_to_string);
+                return synthesize_git_source_descriptor(&git_url, git_rev.as_deref());
+            }
+            None
+        }
         Some(Value::Sequence(seq)) => seq.iter().find_map(|item| {
             if let Some(s) = extract_first_string_or_sequence_item(item) {
                 return Some(s);
             }
-            item.as_mapping()
-                .and_then(|m| m.get(Value::String("url".to_string())))
+            let map = item.as_mapping()?;
+            if let Some(url) = map
+                .get(Value::String("url".to_string()))
                 .and_then(extract_first_string_or_sequence_item)
+            {
+                return Some(url);
+            }
+            if let Some(git_url) = map
+                .get(Value::String("git_url".to_string()))
+                .and_then(value_to_string)
+            {
+                let git_rev = map
+                    .get(Value::String("git_rev".to_string()))
+                    .and_then(value_to_string);
+                return synthesize_git_source_descriptor(&git_url, git_rev.as_deref());
+            }
+            None
         }),
         Some(Value::String(s)) => Some(s.to_string()),
         _ => None,
     }
+}
+
+fn synthesize_git_source_descriptor(git_url: &str, git_rev: Option<&str>) -> Option<String> {
+    let rev = git_rev?.trim();
+    if rev.is_empty() {
+        return None;
+    }
+    let url = git_url.trim().trim_end_matches('/');
+    if url.is_empty() {
+        return None;
+    }
+    Some(format!("git+{url}#{rev}"))
 }
 
 fn extract_first_string_or_sequence_item(value: &Value) -> Option<String> {
@@ -3180,14 +3221,19 @@ fn render_payload_spec(
         nim_runtime_required,
     );
 
-    let include_source0 = !runtime_only_metapackage;
     let source_kind = source_archive_kind(&parsed.source_url);
+    let git_source = parse_git_source_descriptor(&parsed.source_url);
+    let include_source0 = !runtime_only_metapackage && source_kind != SourceArchiveKind::Git;
     let source_unpack_prep = if include_source0 {
         render_source_unpack_prep_block(source_kind)
     } else {
-        "rm -rf buildsrc\n\
+        if source_kind == SourceArchiveKind::Git {
+            render_source_unpack_prep_block(source_kind)
+        } else {
+            "rm -rf buildsrc\n\
 mkdir -p %{bioconda_source_subdir}\n"
-            .to_string()
+                .to_string()
+        }
     };
 
     let mut build_requires = BTreeSet::new();
@@ -3197,6 +3243,9 @@ mkdir -p %{bioconda_source_subdir}\n"
     build_requires.insert(PHOREUS_PYTHON_PACKAGE.to_string());
     if include_source0 && source_kind == SourceArchiveKind::Zip {
         build_requires.insert("unzip".to_string());
+    }
+    if source_kind == SourceArchiveKind::Git {
+        build_requires.insert("git".to_string());
     }
     if r_runtime_required {
         build_requires.insert(PHOREUS_R_PACKAGE.to_string());
@@ -3243,6 +3292,9 @@ mkdir -p %{bioconda_source_subdir}\n"
                 .run_deps
                 .iter()
                 .filter(|dep| !is_conda_only_dependency(dep))
+                .filter(|dep| {
+                    !is_python_ecosystem_dependency_name(&normalize_dependency_token(dep))
+                })
                 .map(|d| map_build_dependency(d)),
         );
     }
@@ -3291,6 +3343,14 @@ mkdir -p %{bioconda_source_subdir}\n"
     } else {
         String::new()
     };
+    let source_git_url = git_source
+        .as_ref()
+        .map(|(url, _)| spec_escape(url))
+        .unwrap_or_default();
+    let source_git_rev = git_source
+        .as_ref()
+        .map(|(_, rev)| spec_escape(rev))
+        .unwrap_or_default();
     let patch_source_lines = render_patch_source_lines(staged_patch_sources);
     let patch_apply_lines =
         render_patch_apply_lines(staged_patch_sources, "%{bioconda_source_subdir}");
@@ -3309,6 +3369,8 @@ mkdir -p %{bioconda_source_subdir}\n"
     %global upstream_version {version}\n\
     %global bioconda_source_subdir {source_subdir}\n\
     %global bioconda_source_relsubdir {source_relsubdir}\n\
+    %global bioconda_source_git_url {source_git_url}\n\
+    %global bioconda_source_git_rev {source_git_rev}\n\
     \n\
     Name:           phoreus-%{{tool}}-%{{upstream_version}}\n\
     Version:        %{{upstream_version}}\n\
@@ -3341,8 +3403,10 @@ mkdir -p %{bioconda_source_subdir}\n"
     cd buildsrc\n\
     %ifarch aarch64\n\
     export BIOCONDA_TARGET_ARCH=aarch64\n\
+    export target_platform=linux-aarch64\n\
     %else\n\
     export BIOCONDA_TARGET_ARCH=x86_64\n\
+    export target_platform=linux-64\n\
     %endif\n\
     export CPU_COUNT=1\n\
     export MAKEFLAGS=-j1\n\
@@ -3351,6 +3415,13 @@ mkdir -p %{bioconda_source_subdir}\n"
     rm -rf %{{buildroot}}\n\
     mkdir -p %{{buildroot}}%{{phoreus_prefix}}\n\
     cd buildsrc\n\
+    %ifarch aarch64\n\
+    export BIOCONDA_TARGET_ARCH=aarch64\n\
+    export target_platform=linux-aarch64\n\
+    %else\n\
+    export BIOCONDA_TARGET_ARCH=x86_64\n\
+    export target_platform=linux-64\n\
+    %endif\n\
     export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
     export SRC_DIR=$(pwd)/%{{bioconda_source_relsubdir}}\n\
     export CPU_COUNT=1\n\
@@ -3499,7 +3570,36 @@ done < <(find /usr/local/phoreus -maxdepth 6 -type d -name pkgconfig -print0 2>/
 fi\n\
 \n\
 # Ensure common install subdirectories exist for build.sh scripts that assume them.\n\
-mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\"\n\
+mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\" \"$PREFIX/include\"\n\
+\n\
+# Conda recipes often assume host/build dependencies are co-located in one PREFIX.\n\
+# Phoreus keeps dependencies in versioned prefixes, so stage compatibility symlinks.\n\
+if [[ -d /usr/local/phoreus ]]; then\n\
+while IFS= read -r -d '' dep_include; do\n\
+  for entry in \"$dep_include\"/*; do\n\
+    [[ -e \"$entry\" ]] || continue\n\
+    target=\"$PREFIX/include/$(basename \"$entry\")\"\n\
+    [[ -e \"$target\" ]] && continue\n\
+    ln -snf \"$entry\" \"$target\" || true\n\
+  done\n\
+done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name include -print0 2>/dev/null)\n\
+while IFS= read -r -d '' dep_lib; do\n\
+  for lib in \"$dep_lib\"/*; do\n\
+    [[ -e \"$lib\" ]] || continue\n\
+    target=\"$PREFIX/lib/$(basename \"$lib\")\"\n\
+    [[ -e \"$target\" ]] && continue\n\
+    ln -snf \"$lib\" \"$target\" || true\n\
+  done\n\
+done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name lib -print0 2>/dev/null)\n\
+fi\n\
+\n\
+# EL9 ships some HDF5 headers under /usr/include/hdf5/serial.\n\
+if [[ -d /usr/include/hdf5/serial ]]; then\n\
+  export CPPFLAGS=\"-I/usr/include/hdf5/serial ${{CPPFLAGS:-}}\"\n\
+fi\n\
+if [[ -f /usr/include/H5pubconf-32.h && ! -e \"$PREFIX/include/H5pubconf.h\" ]]; then\n\
+  ln -snf /usr/include/H5pubconf-32.h \"$PREFIX/include/H5pubconf.h\"\n\
+fi\n\
     \n\
 {python_venv_setup}\
 \n\
@@ -3671,6 +3771,8 @@ mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\"\n\
         version = spec_escape(&parsed.version),
         source_subdir = spec_escape(&source_subdir),
         source_relsubdir = spec_escape(&source_relsubdir),
+        source_git_url = source_git_url,
+        source_git_rev = source_git_rev,
         summary = summary,
         license = license,
         homepage = homepage,
@@ -3725,14 +3827,30 @@ fn is_runtime_only_metapackage(parsed: &ParsedMeta) -> bool {
     parsed.build_deps.is_empty() && parsed.host_deps.is_empty() && !parsed.run_deps.is_empty()
 }
 
+fn parse_git_source_descriptor(source_url: &str) -> Option<(String, String)> {
+    let raw = source_url.trim();
+    let remainder = raw.strip_prefix("git+")?;
+    let (url, rev) = remainder.split_once('#')?;
+    let url = url.trim().to_string();
+    let rev = rev.trim().to_string();
+    if url.is_empty() || rev.is_empty() {
+        return None;
+    }
+    Some((url, rev))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SourceArchiveKind {
     Tar,
     Zip,
     File,
+    Git,
 }
 
 fn source_archive_kind(source_url: &str) -> SourceArchiveKind {
+    if source_url.trim().starts_with("git+") {
+        return SourceArchiveKind::Git;
+    }
     let lowered = source_url.trim().to_ascii_lowercase();
     let trimmed = lowered
         .split_once('?')
@@ -3785,6 +3903,15 @@ rm -rf \"$zip_unpack_dir\"\n"
         SourceArchiveKind::File => "rm -rf buildsrc\n\
 mkdir -p %{bioconda_source_subdir}\n\
 cp -f %{SOURCE0} %{bioconda_source_subdir}/\n"
+            .to_string(),
+        SourceArchiveKind::Git => "rm -rf buildsrc\n\
+git_url=\"%{bioconda_source_git_url}\"\n\
+git_rev=\"%{bioconda_source_git_rev}\"\n\
+git clone --recursive \"$git_url\" buildsrc\n\
+cd buildsrc\n\
+git checkout \"$git_rev\"\n\
+git submodule update --init --recursive || true\n\
+cd ..\n"
             .to_string(),
     }
 }
@@ -4321,10 +4448,12 @@ fn map_build_dependency(dep: &str) -> String {
         "bzip2" => "bzip2-devel".to_string(),
         "cereal" => "cereal-devel".to_string(),
         "clangdev" => "clang-devel".to_string(),
+        "eigen" => "eigen3-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
         "mscorefonts" => "dejavu-sans-fonts".to_string(),
         "glib" => "glib2-devel".to_string(),
+        "hdf5" => "hdf5-devel".to_string(),
         "go-compiler" => "golang".to_string(),
         "gnuconfig" => "automake".to_string(),
         "isa-l" => "isa-l-devel".to_string(),
@@ -4378,8 +4507,10 @@ fn map_runtime_dependency(dep: &str) -> String {
     }
     match dep {
         "boost-cpp" => "boost".to_string(),
+        "biopython" => "python3-biopython".to_string(),
         "cereal" => "cereal-devel".to_string(),
         "clangdev" => "clang".to_string(),
+        "eigen" => "eigen3-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
         "mscorefonts" => "dejavu-sans-fonts".to_string(),
@@ -5745,7 +5876,13 @@ mod tests {
     fn dependency_mapping_handles_conda_aliases() {
         assert_eq!(map_build_dependency("boost-cpp"), "boost-devel".to_string());
         assert_eq!(map_build_dependency("autoconf"), "autoconf271".to_string());
+        assert_eq!(map_build_dependency("hdf5"), "hdf5-devel".to_string());
         assert_eq!(map_runtime_dependency("boost-cpp"), "boost".to_string());
+        assert_eq!(map_build_dependency("eigen"), "eigen3-devel".to_string());
+        assert_eq!(
+            map_runtime_dependency("biopython"),
+            "python3-biopython".to_string()
+        );
         assert_eq!(
             map_build_dependency("libdeflate"),
             "libdeflate-devel".to_string()
@@ -6097,6 +6234,20 @@ source:
             parsed.source_url,
             "https://bioconductor.org/packages/3.20/bioc/src/contrib/edgeR_4.4.0.tar.gz"
         );
+    }
+
+    #[test]
+    fn parse_meta_synthesizes_github_archive_from_git_source() {
+        let rendered = r#"
+package:
+  name: nanopolish
+  version: "0.14.0"
+source:
+  git_url: https://github.com/jts/nanopolish.git
+  git_rev: v0.14.0
+"#;
+        let parsed = parse_rendered_meta(rendered).expect("parse rendered meta");
+        assert_eq!(parsed.source_url, "git+https://github.com/jts/nanopolish.git#v0.14.0");
     }
 
     #[test]
@@ -6856,6 +7007,44 @@ requirements:
         let hardened = harden_build_script_text(raw);
         assert!(hardened.contains("Skipping cargo-bundle-licenses"));
         assert!(!hardened.contains("cargo-bundle-licenses --format yaml --output THIRDPARTY.yml"));
+    }
+
+    #[test]
+    fn git_sources_clone_in_prep_and_skip_source0() {
+        let parsed = ParsedMeta {
+            package_name: "ont_vbz_hdf_plugin".to_string(),
+            version: "1.0.12".to_string(),
+            source_url: "git+https://github.com/nanoporetech/vbz_compression.git#1.0.12"
+                .to_string(),
+            source_folder: String::new(),
+            homepage: "https://github.com/nanoporetech".to_string(),
+            license: "MPL-2".to_string(),
+            summary: "vbz".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let spec = render_payload_spec(
+            "ont-vbz-hdf-plugin",
+            &parsed,
+            "bioconda-ont-vbz-hdf-plugin-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(!spec.contains("Source0:"));
+        assert!(spec.contains("BuildRequires:  git"));
+        assert!(spec.contains("git clone --recursive \"$git_url\" buildsrc"));
     }
 
     #[test]
