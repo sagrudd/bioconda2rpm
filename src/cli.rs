@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use std::env;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -74,9 +75,14 @@ pub struct BuildArgs {
     #[arg(long)]
     pub recipe_root: PathBuf,
 
-    /// RPM build topdir. Must be outside this crate workspace.
+    /// RPM build topdir. Defaults to ~/bioconda2rpm when omitted.
     #[arg(long)]
-    pub topdir: PathBuf,
+    pub topdir: Option<PathBuf>,
+
+    /// Quarantine folder for unresolved/non-compliant packages.
+    /// Defaults to <topdir>/BAD_SPEC when omitted.
+    #[arg(long)]
+    pub bad_spec_dir: Option<PathBuf>,
 
     /// Optional explicit report output directory.
     #[arg(long)]
@@ -123,25 +129,43 @@ pub struct BuildArgs {
 }
 
 impl BuildArgs {
+    fn default_topdir() -> PathBuf {
+        match env::var_os("HOME") {
+            Some(home) => PathBuf::from(home).join("bioconda2rpm"),
+            None => PathBuf::from("bioconda2rpm"),
+        }
+    }
+
     pub fn with_deps(&self) -> bool {
         !self.no_deps
+    }
+
+    pub fn effective_topdir(&self) -> PathBuf {
+        self.topdir.clone().unwrap_or_else(Self::default_topdir)
+    }
+
+    pub fn effective_bad_spec_dir(&self) -> PathBuf {
+        self.bad_spec_dir
+            .clone()
+            .unwrap_or_else(|| self.effective_topdir().join("BAD_SPEC"))
     }
 
     pub fn effective_reports_dir(&self) -> PathBuf {
         self.reports_dir
             .clone()
-            .unwrap_or_else(|| self.topdir.join("reports"))
+            .unwrap_or_else(|| self.effective_topdir().join("reports"))
     }
 
     pub fn execution_summary(&self) -> String {
         format!(
-            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} reports_dir={reports} container_mode={container:?} arch={arch:?} naming={naming:?} render={render:?} outputs={outputs:?} missing_dependency={missing:?}",
+            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} arch={arch:?} naming={naming:?} render={render:?} outputs={outputs:?} missing_dependency={missing:?}",
             pkg = self.package,
             stage = self.stage,
             deps = self.with_deps(),
             policy = self.dependency_policy,
             recipes = self.recipe_root.display(),
-            topdir = self.topdir.display(),
+            topdir = self.effective_topdir().display(),
+            bad_spec = self.effective_bad_spec_dir().display(),
             reports = self.effective_reports_dir().display(),
             container = self.container_mode,
             arch = self.arch,
@@ -166,8 +190,6 @@ mod tests {
             "fastp",
             "--recipe-root",
             "/tmp/recipes",
-            "--topdir",
-            "/tmp/rpmbuild",
         ])
         .expect("build defaults should parse");
 
@@ -182,9 +204,38 @@ mod tests {
         assert_eq!(args.naming_profile, NamingProfile::Phoreus);
         assert_eq!(args.render_strategy, RenderStrategy::JinjaFull);
         assert_eq!(args.outputs, OutputSelection::All);
+        assert!(args.effective_topdir().ends_with("bioconda2rpm"));
+        assert!(
+            args.effective_bad_spec_dir()
+                .ends_with("bioconda2rpm/BAD_SPEC")
+        );
+        assert!(
+            args.effective_reports_dir()
+                .ends_with("bioconda2rpm/reports")
+        );
+    }
+
+    #[test]
+    fn build_command_accepts_topdir_and_bad_spec_overrides() {
+        let cli = Cli::try_parse_from([
+            "bioconda2rpm",
+            "build",
+            "samtools",
+            "--recipe-root",
+            "/recipes",
+            "--topdir",
+            "/rpmbuild",
+            "--bad-spec-dir",
+            "/quarantine",
+        ])
+        .expect("topdir and bad spec overrides should parse");
+
+        let Command::Build(args) = cli.command;
+        assert_eq!(args.effective_topdir(), PathBuf::from("/rpmbuild"));
+        assert_eq!(args.effective_bad_spec_dir(), PathBuf::from("/quarantine"));
         assert_eq!(
             args.effective_reports_dir(),
-            PathBuf::from("/tmp/rpmbuild/reports")
+            PathBuf::from("/rpmbuild/reports")
         );
     }
 
@@ -221,18 +272,13 @@ mod tests {
         assert_eq!(args.container_mode, ContainerMode::Auto);
         assert_eq!(args.missing_dependency, MissingDependencyPolicy::Fail);
         assert_eq!(args.arch, BuildArch::Aarch64);
+        assert_eq!(args.effective_topdir(), PathBuf::from("/rpmbuild"));
         assert_eq!(args.effective_reports_dir(), PathBuf::from("/reports"));
     }
 
     #[test]
-    fn build_requires_topdir() {
-        let parse = Cli::try_parse_from([
-            "bioconda2rpm",
-            "build",
-            "fastqc",
-            "--recipe-root",
-            "/tmp/recipes",
-        ]);
+    fn build_requires_recipe_root() {
+        let parse = Cli::try_parse_from(["bioconda2rpm", "build", "fastqc"]);
 
         assert!(parse.is_err());
     }
