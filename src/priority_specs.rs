@@ -2581,11 +2581,17 @@ fn render_payload_spec(
     let r_runtime_setup = render_r_runtime_setup_block(r_runtime_required, r_project_recipe);
     let module_lua_env = render_module_lua_env_block(python_recipe, r_runtime_required);
 
+    let source_is_zip = source_archive_is_zip(&parsed.source_url);
+    let source_unpack_prep = render_source_unpack_prep_block(source_is_zip);
+
     let mut build_requires = BTreeSet::new();
     build_requires.insert("bash".to_string());
     // Enforce canonical builder policy: every payload build uses Phoreus Python,
     // never the system interpreter.
     build_requires.insert(PHOREUS_PYTHON_PACKAGE.to_string());
+    if source_is_zip {
+        build_requires.insert("unzip".to_string());
+    }
     if r_runtime_required {
         build_requires.insert(PHOREUS_R_PACKAGE.to_string());
     }
@@ -2671,9 +2677,7 @@ Recipe metadata source: {meta_path}\n\
 Variant selected: {variant_dir}\n\
 \n\
 %prep\n\
-rm -rf buildsrc\n\
-mkdir -p %{{bioconda_source_subdir}}\n\
-tar -xf %{{SOURCE0}} -C %{{bioconda_source_subdir}} --strip-components=1\n\
+{source_unpack_prep}\
 cp %{{SOURCE1}} buildsrc/build.sh\n\
 chmod 0755 buildsrc/build.sh\n\
 {patch_apply}\
@@ -2899,6 +2903,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         build_sh = spec_escape(staged_build_sh_name),
         patch_sources = patch_source_lines,
         patch_apply = patch_apply_lines,
+        source_unpack_prep = source_unpack_prep,
         build_requires = build_requires_lines,
         requires = requires_lines,
         build_arch = build_arch_line,
@@ -2910,6 +2915,44 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         phoreus_python_version = PHOREUS_PYTHON_VERSION,
         r_runtime_setup = r_runtime_setup,
     )
+}
+
+fn source_archive_is_zip(source_url: &str) -> bool {
+    let lowered = source_url.trim().to_ascii_lowercase();
+    let trimmed = lowered
+        .split_once('?')
+        .map(|(base, _)| base)
+        .unwrap_or(lowered.as_str());
+    let trimmed = trimmed
+        .split_once('#')
+        .map(|(base, _)| base)
+        .unwrap_or(trimmed);
+    trimmed.ends_with(".zip")
+}
+
+fn render_source_unpack_prep_block(source_is_zip: bool) -> String {
+    if !source_is_zip {
+        return "rm -rf buildsrc\n\
+mkdir -p %{bioconda_source_subdir}\n\
+tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1\n"
+            .to_string();
+    }
+
+    "rm -rf buildsrc\n\
+mkdir -p %{bioconda_source_subdir}\n\
+zip_unpack_dir=buildsrc/.bioconda2rpm-unpack\n\
+rm -rf \"$zip_unpack_dir\"\n\
+mkdir -p \"$zip_unpack_dir\"\n\
+unzip -q %{SOURCE0} -d \"$zip_unpack_dir\"\n\
+zip_root=\"$zip_unpack_dir\"\n\
+zip_top_dirs=$(find \"$zip_unpack_dir\" -mindepth 1 -maxdepth 1 -type d | wc -l)\n\
+zip_top_files=$(find \"$zip_unpack_dir\" -mindepth 1 -maxdepth 1 -type f | wc -l)\n\
+if [[ \"$zip_top_dirs\" -eq 1 && \"$zip_top_files\" -eq 0 ]]; then\n\
+  zip_root=$(find \"$zip_unpack_dir\" -mindepth 1 -maxdepth 1 -type d | head -n 1)\n\
+fi\n\
+cp -a \"$zip_root\"/. %{bioconda_source_subdir}/\n\
+rm -rf \"$zip_unpack_dir\"\n"
+        .to_string()
 }
 
 fn render_python_venv_setup_block(python_recipe: bool, python_requirements: &[String]) -> String {
@@ -3240,6 +3283,7 @@ fn map_build_dependency(dep: &str) -> String {
     match dep {
         "boost-cpp" => "boost-devel".to_string(),
         "bzip2" => "bzip2-devel".to_string(),
+        "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "go-compiler" => "golang".to_string(),
         "libcurl" => "libcurl-devel".to_string(),
         "libdeflate" => "libdeflate-devel".to_string(),
@@ -3265,6 +3309,7 @@ fn map_runtime_dependency(dep: &str) -> String {
     }
     match dep {
         "boost-cpp" => "boost".to_string(),
+        "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         other => other.to_string(),
     }
 }
@@ -4218,6 +4263,14 @@ mod tests {
         assert_eq!(map_build_dependency("xz"), "xz-devel".to_string());
         assert_eq!(map_build_dependency("libcurl"), "libcurl-devel".to_string());
         assert_eq!(
+            map_build_dependency("font-ttf-dejavu-sans-mono"),
+            "dejavu-sans-mono-fonts".to_string()
+        );
+        assert_eq!(
+            map_runtime_dependency("font-ttf-dejavu-sans-mono"),
+            "dejavu-sans-mono-fonts".to_string()
+        );
+        assert_eq!(
             map_build_dependency("perl-canary-stability"),
             "perl-Canary-Stability".to_string()
         );
@@ -4307,6 +4360,58 @@ requirements:
         assert!(spec.contains("retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\""));
         assert!(spec.contains("export CPU_COUNT=1"));
         assert!(spec.contains("export MAKEFLAGS=-j1"));
+    }
+
+    #[test]
+    fn source_archive_zip_detection_handles_queries_and_fragments() {
+        assert!(source_archive_is_zip(
+            "https://example.invalid/fastqc_v0.12.1.zip"
+        ));
+        assert!(source_archive_is_zip(
+            "https://example.invalid/fastqc_v0.12.1.zip?download=1#section"
+        ));
+        assert!(!source_archive_is_zip(
+            "https://example.invalid/tool-1.0.tar.gz"
+        ));
+    }
+
+    #[test]
+    fn payload_spec_uses_unzip_for_zip_sources() {
+        let parsed = ParsedMeta {
+            package_name: "fastqc".to_string(),
+            version: "0.12.1".to_string(),
+            source_url: "https://example.invalid/fastqc_v0.12.1.zip".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/fastqc".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "fastqc".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "fastqc",
+            &parsed,
+            "bioconda-fastqc-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains("BuildRequires:  unzip"));
+        assert!(spec.contains("unzip -q %{SOURCE0} -d \"$zip_unpack_dir\""));
+        assert!(
+            !spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1")
+        );
     }
 
     #[test]
