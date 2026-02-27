@@ -3181,6 +3181,11 @@ fn render_payload_spec(
                 .map(|d| map_build_dependency(d)),
         );
     }
+    if software_slug == "igv" {
+        // IGV's Gradle build enforces Java toolchain languageVersion=21.
+        build_requires.remove("java-11-openjdk");
+        build_requires.insert("java-21-openjdk-devel".to_string());
+    }
 
     let mut runtime_requires = BTreeSet::new();
     runtime_requires.insert("phoreus".to_string());
@@ -3208,6 +3213,10 @@ fn render_payload_spec(
                 .filter(|dep| !is_conda_only_dependency(dep))
                 .map(|d| map_runtime_dependency(d)),
         );
+    }
+    if software_slug == "igv" {
+        runtime_requires.remove("java-11-openjdk");
+        runtime_requires.insert("java-21-openjdk".to_string());
     }
 
     let build_requires_lines = format_dep_lines("BuildRequires", &build_requires);
@@ -3494,6 +3503,16 @@ mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\"\n\
       perl -0pi -e 's@\\n\\s*cp .*gnuconfig.*\\n@\\n      cp -f /usr/share/gnuconfig/config.guess staden-io_lib/config.guess &&\\n      cp -f /usr/share/gnuconfig/config.sub staden-io_lib/config.sub &&\\n@' CMakeLists.txt || true\n\
       sed -i 's|set(JEMALLOC_FLAGS \"CC=${{CMAKE_C_COMPILER}} CFLAGS=\\\\\\\"-fPIC ${{SCHAR_FLAG}}\\\\\\\" CPPFLAGS=\\\\\\\"-fPIC ${{SCHAR_FLAG}}\\\\\\\"\")|set(JEMALLOC_FLAGS \"CC=${{CMAKE_C_COMPILER}} CFLAGS=-fPIC CPPFLAGS=-fPIC\")|g' CMakeLists.txt || true\n\
       perl -0pi -e 's@if\\(CONDA_BUILD\\)\\n\\s*set\\(JEMALLOC_FLAGS .*?\\nelse\\(\\)\\n\\s*set\\(JEMALLOC_FLAGS .*?\\nendif\\(\\)@set(JEMALLOC_FLAGS \"CC=${{CMAKE_C_COMPILER}} CFLAGS=-fPIC CPPFLAGS=-fPIC\")@s' CMakeLists.txt || true\n\
+    fi\n\
+    fi\n\
+    \n\
+    # IGV Gradle builds require Java 21 toolchain resolution.
+    # Prefer the packaged EL9 JDK location and make it explicit for Gradle.
+    if [[ \"%{{tool}}\" == \"igv\" ]]; then\n\
+    if [[ -d /usr/lib/jvm/java-21-openjdk ]]; then\n\
+      export JAVA_HOME=/usr/lib/jvm/java-21-openjdk\n\
+      export PATH=\"$JAVA_HOME/bin:$PATH\"\n\
+      export ORG_GRADLE_JAVA_HOME=\"$JAVA_HOME\"\n\
     fi\n\
     fi\n\
     \n\
@@ -4108,7 +4127,11 @@ fn stage_recipe_support_files_from_dir(dir: &Path, sources_dir: &Path) -> Result
 }
 
 fn spec_escape(input: &str) -> String {
-    input.replace('%', "%%").trim().to_string()
+    input
+        .replace('%', "%%")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn spec_escape_or_default(input: &str, fallback: &str) -> String {
@@ -4188,6 +4211,7 @@ fn map_build_dependency(dep: &str) -> String {
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
         "mscorefonts" => "dejavu-sans-fonts".to_string(),
+        "glib" => "glib2-devel".to_string(),
         "go-compiler" => "golang".to_string(),
         "gnuconfig" => "automake".to_string(),
         "isa-l" => "isa-l-devel".to_string(),
@@ -4243,6 +4267,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
         "mscorefonts" => "dejavu-sans-fonts".to_string(),
+        "glib" => "glib2".to_string(),
         "gnuconfig" => "automake".to_string(),
         "libblas" => "openblas".to_string(),
         "libiconv" => "glibc".to_string(),
@@ -5601,6 +5626,7 @@ mod tests {
         assert_eq!(map_build_dependency("ninja"), "ninja-build".to_string());
         assert_eq!(map_build_dependency("cereal"), "cereal-devel".to_string());
         assert_eq!(map_build_dependency("gnuconfig"), "automake".to_string());
+        assert_eq!(map_build_dependency("glib"), "glib2-devel".to_string());
         assert_eq!(map_build_dependency("libiconv"), "glibc-devel".to_string());
         assert_eq!(
             map_build_dependency("font-ttf-dejavu-sans-mono"),
@@ -5628,6 +5654,7 @@ mod tests {
         assert_eq!(map_runtime_dependency("gnuconfig"), "automake".to_string());
         assert_eq!(map_runtime_dependency("libblas"), "openblas".to_string());
         assert_eq!(map_runtime_dependency("libiconv"), "glibc".to_string());
+        assert_eq!(map_runtime_dependency("glib"), "glib2".to_string());
         assert_eq!(map_runtime_dependency("liblapack"), "lapack".to_string());
         assert_eq!(map_runtime_dependency("liblzma-devel"), "xz".to_string());
         assert_eq!(
@@ -6385,6 +6412,51 @@ requirements:
     }
 
     #[test]
+    fn igv_payload_uses_java21_toolchain() {
+        let mut host_deps = BTreeSet::new();
+        host_deps.insert("openjdk".to_string());
+        host_deps.insert("glib".to_string());
+        let mut run_deps = BTreeSet::new();
+        run_deps.insert("openjdk".to_string());
+
+        let parsed = ParsedMeta {
+            package_name: "igv".to_string(),
+            version: "2.19.7".to_string(),
+            source_url: "https://example.invalid/igv-2.19.7.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://igv.org".to_string(),
+            license: "MIT".to_string(),
+            summary: "Integrative Genomics Viewer".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("./gradlew createDist".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["openjdk <22".to_string(), "glib".to_string()],
+            run_dep_specs_raw: vec!["openjdk <22".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps,
+            run_deps,
+        };
+
+        let spec = render_payload_spec(
+            "igv",
+            &parsed,
+            "bioconda-igv-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains("BuildRequires:  java-21-openjdk-devel"));
+        assert!(!spec.contains("BuildRequires:  java-11-openjdk"));
+        assert!(spec.contains("Requires:  java-21-openjdk"));
+        assert!(spec.contains("export ORG_GRADLE_JAVA_HOME=\"$JAVA_HOME\""));
+    }
+
+    #[test]
     fn build_script_python_detection_works_for_common_patterns() {
         assert!(script_text_indicates_python(
             "#!/bin/bash\npython -m pip install . --no-deps\n"
@@ -6556,6 +6628,12 @@ build:
 "#;
         let rendered = render_meta_yaml(src).expect("render jinja with SRC_DIR");
         assert!(rendered.contains("$SRC_DIR/scanpy-scripts"));
+    }
+
+    #[test]
+    fn spec_escape_flattens_multiline_values() {
+        let escaped = spec_escape("Line one\nLine two\t  with   spaces");
+        assert_eq!(escaped, "Line one Line two with spaces");
     }
 
     #[test]
