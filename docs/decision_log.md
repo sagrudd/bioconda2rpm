@@ -34,3 +34,6 @@
 
 ### Q6 - Handling `outputs:` multi-package recipes
 - For recipes that define `outputs:`, build all outputs as discrete RPMs.
+
+### Q7 - Version selection in versioned recipe subdirectories
+- When versioned subdirectories are present, always select the highest versioned subdirectory.
