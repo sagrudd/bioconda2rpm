@@ -63,3 +63,7 @@
   - machine-readable JSON summary
   - CSV report
   - Markdown summary report
+
+### Q13 - Licensing/compliance policy
+- Default compliance behavior must include SPDX normalization and license policy checks.
+- Packages failing license normalization/policy checks are quarantined.
