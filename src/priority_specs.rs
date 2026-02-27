@@ -3564,6 +3564,7 @@ fn map_build_dependency(dep: &str) -> String {
         "boost-cpp" => "boost-devel".to_string(),
         "bzip2" => "bzip2-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
+        "fonts-conda-ecosystem" => "fontconfig".to_string(),
         "go-compiler" => "golang".to_string(),
         "isa-l" => "isa-l-devel".to_string(),
         "libcurl" => "libcurl-devel".to_string(),
@@ -3597,6 +3598,7 @@ fn map_runtime_dependency(dep: &str) -> String {
     match dep {
         "boost-cpp" => "boost".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
+        "fonts-conda-ecosystem" => "fontconfig".to_string(),
         other => other.to_string(),
     }
 }
@@ -4810,6 +4812,14 @@ mod tests {
         assert_eq!(
             map_runtime_dependency("font-ttf-dejavu-sans-mono"),
             "dejavu-sans-mono-fonts".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("fonts-conda-ecosystem"),
+            "fontconfig".to_string()
+        );
+        assert_eq!(
+            map_runtime_dependency("fonts-conda-ecosystem"),
+            "fontconfig".to_string()
         );
         assert_eq!(
             map_build_dependency("perl-canary-stability"),
