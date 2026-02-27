@@ -12,7 +12,8 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 struct PriorityTool {
@@ -70,6 +71,30 @@ struct BuildConfig {
 const PHOREUS_PYTHON_VERSION: &str = "3.11";
 const PHOREUS_PYTHON_PACKAGE: &str = "phoreus-python-3.11";
 const REFERENCE_PYTHON_SPECS_DIR: &str = "../software_query/rpm/python/specs";
+
+fn log_progress(message: impl AsRef<str>) {
+    println!("progress {}", message.as_ref());
+}
+
+fn format_elapsed(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    let mins = secs / 60;
+    let rem_secs = secs % 60;
+    if mins > 0 {
+        format!("{mins}m{rem_secs:02}s")
+    } else {
+        format!("{rem_secs}s")
+    }
+}
+
+fn compact_reason(reason: &str, limit: usize) -> String {
+    let collapsed = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= limit {
+        collapsed
+    } else {
+        format!("{}...", collapsed.chars().take(limit).collect::<String>())
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct DependencyResolutionEvent {
@@ -233,11 +258,20 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
 }
 
 pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
+    let build_started = Instant::now();
     let topdir = args.effective_topdir();
     let specs_dir = topdir.join("SPECS");
     let sources_dir = topdir.join("SOURCES");
     let reports_dir = args.effective_reports_dir();
     let bad_spec_dir = args.effective_bad_spec_dir();
+    log_progress(format!(
+        "phase=build-start package={} deps_enabled={} dependency_policy={:?} recipe_root={} topdir={}",
+        args.package,
+        args.with_deps(),
+        args.dependency_policy,
+        args.recipe_root.display(),
+        topdir.display()
+    ));
 
     fs::create_dir_all(&specs_dir)
         .with_context(|| format!("creating specs dir {}", specs_dir.display()))?;
@@ -251,6 +285,11 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     ensure_container_engine_available(&args.container_engine)?;
     sync_reference_python_specs(&specs_dir).context("syncing reference Phoreus Python specs")?;
     let recipe_dirs = discover_recipe_dirs(&args.recipe_root)?;
+    log_progress(format!(
+        "phase=recipe-discovery status=completed recipe_count={} elapsed={}",
+        recipe_dirs.len(),
+        format_elapsed(build_started.elapsed())
+    ));
 
     let build_config = BuildConfig {
         topdir: topdir.clone(),
@@ -274,6 +313,13 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     if let PayloadVersionState::UpToDate { existing_version } =
         payload_version_state(&topdir, &root_slug, &root_parsed.version)?
     {
+        log_progress(format!(
+            "phase=build status=up-to-date package={} version={} local_version={} elapsed={}",
+            root_resolved.recipe_name,
+            root_parsed.version,
+            existing_version,
+            format_elapsed(build_started.elapsed())
+        ));
         clear_quarantine_note(&bad_spec_dir, &root_slug);
         let reason = format!(
             "already up-to-date: bioconda version {} already built (latest local payload version {})",
@@ -324,15 +370,28 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         .iter()
         .filter_map(|key| plan_nodes.get(key).map(|node| node.name.clone()))
         .collect::<Vec<_>>();
+    log_progress(format!(
+        "phase=dependency-plan status=completed package={} planned_nodes={} order={}",
+        args.package,
+        build_order.len(),
+        build_order.join("->")
+    ));
 
     let mut built = HashSet::new();
     let mut results = Vec::new();
     let mut fail_reason: Option<String> = None;
 
-    for key in &plan_order {
+    for (idx, key) in plan_order.iter().enumerate() {
         let Some(node) = plan_nodes.get(key) else {
             continue;
         };
+        let package_started = Instant::now();
+        log_progress(format!(
+            "phase=package status=started index={}/{} package={}",
+            idx + 1,
+            plan_order.len(),
+            node.name
+        ));
 
         let blocked_by = node
             .direct_bioconda_deps
@@ -355,6 +414,13 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
             if status == "quarantined" {
                 quarantine_note(&bad_spec_dir, key, &reason);
             }
+            log_progress(format!(
+                "phase=package status={} package={} blocked_by={} reason={}",
+                status,
+                node.name,
+                blocked_by.join(","),
+                compact_reason(&reason, 240)
+            ));
             results.push(ReportEntry {
                 software: node.name.clone(),
                 priority: 0,
@@ -390,6 +456,13 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
             &bad_spec_dir,
             &build_config,
         );
+        log_progress(format!(
+            "phase=package status={} package={} elapsed={} reason={}",
+            entry.status,
+            node.name,
+            format_elapsed(package_started.elapsed()),
+            compact_reason(&entry.reason, 240)
+        ));
         if entry.status == "generated" || entry.status == "up-to-date" {
             built.insert(key.clone());
         } else if args.missing_dependency == MissingDependencyPolicy::Fail {
@@ -405,8 +478,20 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     let report_csv = reports_dir.join(format!("build_{report_stem}.csv"));
     let report_md = reports_dir.join(format!("build_{report_stem}.md"));
     write_reports(&results, &report_json, &report_csv, &report_md)?;
+    log_progress(format!(
+        "phase=report status=written report_json={} report_csv={} report_md={}",
+        report_json.display(),
+        report_csv.display(),
+        report_md.display()
+    ));
 
     if let Some(reason) = fail_reason {
+        log_progress(format!(
+            "phase=build status=failed policy={:?} reason={} elapsed={}",
+            args.missing_dependency,
+            compact_reason(&reason, 320),
+            format_elapsed(build_started.elapsed())
+        ));
         anyhow::bail!(
             "build failed under missing-dependency policy fail: {} (report_md={})",
             reason,
@@ -418,6 +503,15 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     let up_to_date = results.iter().filter(|r| r.status == "up-to-date").count();
     let skipped = results.iter().filter(|r| r.status == "skipped").count();
     let quarantined = results.iter().filter(|r| r.status == "quarantined").count();
+    log_progress(format!(
+        "phase=build status=completed requested={} generated={} up_to_date={} skipped={} quarantined={} elapsed={}",
+        results.len(),
+        generated,
+        up_to_date,
+        skipped,
+        quarantined,
+        format_elapsed(build_started.elapsed())
+    ));
     Ok(BuildSummary {
         requested: results.len(),
         generated,
@@ -501,6 +595,10 @@ fn visit_build_plan_node(
 
     let canonical = normalize_name(&resolved.recipe_name);
     if !is_root && !is_buildable_recipe(&resolved, &parsed) {
+        log_progress(format!(
+            "phase=dependency action=skip package={} reason=not-buildable(build.sh/meta-script/source-url missing)",
+            resolved.recipe_name
+        ));
         return Ok(None);
     }
     if visited.contains(&canonical) {
@@ -514,13 +612,35 @@ fn visit_build_plan_node(
     let mut bioconda_deps = BTreeSet::new();
 
     if with_deps {
-        for dep in selected_dependency_set(&parsed, policy, is_root) {
+        let selected = selected_dependency_set(&parsed, policy, is_root);
+        if !selected.is_empty() {
+            log_progress(format!(
+                "phase=dependency action=scan package={} selected_count={} policy={:?} is_root={}",
+                resolved.recipe_name,
+                selected.len(),
+                policy,
+                is_root
+            ));
+        }
+        for dep in selected {
             if dep == canonical {
+                log_progress(format!(
+                    "phase=dependency action=skip from={} to={} reason=self-reference",
+                    canonical, dep
+                ));
                 continue;
             }
             if map_perl_core_dependency(&dep).is_some() {
+                log_progress(format!(
+                    "phase=dependency action=skip from={} to={} reason=perl-core-system-provided",
+                    canonical, dep
+                ));
                 continue;
             }
+            log_progress(format!(
+                "phase=dependency action=follow from={} to={}",
+                canonical, dep
+            ));
             if let Some(dep_key) = visit_build_plan_node(
                 &dep,
                 false,
@@ -534,6 +654,11 @@ fn visit_build_plan_node(
                 order,
             )? {
                 bioconda_deps.insert(dep_key);
+            } else {
+                log_progress(format!(
+                    "phase=dependency action=unresolved from={} to={}",
+                    canonical, dep
+                ));
             }
         }
     }
@@ -3107,6 +3232,11 @@ fn build_spec_chain_in_container(
     let spec_in_container = format!("/work/SPECS/{spec_name}");
     let work_mount = format!("{}:/work", build_config.topdir.display());
     let build_label = label.replace('\'', "_");
+    let stage_started = Instant::now();
+    log_progress(format!(
+        "phase=container-build status=queued label={} spec={} image={}",
+        build_label, spec_name, build_config.container_image
+    ));
 
     let script = format!(
         "set -euo pipefail\n\
@@ -3238,7 +3368,12 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         spec = sh_single_quote(&spec_in_container),
     );
 
-    let run_once = || -> Result<std::process::Output> {
+    let run_once = |attempt: usize| -> Result<std::process::Output> {
+        let step_started = Instant::now();
+        log_progress(format!(
+            "phase=container-build status=started label={} spec={} attempt={} image={}",
+            build_label, spec_name, attempt, build_config.container_image
+        ));
         let mut cmd = Command::new(&build_config.container_engine);
         cmd.arg("run")
             .arg("--rm")
@@ -3252,25 +3387,66 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         cmd.arg(&build_config.container_image)
             .arg("bash")
             .arg("-lc")
-            .arg(&script)
-            .output()
-            .with_context(|| {
-                format!(
-                    "running container build chain for {} using image {}",
-                    spec_name, build_config.container_image
-                )
-            })
+            .arg(&script);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        let mut child = cmd.spawn().with_context(|| {
+            format!(
+                "running container build chain for {} using image {}",
+                spec_name, build_config.container_image
+            )
+        })?;
+
+        let mut next_heartbeat = Duration::from_secs(60);
+        loop {
+            if child
+                .try_wait()
+                .with_context(|| format!("polling container build chain for {}", spec_name))?
+                .is_some()
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(5));
+            let elapsed = step_started.elapsed();
+            if elapsed >= next_heartbeat {
+                log_progress(format!(
+                    "phase=container-build status=running label={} spec={} attempt={} elapsed={}",
+                    build_label,
+                    spec_name,
+                    attempt,
+                    format_elapsed(elapsed)
+                ));
+                next_heartbeat += Duration::from_secs(60);
+            }
+        }
+
+        let output = child
+            .wait_with_output()
+            .with_context(|| format!("collecting container build output for {}", spec_name))?;
+        log_progress(format!(
+            "phase=container-build status=finished label={} spec={} attempt={} elapsed={} exit={}",
+            build_label,
+            spec_name,
+            attempt,
+            format_elapsed(step_started.elapsed()),
+            output.status
+        ));
+        Ok(output)
     };
 
-    let mut output = run_once()?;
+    let mut output = run_once(1)?;
     let mut combined = format!(
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     if !output.status.success() && is_source_permission_denied(&combined) {
+        log_progress(format!(
+            "phase=container-build status=retrying label={} spec={} reason=source-permission-denied",
+            build_label, spec_name
+        ));
         fix_host_source_permissions(&build_config.topdir.join("SOURCES"))?;
-        output = run_once()?;
+        output = run_once(2)?;
         combined = format!(
             "{}\n{}",
             String::from_utf8_lossy(&output.stdout),
@@ -3287,6 +3463,23 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
     )
     .ok()
     .flatten();
+    if let Some(summary) = dep_summary.as_ref() {
+        log_progress(format!(
+            "phase=dependency-resolution spec={} total_events={} unresolved={} graph_md={} graph_json={}",
+            spec_name,
+            dep_events.len(),
+            summary.unresolved.len(),
+            summary.md_path.display(),
+            summary.json_path.display()
+        ));
+        if !summary.unresolved.is_empty() {
+            log_progress(format!(
+                "phase=dependency-resolution spec={} unresolved_deps={}",
+                spec_name,
+                summary.unresolved.join(",")
+            ));
+        }
+    }
 
     let logs_dir = build_config.reports_dir.join("build_logs");
     fs::create_dir_all(&logs_dir)
@@ -3299,6 +3492,14 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         let arch_policy =
             classify_arch_policy(&combined, &build_config.host_arch).unwrap_or("unknown");
         let tail = tail_lines(&combined, 20);
+        log_progress(format!(
+            "phase=container-build status=failed label={} spec={} elapsed={} arch_policy={} failure_hint={}",
+            build_label,
+            spec_name,
+            format_elapsed(stage_started.elapsed()),
+            arch_policy,
+            compact_reason(&tail, 280)
+        ));
         let dep_hint = dep_summary
             .as_ref()
             .map(|summary| {
@@ -3315,9 +3516,10 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
             })
             .unwrap_or_default();
         anyhow::bail!(
-            "container build chain failed for {} (exit status: {}) arch_policy={} log={} tail={}{}",
+            "container build chain failed for {} (exit status: {}) elapsed={} arch_policy={} log={} tail={}{}",
             spec_name,
             output.status,
+            format_elapsed(stage_started.elapsed()),
             arch_policy,
             log_path.display(),
             tail,
@@ -3325,6 +3527,12 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         );
     }
 
+    log_progress(format!(
+        "phase=container-build status=completed label={} spec={} elapsed={}",
+        build_label,
+        spec_name,
+        format_elapsed(stage_started.elapsed())
+    ));
     Ok(())
 }
 
