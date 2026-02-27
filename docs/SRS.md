@@ -39,6 +39,7 @@ FR-003 Dependency closure control
 
 FR-004 Recipe rendering
 - `meta.yaml` rendering shall use full Jinja support.
+- `source.patches` entries from recipe metadata shall be staged and applied during SPEC `%prep`.
 
 FR-005 Multi-output recipes
 - Recipes defining `outputs:` shall produce discrete RPM outputs for all declared outputs.

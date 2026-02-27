@@ -95,6 +95,7 @@ Per `build <tool>` run:
 3. Build dependencies first in deterministic order.
 4. For each package:
    - Resolve/prepare sources from recipe metadata.
+   - Stage and apply any `source.patches` entries during `%prep`.
    - Build SRPM inside container (`rpmbuild -bs`).
    - Preflight `BuildRequires` inside container:
      - already installed packages

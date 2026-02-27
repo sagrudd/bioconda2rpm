@@ -30,6 +30,7 @@ struct RecipeDir {
 #[derive(Debug, Clone)]
 struct ResolvedRecipe {
     recipe_name: String,
+    recipe_dir: PathBuf,
     variant_dir: PathBuf,
     meta_path: PathBuf,
     build_sh_path: Option<PathBuf>,
@@ -44,6 +45,7 @@ struct ParsedMeta {
     homepage: String,
     license: String,
     summary: String,
+    source_patches: Vec<String>,
     build_deps: BTreeSet<String>,
     host_deps: BTreeSet<String>,
     run_deps: BTreeSet<String>,
@@ -866,6 +868,33 @@ fn process_tool(
         };
     }
 
+    let staged_patch_sources = match stage_recipe_patches(
+        &parsed.source_patches,
+        &resolved,
+        sources_dir,
+        &software_slug,
+    ) {
+        Ok(v) => v,
+        Err(err) => {
+            let reason = format!("failed to stage recipe patches: {err}");
+            quarantine_note(bad_spec_dir, &software_slug, &reason);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "quarantined".to_string(),
+                reason,
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: staged_build_sh.display().to_string(),
+            };
+        }
+    };
+
     let payload_spec_path = specs_dir.join(format!("phoreus-{}.spec", software_slug));
     let meta_spec_path = specs_dir.join(format!("phoreus-{}-default.spec", software_slug));
 
@@ -873,6 +902,7 @@ fn process_tool(
         &software_slug,
         &parsed,
         &staged_build_sh_name,
+        &staged_patch_sources,
         &resolved.meta_path,
         &resolved.variant_dir,
     );
@@ -1104,6 +1134,7 @@ fn build_resolved(recipe: &RecipeDir, overlap_reason: &str) -> Result<Option<Res
 
     Ok(Some(ResolvedRecipe {
         recipe_name: recipe.name.clone(),
+        recipe_dir: recipe.path.clone(),
         variant_dir,
         meta_path,
         build_sh_path,
@@ -1435,6 +1466,7 @@ fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
         .and_then(|m| m.get(Value::String("summary".to_string())))
         .and_then(value_to_string)
         .unwrap_or_else(|| format!("Generated package for {package_name}"));
+    let source_patches = extract_source_patches(root.get("source"));
 
     let requirements = root.get("requirements").and_then(Value::as_mapping);
     let build_deps = requirements
@@ -1459,6 +1491,7 @@ fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
         homepage,
         license,
         summary,
+        source_patches,
         build_deps,
         host_deps,
         run_deps,
@@ -1504,6 +1537,46 @@ fn extract_source_url(source: Option<&Value>) -> Option<String> {
         }),
         Some(Value::String(s)) => Some(s.to_string()),
         _ => None,
+    }
+}
+
+fn extract_source_patches(source: Option<&Value>) -> Vec<String> {
+    let mut out = Vec::new();
+    match source {
+        Some(Value::Mapping(map)) => {
+            if let Some(patches) = map.get(Value::String("patches".to_string())) {
+                out.extend(extract_patch_list(patches));
+            }
+        }
+        Some(Value::Sequence(seq)) => {
+            for item in seq {
+                if let Some(map) = item.as_mapping()
+                    && let Some(patches) = map.get(Value::String("patches".to_string()))
+                {
+                    out.extend(extract_patch_list(patches));
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+fn extract_patch_list(node: &Value) -> Vec<String> {
+    match node {
+        Value::Sequence(items) => items
+            .iter()
+            .filter_map(value_to_string)
+            .filter(|s| !s.trim().is_empty())
+            .collect(),
+        Value::String(s) => {
+            if s.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec![s.clone()]
+            }
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -1572,6 +1645,7 @@ fn render_payload_spec(
     software_slug: &str,
     parsed: &ParsedMeta,
     staged_build_sh_name: &str,
+    staged_patch_sources: &[String],
     meta_path: &Path,
     variant_dir: &Path,
 ) -> String {
@@ -1592,6 +1666,8 @@ fn render_payload_spec(
 
     let build_requires_lines = format_dep_lines("BuildRequires", &build_requires);
     let requires_lines = format_dep_lines("Requires", &runtime_requires);
+    let patch_source_lines = render_patch_source_lines(staged_patch_sources);
+    let patch_apply_lines = render_patch_apply_lines(staged_patch_sources);
 
     format!(
         "%global debug_package %{{nil}}\n\
@@ -1609,6 +1685,7 @@ License:        {license}\n\
 URL:            {homepage}\n\
 Source0:        {source_url}\n\
 Source1:        {build_sh}\n\
+{patch_sources}\n\
 {build_requires}\n\
 {requires}\n\
 %global phoreus_prefix /usr/local/phoreus/%{{tool}}/%{{version}}\n\
@@ -1625,6 +1702,7 @@ mkdir -p buildsrc\n\
 tar -xf %{{SOURCE0}} -C buildsrc --strip-components=1\n\
 cp %{{SOURCE1}} buildsrc/build.sh\n\
 chmod 0755 buildsrc/build.sh\n\
+{patch_apply}\
 \n\
 %build\n\
 cd buildsrc\n\
@@ -1688,6 +1766,8 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         homepage = homepage,
         source_url = source_url,
         build_sh = spec_escape(staged_build_sh_name),
+        patch_sources = patch_source_lines,
+        patch_apply = patch_apply_lines,
         build_requires = build_requires_lines,
         requires = requires_lines,
         meta_path = spec_escape(&meta_path.display().to_string()),
@@ -1747,6 +1827,93 @@ fn format_dep_lines(prefix: &str, deps: &BTreeSet<String>) -> String {
         .map(|dep| format!("{prefix}:  {dep}"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn render_patch_source_lines(staged_patch_sources: &[String]) -> String {
+    if staged_patch_sources.is_empty() {
+        String::new()
+    } else {
+        staged_patch_sources
+            .iter()
+            .enumerate()
+            .map(|(idx, src)| format!("Source{}:        {}", idx + 2, spec_escape(src)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn render_patch_apply_lines(staged_patch_sources: &[String]) -> String {
+    if staged_patch_sources.is_empty() {
+        String::new()
+    } else {
+        let mut out = String::new();
+        out.push_str("cd buildsrc\n");
+        for (idx, _) in staged_patch_sources.iter().enumerate() {
+            out.push_str(&format!(
+                "(patch -p1 -i %{{SOURCE{}}} || patch -p0 -i %{{SOURCE{}}})\n",
+                idx + 2,
+                idx + 2
+            ));
+        }
+        out
+    }
+}
+
+fn stage_recipe_patches(
+    source_patches: &[String],
+    resolved: &ResolvedRecipe,
+    sources_dir: &Path,
+    software_slug: &str,
+) -> Result<Vec<String>> {
+    let mut staged = Vec::new();
+    for (idx, patch_entry) in source_patches.iter().enumerate() {
+        let raw = patch_entry.trim();
+        if raw.is_empty() {
+            continue;
+        }
+
+        if raw.starts_with("http://") || raw.starts_with("https://") || raw.starts_with("ftp://") {
+            staged.push(raw.to_string());
+            continue;
+        }
+
+        let patch_name = raw.split('#').next().unwrap_or(raw).trim();
+        let candidates = [
+            resolved.variant_dir.join(patch_name),
+            resolved.recipe_dir.join(patch_name),
+            resolved
+                .meta_path
+                .parent()
+                .unwrap_or(&resolved.variant_dir)
+                .join(patch_name),
+        ];
+
+        let Some(src_path) = candidates.into_iter().find(|p| p.exists() && p.is_file()) else {
+            anyhow::bail!(
+                "patch '{}' not found in variant or recipe directory",
+                patch_name
+            );
+        };
+
+        let base = Path::new(patch_name)
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or("patch.patch");
+        let staged_name = format!("bioconda-{}-patch-{}-{}", software_slug, idx + 1, base);
+        let staged_path = sources_dir.join(&staged_name);
+        fs::copy(&src_path, &staged_path).with_context(|| {
+            format!(
+                "copying patch '{}' to '{}'",
+                src_path.display(),
+                staged_path.display()
+            )
+        })?;
+        #[cfg(unix)]
+        fs::set_permissions(&staged_path, fs::Permissions::from_mode(0o644))
+            .with_context(|| format!("setting patch permissions {}", staged_path.display()))?;
+        staged.push(staged_name);
+    }
+    Ok(staged)
 }
 
 fn spec_escape(input: &str) -> String {
@@ -2407,6 +2574,55 @@ mod tests {
         assert_eq!(map_runtime_dependency("boost-cpp"), "boost".to_string());
         assert_eq!(map_build_dependency("python"), "python3".to_string());
         assert_eq!(map_runtime_dependency("python"), "python3".to_string());
+    }
+
+    #[test]
+    fn parse_meta_extracts_source_patches() {
+        let rendered = r#"
+package:
+  name: blast
+  version: 2.5.0
+source:
+  url: http://example.invalid/src.tar.gz
+  patches:
+    - boost_106400.patch
+about:
+  license: Public-Domain
+requirements:
+  build:
+    - c-compiler
+"#;
+        let parsed = parse_rendered_meta(rendered).expect("parse rendered meta");
+        assert_eq!(
+            parsed.source_patches,
+            vec!["boost_106400.patch".to_string()]
+        );
+    }
+
+    #[test]
+    fn payload_spec_renders_patch_sources_and_apply_steps() {
+        let parsed = ParsedMeta {
+            package_name: "blast".to_string(),
+            version: "2.5.0".to_string(),
+            source_url: "http://example.invalid/src.tar.gz".to_string(),
+            homepage: "http://example.invalid".to_string(),
+            license: "Public-Domain".to_string(),
+            summary: "blast".to_string(),
+            source_patches: vec!["boost_106400.patch".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let spec = render_payload_spec(
+            "blast",
+            &parsed,
+            "bioconda-blast-build.sh",
+            &["bioconda-blast-patch-1-boost_106400.patch".to_string()],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+        );
+        assert!(spec.contains("Source2:"));
+        assert!(spec.contains("patch -p1 -i %{SOURCE2}"));
     }
 
     #[test]
