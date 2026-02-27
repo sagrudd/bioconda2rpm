@@ -655,7 +655,7 @@ fn visit_build_plan_node(
                 ));
                 continue;
             }
-            if is_r_ecosystem_dependency_name(&dep) {
+            if is_r_ecosystem_dependency_name(&dep) && is_r_base_dependency_name(&dep) {
                 log_progress(format!(
                     "phase=dependency action=skip from={} to={} reason=r-runtime-provided",
                     canonical, dep
@@ -1808,6 +1808,12 @@ fn render_meta_yaml(meta: &str) -> Result<String> {
             PREFIX => "$PREFIX",
             RECIPE_DIR => "$RECIPE_DIR",
             R => "R",
+            environ => context! {
+                PREFIX => "$PREFIX",
+                RECIPE_DIR => "$RECIPE_DIR",
+                PYTHON => "$PYTHON",
+                PIP => "$PIP",
+            },
         })
         .context("rendering meta.yaml jinja template")
 }
@@ -2142,6 +2148,36 @@ fn recipe_requires_r_runtime(parsed: &ParsedMeta) -> bool {
         .chain(parsed.host_deps.iter())
         .chain(parsed.run_deps.iter())
         .any(|dep| is_r_ecosystem_dependency_name(dep))
+}
+
+fn is_r_base_dependency_name(dep: &str) -> bool {
+    let normalized = dep.trim().replace('_', "-").to_lowercase();
+    matches!(normalized.as_str(), "r" | "r-base" | "r-essentials")
+}
+
+fn is_cran_r_dependency_name(dep: &str) -> bool {
+    let normalized = dep.trim().replace('_', "-").to_lowercase();
+    normalized.starts_with("r-") && !is_r_base_dependency_name(&normalized)
+}
+
+fn build_r_cran_requirements(parsed: &ParsedMeta) -> Vec<String> {
+    let mut out = BTreeSet::new();
+    for dep in parsed
+        .build_deps
+        .iter()
+        .chain(parsed.host_deps.iter())
+        .chain(parsed.run_deps.iter())
+    {
+        if is_cran_r_dependency_name(dep) {
+            let normalized = dep.trim().replace('_', "-").to_lowercase();
+            if let Some(pkg) = normalized.strip_prefix("r-")
+                && !pkg.is_empty()
+            {
+                out.insert(pkg.to_string());
+            }
+        }
+    }
+    out.into_iter().collect()
 }
 
 fn recipe_requires_rust_runtime(parsed: &ParsedMeta) -> bool {
@@ -2538,14 +2574,25 @@ fn extract_source_url(source: Option<&Value>) -> Option<String> {
     match source {
         Some(Value::Mapping(map)) => map
             .get(Value::String("url".to_string()))
-            .and_then(value_to_string),
+            .and_then(extract_first_string_or_sequence_item),
         Some(Value::Sequence(seq)) => seq.iter().find_map(|item| {
+            if let Some(s) = extract_first_string_or_sequence_item(item) {
+                return Some(s);
+            }
             item.as_mapping()
                 .and_then(|m| m.get(Value::String("url".to_string())))
-                .and_then(value_to_string)
+                .and_then(extract_first_string_or_sequence_item)
         }),
         Some(Value::String(s)) => Some(s.to_string()),
         _ => None,
+    }
+}
+
+fn extract_first_string_or_sequence_item(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Sequence(items) => items.iter().find_map(value_to_string),
+        _ => value_to_string(value),
     }
 }
 
@@ -2709,13 +2756,22 @@ fn render_payload_spec(
     let rust_runtime_required = recipe_requires_rust_runtime(parsed) || rust_script_hint;
     let nim_runtime_required = recipe_requires_nim_runtime(parsed);
     let r_project_recipe = is_r_project_recipe(parsed) || r_script_hint;
+    let r_cran_requirements = if r_runtime_required {
+        build_r_cran_requirements(parsed)
+    } else {
+        Vec::new()
+    };
     let python_requirements = if python_recipe {
         build_python_requirements(parsed)
     } else {
         Vec::new()
     };
     let python_venv_setup = render_python_venv_setup_block(python_recipe, &python_requirements);
-    let r_runtime_setup = render_r_runtime_setup_block(r_runtime_required, r_project_recipe);
+    let r_runtime_setup = render_r_runtime_setup_block(
+        r_runtime_required,
+        r_project_recipe,
+        &r_cran_requirements,
+    );
     let rust_runtime_setup = render_rust_runtime_setup_block(rust_runtime_required);
     let nim_runtime_setup = render_nim_runtime_setup_block(nim_runtime_required);
     let module_lua_env = render_module_lua_env_block(
@@ -3273,10 +3329,31 @@ export PIP_DISABLE_PIP_VERSION_CHECK=1\n\
     )
 }
 
-fn render_r_runtime_setup_block(r_runtime_required: bool, r_project_recipe: bool) -> String {
+fn render_r_runtime_setup_block(
+    r_runtime_required: bool,
+    r_project_recipe: bool,
+    cran_requirements: &[String],
+) -> String {
     if !r_runtime_required {
         return String::new();
     }
+
+    let cran_restore = if cran_requirements.is_empty() {
+        String::new()
+    } else {
+        let pkgs = cran_requirements
+            .iter()
+            .map(|pkg| format!("\"{pkg}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "\"$RSCRIPT\" -e 'options(repos = c(CRAN = \"https://cloud.r-project.org\")); \
+pkgs <- c({pkgs}); lib <- Sys.getenv(\"R_LIBS_USER\"); \
+inst <- rownames(installed.packages(lib.loc = lib)); \
+missing <- setdiff(pkgs, inst); \
+if (length(missing) > 0) install.packages(missing, lib = lib)'\n"
+        )
+    };
 
     let renv_restore = if r_project_recipe {
         "if [[ -f \"renv.lock\" ]]; then\n\
@@ -3296,12 +3373,24 @@ if [[ ! -x \"$PHOREUS_R_PREFIX/bin/Rscript\" ]]; then\n\
   exit 42\n\
 fi\n\
 export PATH=\"$PHOREUS_R_PREFIX/bin:$PATH\"\n\
+export R=\"$PHOREUS_R_PREFIX/bin/R\"\n\
+export RSCRIPT=\"$PHOREUS_R_PREFIX/bin/Rscript\"\n\
 export LD_LIBRARY_PATH=\"$PHOREUS_R_PREFIX/lib64:$PHOREUS_R_PREFIX/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n\
 export R_HOME=\"$PHOREUS_R_PREFIX/lib64/R\"\n\
 export R_LIBS_USER=\"$PREFIX/R/library\"\n\
 mkdir -p \"$R_LIBS_USER\"\n\
+r_lib_paths=(\"$R_LIBS_USER\")\n\
+while IFS= read -r -d '' rlib; do\n\
+  if [[ -n \"$rlib\" && \"$rlib\" != \"$R_LIBS_USER\" ]]; then\n\
+    r_lib_paths+=(\"$rlib\")\n\
+  fi\n\
+done < <(find /usr/local/phoreus -maxdepth 6 -type d -path '*/R/library' -print0 2>/dev/null || true)\n\
+export R_LIBS=\"$(IFS=:; echo \"${{r_lib_paths[*]}}\")\"\n\
+export R_LIBS_SITE=\"$R_LIBS\"\n\
+{cran_restore}\
 {renv_restore}",
         phoreus_r_version = PHOREUS_R_VERSION,
+        cran_restore = cran_restore,
         renv_restore = renv_restore
     )
 }
@@ -3628,6 +3717,16 @@ fn map_build_dependency(dep: &str) -> String {
         return mapped;
     }
     if is_r_ecosystem_dependency_name(dep) {
+        if is_r_base_dependency_name(dep) {
+            return PHOREUS_R_PACKAGE.to_string();
+        }
+        let normalized = dep.trim().replace('_', "-").to_lowercase();
+        if normalized.starts_with("bioconductor-") {
+            return normalized;
+        }
+        if normalized.starts_with("r-") {
+            return PHOREUS_R_PACKAGE.to_string();
+        }
         return PHOREUS_R_PACKAGE.to_string();
     }
     if is_rust_ecosystem_dependency_name(dep) {
@@ -3654,7 +3753,10 @@ fn map_build_dependency(dep: &str) -> String {
         "gnuconfig" => "automake".to_string(),
         "isa-l" => "isa-l-devel".to_string(),
         "libcurl" => "libcurl-devel".to_string(),
+        "libblas" => "openblas-devel".to_string(),
         "libdeflate" => "libdeflate-devel".to_string(),
+        "liblzma-devel" => "xz-devel".to_string(),
+        "liblapack" => "lapack-devel".to_string(),
         "libiconv" => "glibc-devel".to_string(),
         "lz4-c" => "lz4-devel".to_string(),
         "ncurses" => "ncurses-devel".to_string(),
@@ -3672,6 +3774,16 @@ fn map_runtime_dependency(dep: &str) -> String {
         return mapped;
     }
     if is_r_ecosystem_dependency_name(dep) {
+        if is_r_base_dependency_name(dep) {
+            return PHOREUS_R_PACKAGE.to_string();
+        }
+        let normalized = dep.trim().replace('_', "-").to_lowercase();
+        if normalized.starts_with("bioconductor-") {
+            return normalized;
+        }
+        if normalized.starts_with("r-") {
+            return PHOREUS_R_PACKAGE.to_string();
+        }
         return PHOREUS_R_PACKAGE.to_string();
     }
     if is_rust_ecosystem_dependency_name(dep) {
@@ -3692,7 +3804,10 @@ fn map_runtime_dependency(dep: &str) -> String {
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
         "gnuconfig" => "automake".to_string(),
+        "libblas" => "openblas".to_string(),
         "libiconv" => "glibc".to_string(),
+        "liblzma-devel" => "xz".to_string(),
+        "liblapack" => "lapack".to_string(),
         "ninja" => "ninja-build".to_string(),
         other => other.to_string(),
     }
@@ -4362,14 +4477,61 @@ if ! command -v spectool >/dev/null 2>&1; then\n\
 fi\n\
 touch /work/.build-start-{label}.ts\n\
 rpm_single_core_flags=(--define '_smp_mflags -j1' --define '_smp_build_ncpus 1')\n\
+source0_url=$(awk '/^Source0:[[:space:]]+/ {{print $2; exit}}' '{spec}' || true)\n\
+source_candidates=()\n\
+if [[ -n \"$source0_url\" ]]; then\n\
+  source_candidates+=(\"$source0_url\")\n\
+fi\n\
+if [[ \"$source0_url\" =~ ^https://bioconductor.org/packages/.*/bioc/src/contrib/([^/]+)_[^/]+\\.tar\\.gz$ ]]; then\n\
+  bioc_pkg=\"${{BASH_REMATCH[1]}}\"\n\
+  archive_url=$(printf '%s' \"$source0_url\" | sed -E \"s#(/bioc/src/contrib/)#\\\\1Archive/$bioc_pkg/#\")\n\
+  source_candidates+=(\"$archive_url\")\n\
+fi\n\
 spectool_ok=0\n\
-for attempt in 1 2 3; do\n\
-  if spectool -g -R --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}'; then\n\
-    spectool_ok=1\n\
-    break\n\
+if [[ -z \"$source0_url\" ]]; then\n\
+  spectool_ok=1\n\
+else\n\
+  dedup_source_candidates=()\n\
+  for candidate in \"${{source_candidates[@]}}\"; do\n\
+    if [[ -z \"$candidate\" ]]; then\n\
+      continue\n\
+    fi\n\
+    duplicate=0\n\
+    for existing in \"${{dedup_source_candidates[@]:-}}\"; do\n\
+      if [[ \"$existing\" == \"$candidate\" ]]; then\n\
+        duplicate=1\n\
+        break\n\
+      fi\n\
+    done\n\
+    if [[ \"$duplicate\" -eq 0 ]]; then\n\
+      dedup_source_candidates+=(\"$candidate\")\n\
+    fi\n\
+  done\n\
+  source_candidates=(\"${{dedup_source_candidates[@]}}\")\n\
+  if [[ \"${{#source_candidates[@]}}\" -eq 0 ]]; then\n\
+    echo 'no Source0 URL found in spec' >&2\n\
+    exit 6\n\
   fi\n\
-  sleep $((attempt * 2))\n\
-done\n\
+  for candidate in \"${{source_candidates[@]}}\"; do\n\
+    escaped_candidate=$(printf '%s' \"$candidate\" | sed 's/[\\/&]/\\\\&/g')\n\
+    sed -i \"s/^Source0:[[:space:]].*$/Source0:        $escaped_candidate/\" '{spec}'\n\
+    echo \"Downloading: $candidate\"\n\
+    for attempt in 1 2 3; do\n\
+      if spectool -g -R --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}'; then\n\
+        candidate_file=\"$candidate\"\n\
+        candidate_file=\"${{candidate_file%%\\#*}}\"\n\
+        candidate_file=\"${{candidate_file%%\\?*}}\"\n\
+        candidate_file=\"${{candidate_file##*/}}\"\n\
+        if [[ -n \"$candidate_file\" && -s \"/work/SOURCES/$candidate_file\" ]]; then\n\
+          spectool_ok=1\n\
+          break 2\n\
+        fi\n\
+        echo \"source download did not produce /work/SOURCES/$candidate_file\" >&2\n\
+      fi\n\
+      sleep $((attempt * 2))\n\
+    done\n\
+  done\n\
+fi\n\
 if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
   echo 'source download failed after retries' >&2\n\
   exit 6\n\
@@ -4939,6 +5101,9 @@ mod tests {
         assert_eq!(map_build_dependency("isa-l"), "isa-l-devel".to_string());
         assert_eq!(map_build_dependency("xz"), "xz-devel".to_string());
         assert_eq!(map_build_dependency("libcurl"), "libcurl-devel".to_string());
+        assert_eq!(map_build_dependency("libblas"), "openblas-devel".to_string());
+        assert_eq!(map_build_dependency("liblapack"), "lapack-devel".to_string());
+        assert_eq!(map_build_dependency("liblzma-devel"), "xz-devel".to_string());
         assert_eq!(map_build_dependency("ninja"), "ninja-build".to_string());
         assert_eq!(map_build_dependency("cereal"), "cereal-devel".to_string());
         assert_eq!(map_build_dependency("gnuconfig"), "automake".to_string());
@@ -4967,7 +5132,10 @@ mod tests {
         assert_eq!(map_runtime_dependency("ninja"), "ninja-build".to_string());
         assert_eq!(map_runtime_dependency("cereal"), "cereal-devel".to_string());
         assert_eq!(map_runtime_dependency("gnuconfig"), "automake".to_string());
+        assert_eq!(map_runtime_dependency("libblas"), "openblas".to_string());
         assert_eq!(map_runtime_dependency("libiconv"), "glibc".to_string());
+        assert_eq!(map_runtime_dependency("liblapack"), "lapack".to_string());
+        assert_eq!(map_runtime_dependency("liblzma-devel"), "xz".to_string());
         assert_eq!(
             map_build_dependency("perl-canary-stability"),
             "perl-Canary-Stability".to_string()
@@ -5188,6 +5356,25 @@ requirements:
     }
 
     #[test]
+    fn parse_meta_reads_first_source_url_from_url_list() {
+        let rendered = r#"
+package:
+  name: bioconductor-edger
+  version: "4.4.0"
+source:
+  url:
+    - https://bioconductor.org/packages/3.20/bioc/src/contrib/edgeR_4.4.0.tar.gz
+    - https://bioarchive.galaxyproject.org/edgeR_4.4.0.tar.gz
+  md5: db45a60f88cb89ea135743c1eb39b99c
+"#;
+        let parsed = parse_rendered_meta(rendered).expect("parse rendered meta");
+        assert_eq!(
+            parsed.source_url,
+            "https://bioconductor.org/packages/3.20/bioc/src/contrib/edgeR_4.4.0.tar.gz"
+        );
+    }
+
+    #[test]
     fn python_requirements_are_converted_to_pip_specs() {
         assert_eq!(
             conda_dep_to_pip_requirement("jinja2 >=3.0.0"),
@@ -5257,6 +5444,14 @@ requirements:
     fn r_dependencies_map_to_phoreus_r_runtime() {
         assert_eq!(
             map_build_dependency("r-ggplot2"),
+            PHOREUS_R_PACKAGE.to_string()
+        );
+        assert_eq!(
+            map_runtime_dependency("bioconductor-limma"),
+            "bioconductor-limma".to_string()
+        );
+        assert_eq!(
+            map_runtime_dependency("r-ggplot2"),
             PHOREUS_R_PACKAGE.to_string()
         );
         assert_eq!(
@@ -5571,6 +5766,8 @@ requirements:
         );
         assert!(spec.contains(&format!("BuildRequires:  {}", PHOREUS_R_PACKAGE)));
         assert!(spec.contains(&format!("Requires:  {}", PHOREUS_R_PACKAGE)));
+        assert!(spec.contains("export R=\"$PHOREUS_R_PREFIX/bin/R\""));
+        assert!(spec.contains("export R_LIBS_SITE=\"$R_LIBS\""));
         assert!(!spec.contains("r-ggplot2"));
     }
 
@@ -5761,6 +5958,19 @@ requirements:
         let rendered = render_meta_yaml(src).expect("render jinja");
         assert!(rendered.contains("bwa"));
         assert!(rendered.contains("c-compiler"));
+    }
+
+    #[test]
+    fn render_meta_supports_environ_prefix_lookup() {
+        let src = r#"
+package:
+  name: bioconductor-edger
+  version: "4.4.0"
+about:
+  license_file: '{{ environ["PREFIX"] }}/lib/R/share/licenses/GPL-3'
+"#;
+        let rendered = render_meta_yaml(src).expect("render jinja with environ");
+        assert!(rendered.contains("$PREFIX/lib/R/share/licenses/GPL-3"));
     }
 
     #[test]
