@@ -45,3 +45,9 @@
 - Primary command: `bioconda2rpm build <package>`.
 - Dependency resolution is enabled by default.
 - CLI must provide a flag to disable dependency expansion when needed.
+
+### Q10 - Target architecture behavior and SPEC policy
+- Default build target is host architecture only.
+- Expected operational model: dedicated runners/hosts per architecture.
+- Requirement: architecture-specific build instructions must be isolated within a single SPEC using `%ifarch`-style conditionals.
+- Requirement: one SPEC file per software package (no per-arch SPEC duplication).
