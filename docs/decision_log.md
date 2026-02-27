@@ -23,3 +23,6 @@
 - Use full Jinja rendering support (enterprise-grade behavior), not partial templating.
 - Build/runtime environment is expected to be containerized (Docker/Podman) for repeatability.
 - Packaging workflow should support bootstrap/install of build prerequisites required for RPM generation.
+
+### Q4 - Default container execution model
+- Default container strategy: ephemeral container per build (clean execution environment each run).
