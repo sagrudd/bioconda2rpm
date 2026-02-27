@@ -130,6 +130,12 @@ R charter behavior:
 - R ecosystem dependencies are mapped to `phoreus-r-4.5.2` instead of distro `R-*` RPMs, and are not pushed into `pip` lock generation.
 - For R project recipes, the generated SPEC exports `R_HOME`/`R_LIBS_USER` into an isolated tool prefix and performs `renv::restore()` when `renv.lock` is present.
 
+Rust charter behavior:
+
+- `bioconda2rpm` provisions `phoreus-rust-1.92` on demand when a recipe or dependency graph references Rust ecosystem dependencies (`rust`, `rustc`, `cargo`, `rustup`, `rust-*`, `cargo-*`) or staged `build.sh` rust/cargo usage.
+- Rust ecosystem dependencies are mapped to `phoreus-rust-1.92` instead of distro Rust toolchain RPMs.
+- Generated SPECs route all Rust/Cargo execution through `/usr/local/phoreus/rust/1.92` and export deterministic cargo settings (`CARGO_BUILD_JOBS=1`, `CARGO_INCREMENTAL=0`) for reproducible builds.
+
 Precompiled binary policy:
 
 - `bioconda2rpm` supports package-specific precompiled-binary overrides when upstream guidance recommends binary consumption over source builds.

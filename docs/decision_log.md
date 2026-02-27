@@ -97,3 +97,9 @@
 - Architecture/toolchain incompatibility should be classified explicitly, not treated as a global rollout blocker.
 - Example: missing x86 SIMD headers (`emmintrin.h`) on `aarch64` is classified as `amd64_only`.
 - Classification is recorded in failure reasons and build logs for traceable compatibility reporting.
+
+### 2026-02-27 Amendment - Phoreus Rust runtime policy
+- Introduce a pinned Rust runtime bootstrap package: `phoreus-rust-1.92` (Rust `1.92.0`).
+- Rust ecosystem recipe dependencies (`rust`, `rustc`, `cargo`, `rustup`, `rust-*`, `cargo-*`) map to `phoreus-rust-1.92` rather than distro toolchain RPMs.
+- Generated payload specs must route Rust/Cargo through `/usr/local/phoreus/rust/1.92`.
+- Cargo execution policy remains deterministic and single-core by default.

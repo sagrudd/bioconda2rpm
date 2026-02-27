@@ -132,6 +132,12 @@ FR-021 Precompiled binary preference policy
 - For packages under this policy, source-based de novo builds shall be bypassed.
 - If upstream precompiled binaries do not exist for the active target architecture, the package shall be quarantined with architecture-policy metadata.
 
+FR-022 Rust runtime and cargo policy
+- The system shall provide a bootstrap runtime package `phoreus-rust-1.92` pinned to Rust `1.92.0`.
+- Rust ecosystem dependencies (`rust`, `rustc`, `cargo`, `rustup`, `rust-*`, `cargo-*`) shall map to `phoreus-rust-1.92` rather than distro toolchain packages.
+- Generated SPECs for Rust-dependent recipes shall export Rust/Cargo environment roots from `/usr/local/phoreus/rust/1.92` and fail deterministically if the pinned runtime is absent.
+- Cargo-based builds shall default to single-core execution for deterministic enterprise builds.
+
 ## 4. Non-Functional Requirements
 
 NFR-001 Reproducibility

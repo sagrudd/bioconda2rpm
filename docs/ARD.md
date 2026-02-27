@@ -42,6 +42,8 @@ The product is structured as layered components:
   - avoids shared python RPM dependency coupling.
 - For R ecosystem dependencies, routes dependency mapping through a Phoreus R interpreter package (`phoreus-r-4.5.2`) rather than shared distro R module dependencies.
 - For R project recipes, configures isolated R library trees under the tool prefix and supports `renv.lock` restoration in build-time setup.
+- For Rust ecosystem dependencies, routes dependency mapping through a pinned Phoreus Rust toolchain package (`phoreus-rust-1.92`, Rust `1.92.0`) rather than distro Rust toolchain packages.
+- Rust/Cargo execution is rooted in `/usr/local/phoreus/rust/1.92` with deterministic single-core cargo build settings.
 - Supports policy-driven precompiled-binary overrides for selected packages (for example, `k8`) to bypass fragile source bootstrap chains when upstream recommends prebuilt artefacts.
 
 6. Build Execution Layer
