@@ -50,6 +50,8 @@ struct ParsedMeta {
     source_patches: Vec<String>,
     build_script: Option<String>,
     noarch_python: bool,
+    build_dep_specs_raw: Vec<String>,
+    host_dep_specs_raw: Vec<String>,
     run_dep_specs_raw: Vec<String>,
     build_deps: BTreeSet<String>,
     host_deps: BTreeSet<String>,
@@ -558,8 +560,27 @@ fn selected_dependency_set(
 ) -> BTreeSet<String> {
     if is_python_recipe(parsed) {
         let mut out = BTreeSet::new();
-        out.extend(parsed.build_deps.iter().cloned());
-        out.extend(parsed.host_deps.iter().cloned());
+        out.extend(
+            parsed
+                .build_deps
+                .iter()
+                .filter(|dep| should_keep_rpm_dependency_for_python(dep))
+                .cloned(),
+        );
+        out.extend(
+            parsed
+                .host_deps
+                .iter()
+                .filter(|dep| should_keep_rpm_dependency_for_python(dep))
+                .cloned(),
+        );
+        out.extend(
+            parsed
+                .run_deps
+                .iter()
+                .filter(|dep| should_keep_rpm_dependency_for_python(dep))
+                .cloned(),
+        );
         return out;
     }
 
@@ -1594,10 +1615,18 @@ fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
         .and_then(|m| m.get(Value::String("build".to_string())))
         .map(extract_deps)
         .unwrap_or_default();
+    let build_dep_specs_raw = requirements
+        .and_then(|m| m.get(Value::String("build".to_string())))
+        .map(extract_dep_specs_raw)
+        .unwrap_or_default();
 
     let host_deps = requirements
         .and_then(|m| m.get(Value::String("host".to_string())))
         .map(extract_deps)
+        .unwrap_or_default();
+    let host_dep_specs_raw = requirements
+        .and_then(|m| m.get(Value::String("host".to_string())))
+        .map(extract_dep_specs_raw)
         .unwrap_or_default();
 
     let run_deps = requirements
@@ -1620,6 +1649,8 @@ fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
         source_patches,
         build_script,
         noarch_python,
+        build_dep_specs_raw,
+        host_dep_specs_raw,
         run_dep_specs_raw,
         build_deps,
         host_deps,
@@ -1680,7 +1711,12 @@ fn is_python_recipe(parsed: &ParsedMeta) -> bool {
 
 fn build_python_requirements(parsed: &ParsedMeta) -> Vec<String> {
     let mut out = BTreeSet::new();
-    for raw in &parsed.run_dep_specs_raw {
+    for raw in parsed
+        .build_dep_specs_raw
+        .iter()
+        .chain(parsed.host_dep_specs_raw.iter())
+        .chain(parsed.run_dep_specs_raw.iter())
+    {
         if let Some(req) = conda_dep_to_pip_requirement(raw) {
             out.insert(req);
         }
@@ -1704,6 +1740,9 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
     let name_token = parts.next()?;
     let normalized = name_token.replace('_', "-").to_lowercase();
     if is_phoreus_python_toolchain_dependency(&normalized) {
+        return None;
+    }
+    if !is_python_ecosystem_dependency_name(&normalized) {
         return None;
     }
 
@@ -1740,6 +1779,67 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
     };
 
     Some(requirement)
+}
+
+fn should_keep_rpm_dependency_for_python(dep: &str) -> bool {
+    let normalized = dep.trim().replace('_', "-").to_lowercase();
+    !is_python_ecosystem_dependency_name(&normalized)
+}
+
+fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
+    if is_phoreus_python_toolchain_dependency(normalized) {
+        return true;
+    }
+
+    if matches!(
+        normalized,
+        "gcc"
+            | "gcc-c++"
+            | "gcc-gfortran"
+            | "golang"
+            | "make"
+            | "cmake"
+            | "ninja"
+            | "pkg-config"
+            | "patch"
+            | "sed"
+            | "tar"
+            | "gzip"
+            | "bzip2"
+            | "xz"
+            | "unzip"
+            | "which"
+            | "findutils"
+            | "coreutils"
+            | "bash"
+            | "perl"
+            | "rust"
+            | "cargo"
+            | "java-11-openjdk"
+            | "openjdk"
+            | "openssl"
+            | "openssl-devel"
+            | "zlib"
+            | "zlib-devel"
+            | "bzip2-devel"
+            | "xz-devel"
+            | "libffi-devel"
+            | "sqlite-devel"
+            | "ncurses-devel"
+            | "glibc"
+            | "glibc-devel"
+    ) {
+        return false;
+    }
+
+    if normalized.ends_with("-compiler")
+        || normalized.ends_with("-devel")
+        || normalized.starts_with("lib")
+    {
+        return false;
+    }
+
+    true
 }
 
 fn extract_build_script(node: &Value) -> Option<String> {
@@ -2016,8 +2116,20 @@ fn render_payload_spec(
     // Enforce canonical builder policy: every payload build uses Phoreus Python,
     // never the system interpreter.
     build_requires.insert(PHOREUS_PYTHON_PACKAGE.to_string());
-    build_requires.extend(parsed.build_deps.iter().map(|d| map_build_dependency(d)));
-    build_requires.extend(parsed.host_deps.iter().map(|d| map_build_dependency(d)));
+    build_requires.extend(
+        parsed
+            .build_deps
+            .iter()
+            .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
+            .map(|d| map_build_dependency(d)),
+    );
+    build_requires.extend(
+        parsed
+            .host_deps
+            .iter()
+            .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
+            .map(|d| map_build_dependency(d)),
+    );
     if !python_recipe {
         build_requires.extend(parsed.run_deps.iter().map(|d| map_build_dependency(d)));
     }
@@ -2026,6 +2138,13 @@ fn render_payload_spec(
     runtime_requires.insert("phoreus".to_string());
     if python_recipe {
         runtime_requires.insert(PHOREUS_PYTHON_PACKAGE.to_string());
+        runtime_requires.extend(
+            parsed
+                .run_deps
+                .iter()
+                .filter(|dep| should_keep_rpm_dependency_for_python(dep))
+                .map(|d| map_runtime_dependency(d)),
+        );
     } else {
         runtime_requires.extend(parsed.run_deps.iter().map(|d| map_runtime_dependency(d)));
     }
@@ -3358,6 +3477,8 @@ requirements:
             source_patches: vec!["boost_106400.patch".to_string()],
             build_script: None,
             noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
             run_dep_specs_raw: Vec::new(),
             build_deps: BTreeSet::new(),
             host_deps: BTreeSet::new(),
@@ -3436,6 +3557,66 @@ requirements:
             Some("kaleido==0.2.1".to_string())
         );
         assert_eq!(conda_dep_to_pip_requirement("python >=3.8"), None);
+        assert_eq!(conda_dep_to_pip_requirement("c-compiler"), None);
+    }
+
+    #[test]
+    fn python_payload_spec_routes_python_build_deps_to_venv() {
+        let mut build_deps = BTreeSet::new();
+        build_deps.insert("gcc".to_string());
+        let mut host_deps = BTreeSet::new();
+        host_deps.insert(PHOREUS_PYTHON_PACKAGE.to_string());
+        host_deps.insert("cython".to_string());
+        host_deps.insert("setuptools-scm".to_string());
+        let mut run_deps = BTreeSet::new();
+        run_deps.insert(PHOREUS_PYTHON_PACKAGE.to_string());
+        run_deps.insert("dnaio".to_string());
+        run_deps.insert("xopen".to_string());
+
+        let parsed = ParsedMeta {
+            package_name: "cutadapt".to_string(),
+            version: "5.2".to_string(),
+            source_url: "https://example.invalid/cutadapt-5.2.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://cutadapt.readthedocs.io/".to_string(),
+            license: "MIT".to_string(),
+            summary: "cutadapt".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "$PYTHON -m pip install . --no-deps --no-build-isolation".to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["c-compiler".to_string()],
+            host_dep_specs_raw: vec![
+                "python".to_string(),
+                "pip".to_string(),
+                "cython".to_string(),
+                "setuptools-scm".to_string(),
+            ],
+            run_dep_specs_raw: vec![
+                "python".to_string(),
+                "xopen >=1.6.0".to_string(),
+                "dnaio >=1.2.2".to_string(),
+            ],
+            build_deps,
+            host_deps,
+            run_deps,
+        };
+
+        let spec = render_payload_spec(
+            "cutadapt",
+            &parsed,
+            "bioconda-cutadapt-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+        );
+        assert!(spec.contains("BuildRequires:  gcc"));
+        assert!(!spec.contains("BuildRequires:  cython"));
+        assert!(!spec.contains("BuildRequires:  setuptools-scm"));
+        assert!(spec.contains("cython"));
+        assert!(spec.contains("setuptools-scm"));
     }
 
     #[test]
