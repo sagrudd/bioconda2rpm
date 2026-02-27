@@ -51,3 +51,8 @@
 - Expected operational model: dedicated runners/hosts per architecture.
 - Requirement: architecture-specific build instructions must be isolated within a single SPEC using `%ifarch`-style conditionals.
 - Requirement: one SPEC file per software package (no per-arch SPEC duplication).
+
+### Q11 - Artifact/output location policy
+- Build artifacts must not be written into this software crate repository.
+- Bioconda recipe working data must not taint this crate folder.
+- Artifact/output location must be explicitly provided by the user (no default in-repo topdir).
