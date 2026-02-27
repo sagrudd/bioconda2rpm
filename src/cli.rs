@@ -136,6 +136,14 @@ pub struct BuildArgs {
 
     /// Requested Bioconda package name.
     pub package: String,
+
+    /// Local Phoreus repository URLs to embed in reserved `phoreus` package config.
+    #[arg(long = "phoreus-local-repo")]
+    pub phoreus_local_repo: Vec<String>,
+
+    /// Core OS repository URLs to embed in reserved `phoreus` package config.
+    #[arg(long = "phoreus-core-repo")]
+    pub phoreus_core_repo: Vec<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -208,7 +216,7 @@ impl BuildArgs {
 
     pub fn execution_summary(&self) -> String {
         format!(
-            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} arch={arch:?} naming={naming:?} render={render:?} outputs={outputs:?} missing_dependency={missing:?}",
+            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} arch={arch:?} naming={naming:?} render={render:?} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
             pkg = self.package,
             stage = self.stage,
             deps = self.with_deps(),
@@ -225,6 +233,8 @@ impl BuildArgs {
             render = self.render_strategy,
             outputs = self.outputs,
             missing = self.missing_dependency,
+            local_repo_count = self.phoreus_local_repo.len(),
+            core_repo_count = self.phoreus_core_repo.len(),
         )
     }
 }
