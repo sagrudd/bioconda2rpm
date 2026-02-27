@@ -130,6 +130,12 @@ R charter behavior:
 - R ecosystem dependencies are mapped to `phoreus-r-4.5.2` instead of distro `R-*` RPMs, and are not pushed into `pip` lock generation.
 - For R project recipes, the generated SPEC exports `R_HOME`/`R_LIBS_USER` into an isolated tool prefix and performs `renv::restore()` when `renv.lock` is present.
 
+Precompiled binary policy:
+
+- `bioconda2rpm` supports package-specific precompiled-binary overrides when upstream guidance recommends binary consumption over source builds.
+- For `k8`, the build path is forced to use upstream precompiled release archives instead of compiling Node/V8 from source.
+- If a requested architecture has no upstream precompiled binary, the package is quarantined with explicit architecture policy classification.
+
 ## 7. Output Layout
 
 Under `<topdir>`:

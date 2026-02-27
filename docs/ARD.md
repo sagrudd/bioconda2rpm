@@ -42,6 +42,7 @@ The product is structured as layered components:
   - avoids shared python RPM dependency coupling.
 - For R ecosystem dependencies, routes dependency mapping through a Phoreus R interpreter package (`phoreus-r-4.5.2`) rather than shared distro R module dependencies.
 - For R project recipes, configures isolated R library trees under the tool prefix and supports `renv.lock` restoration in build-time setup.
+- Supports policy-driven precompiled-binary overrides for selected packages (for example, `k8`) to bypass fragile source bootstrap chains when upstream recommends prebuilt artefacts.
 
 6. Build Execution Layer
 - Runs stage-selected build steps (`spec`/`srpm`/`rpm`) in containers.

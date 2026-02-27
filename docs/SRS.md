@@ -127,6 +127,11 @@ FR-020 R runtime and dependency isolation policy
 - R ecosystem dependencies shall never be converted into Python lock requirements for `pip-compile`.
 - For R project recipes, generated SPECs shall configure isolated R library roots (`R_LIBS_USER`) under the Phoreus tool prefix and perform lock restoration when `renv.lock` is present.
 
+FR-021 Precompiled binary preference policy
+- The system shall support package-specific policy overrides that force consumption of upstream precompiled binary artefacts when upstream documentation recommends this path.
+- For packages under this policy, source-based de novo builds shall be bypassed.
+- If upstream precompiled binaries do not exist for the active target architecture, the package shall be quarantined with architecture-policy metadata.
+
 ## 4. Non-Functional Requirements
 
 NFR-001 Reproducibility

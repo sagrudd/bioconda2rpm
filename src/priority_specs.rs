@@ -69,6 +69,12 @@ struct BuildConfig {
     host_arch: String,
 }
 
+#[derive(Debug, Clone)]
+struct PrecompiledBinaryOverride {
+    source_url: String,
+    build_script: String,
+}
+
 const PHOREUS_PYTHON_VERSION: &str = "3.11";
 const PHOREUS_PYTHON_PACKAGE: &str = "phoreus-python-3.11";
 const REFERENCE_PYTHON_SPECS_DIR: &str = "../software_query/rpm/python/specs";
@@ -698,6 +704,13 @@ fn selected_dependency_set(
     policy: &DependencyPolicy,
     is_root: bool,
 ) -> BTreeSet<String> {
+    // Precompiled-binary policy packages should not pull source-build closure.
+    // Their runtime requirements are sufficient for dependency planning.
+    let package_slug = normalize_name(&parsed.package_name);
+    if precompiled_binary_override(&package_slug, parsed).is_some() {
+        return parsed.run_deps.clone();
+    }
+
     if is_python_recipe(parsed) {
         let mut out = BTreeSet::new();
         out.extend(
@@ -928,7 +941,7 @@ fn process_tool(
         }
     };
 
-    let parsed = match parse_rendered_meta(&rendered) {
+    let mut parsed = match parse_rendered_meta(&rendered) {
         Ok(v) => v,
         Err(err) => {
             let reason = format!("failed to parse rendered metadata: {err}");
@@ -995,8 +1008,36 @@ fn process_tool(
 
     let staged_build_sh_name = format!("bioconda-{}-build.sh", software_slug);
     let staged_build_sh = sources_dir.join(&staged_build_sh_name);
+    let precompiled_override = precompiled_binary_override(&software_slug, &parsed);
 
-    if let Some(build_sh_path) = resolved.build_sh_path.as_ref() {
+    if let Some(override_cfg) = precompiled_override.as_ref() {
+        log_progress(format!(
+            "phase=precompiled-binary status=selected package={} source_url={}",
+            software_slug, override_cfg.source_url
+        ));
+        parsed.source_url = override_cfg.source_url.clone();
+        if let Err(err) = fs::write(&staged_build_sh, &override_cfg.build_script) {
+            let reason = format!(
+                "failed to write precompiled build script {}: {err}",
+                staged_build_sh.display()
+            );
+            quarantine_note(bad_spec_dir, &software_slug, &reason);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "quarantined".to_string(),
+                reason,
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: String::new(),
+            };
+        }
+    } else if let Some(build_sh_path) = resolved.build_sh_path.as_ref() {
         if let Err(err) = fs::copy(build_sh_path, &staged_build_sh) {
             let reason = format!(
                 "failed to stage build.sh {}: {err}",
@@ -1920,14 +1961,78 @@ fn normalize_dep_spec_raw(raw: &str) -> Option<String> {
     }
 }
 
+fn precompiled_binary_override(
+    software_slug: &str,
+    parsed: &ParsedMeta,
+) -> Option<PrecompiledBinaryOverride> {
+    match software_slug {
+        "k8" => Some(PrecompiledBinaryOverride {
+            source_url: format!(
+                "https://github.com/attractivechaos/k8/releases/download/v{version}/k8-{version}.tar.bz2",
+                version = parsed.version
+            ),
+            build_script: render_k8_precompiled_build_script(&parsed.version),
+        }),
+        _ => None,
+    }
+}
+
+fn render_k8_precompiled_build_script(version: &str) -> String {
+    format!(
+        "#!/usr/bin/env bash\n\
+set -euxo pipefail\n\
+\n\
+K8_VERSION={version}\n\
+platform=\"$(uname -s)\"\n\
+arch=\"$(uname -m)\"\n\
+candidate=\"\"\n\
+case \"${{platform}}/${{arch}}\" in\n\
+  Linux/x86_64)\n\
+    candidate=\"k8-x86_64-Linux\"\n\
+    ;;\n\
+  Darwin/arm64|Darwin/aarch64)\n\
+    candidate=\"k8-arm64-Darwin\"\n\
+    ;;\n\
+  *)\n\
+    echo \"no upstream precompiled k8 binary for ${{platform}}/${{arch}}; available entries: k8-x86_64-Linux,k8-arm64-Darwin\" >&2\n\
+    exit 86\n\
+    ;;\n\
+esac\n\
+\n\
+src_bin=\"\"\n\
+for path in \\\n\
+  \"$SRC_DIR/$candidate\" \\\n\
+  \"$SRC_DIR/k8-${{K8_VERSION}}/$candidate\" \\\n\
+  \"$candidate\" \\\n\
+  \"k8-${{K8_VERSION}}/$candidate\"\n\
+do\n\
+  if [[ -f \"$path\" ]]; then\n\
+    src_bin=\"$path\"\n\
+    break\n\
+  fi\n\
+done\n\
+\n\
+if [[ -z \"$src_bin\" ]]; then\n\
+  echo \"precompiled k8 binary $candidate not found under $SRC_DIR\" >&2\n\
+  find \"$SRC_DIR\" -maxdepth 2 -type f -name 'k8-*' -print >&2 || true\n\
+  exit 87\n\
+fi\n\
+\n\
+install -d \"$PREFIX/bin\"\n\
+install -m 0755 \"$src_bin\" \"$PREFIX/bin/k8\"\n",
+        version = version
+    )
+}
+
 fn is_python_recipe(parsed: &ParsedMeta) -> bool {
     if parsed.noarch_python {
         return true;
     }
-    if parsed.build_deps.contains(PHOREUS_PYTHON_PACKAGE)
-        || parsed.host_deps.contains(PHOREUS_PYTHON_PACKAGE)
-        || parsed.run_deps.contains(PHOREUS_PYTHON_PACKAGE)
-    {
+    let package = parsed.package_name.trim().replace('_', "-").to_lowercase();
+    if package.starts_with("python-") || package.starts_with("py-") {
+        return true;
+    }
+    if parsed.run_deps.contains(PHOREUS_PYTHON_PACKAGE) {
         return true;
     }
     parsed
@@ -2720,7 +2825,15 @@ tar --exclude='.bioconda2rpm-retry-snapshot.tar' -cf \"$retry_snapshot\" .\n\
 # Canonical fallback for flaky parallel builds: retry once serially.\n\
 # Enforce fail-fast shell behavior for staged recipe scripts so downstream\n\
 # commands do not mask the primary failure reason.\n\
-if ! bash -eo pipefail ./build.sh; then\n\
+if bash -eo pipefail ./build.sh; then\n\
+  :\n\
+else\n\
+  rc=$?\n\
+  # Do not retry deterministic policy failures (missing pinned runtimes,\n\
+  # unsupported precompiled binary arch, missing precompiled payload).\n\
+  if [[ \"$rc\" == \"41\" || \"$rc\" == \"42\" || \"$rc\" == \"86\" || \"$rc\" == \"87\" ]]; then\n\
+    exit \"$rc\"\n\
+  fi\n\
   if [[ \"${{BIOCONDA2RPM_RETRIED_SERIAL:-0}}\" == \"1\" ]]; then\n\
     exit 1\n\
   fi\n\
@@ -3872,6 +3985,12 @@ fn looks_like_transfer_progress(line: &str) -> bool {
 
 fn classify_arch_policy(build_log: &str, host_arch: &str) -> Option<&'static str> {
     let lower = build_log.to_lowercase();
+    if (host_arch == "aarch64" || host_arch == "arm64")
+        && lower.contains("no upstream precompiled k8 binary for linux/aarch64")
+    {
+        return Some("amd64_only");
+    }
+
     let x86_intrinsics = lower.contains("emmintrin.h")
         || lower.contains("xmmintrin.h")
         || lower.contains("pmmintrin.h")
@@ -4278,7 +4397,103 @@ requirements:
         let spec = render_phoreus_r_bootstrap_spec();
         assert!(spec.contains("Name:           phoreus-r-4.5.2"));
         assert!(spec.contains("Version:        4.5.2"));
-        assert!(spec.contains("Source0:        https://cran.r-project.org/src/base/R-4/R-%{version}.tar.gz"));
+        assert!(spec.contains(
+            "Source0:        https://cran.r-project.org/src/base/R-4/R-%{version}.tar.gz"
+        ));
+    }
+
+    #[test]
+    fn k8_uses_precompiled_binary_override() {
+        let parsed = ParsedMeta {
+            package_name: "k8".to_string(),
+            version: "1.2".to_string(),
+            source_url: "https://example.invalid/source.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://github.com/attractivechaos/k8".to_string(),
+            license: "MIT".to_string(),
+            summary: "k8".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let override_cfg =
+            precompiled_binary_override("k8", &parsed).expect("k8 precompiled override");
+        assert_eq!(
+            override_cfg.source_url,
+            "https://github.com/attractivechaos/k8/releases/download/v1.2/k8-1.2.tar.bz2"
+        );
+        assert!(
+            override_cfg
+                .build_script
+                .contains("no upstream precompiled k8 binary")
+        );
+    }
+
+    #[test]
+    fn k8_is_not_treated_as_python_recipe() {
+        let mut build_deps = BTreeSet::new();
+        build_deps.insert(PHOREUS_PYTHON_PACKAGE.to_string());
+        build_deps.insert("gcc-c++".to_string());
+        build_deps.insert("make".to_string());
+
+        let parsed = ParsedMeta {
+            package_name: "k8".to_string(),
+            version: "1.2".to_string(),
+            source_url: "https://example.invalid/source.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://github.com/attractivechaos/k8".to_string(),
+            license: "MIT".to_string(),
+            summary: "k8".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: vec!["sysroot_linux-64 >=2.17".to_string()],
+            build_deps,
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        assert!(!is_python_recipe(&parsed));
+    }
+
+    #[test]
+    fn precompiled_policy_limits_dependency_planning_to_runtime() {
+        let mut build_deps = BTreeSet::new();
+        build_deps.insert("gcc-c++".to_string());
+        build_deps.insert("make".to_string());
+        let mut run_deps = BTreeSet::new();
+        run_deps.insert("zlib".to_string());
+
+        let parsed = ParsedMeta {
+            package_name: "k8".to_string(),
+            version: "1.2".to_string(),
+            source_url: "https://example.invalid/source.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://github.com/attractivechaos/k8".to_string(),
+            license: "MIT".to_string(),
+            summary: "k8".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps,
+            host_deps: BTreeSet::new(),
+            run_deps,
+        };
+
+        let selected = selected_dependency_set(&parsed, &DependencyPolicy::BuildHostRun, true);
+        assert_eq!(selected, BTreeSet::from(["zlib".to_string()]));
     }
 
     #[test]
@@ -4424,6 +4639,12 @@ error: build stopped\n";
         assert!(!tail.contains(".........."));
         assert!(tail.contains("fatal: meaningful failure"));
         assert!(tail.contains("error: build stopped"));
+    }
+
+    #[test]
+    fn classify_arch_policy_detects_k8_precompiled_gap_on_aarch64() {
+        let log = "no upstream precompiled k8 binary for Linux/aarch64; available entries: k8-x86_64-Linux,k8-arm64-Darwin";
+        assert_eq!(classify_arch_policy(log, "aarch64"), Some("amd64_only"));
     }
 
     #[test]
