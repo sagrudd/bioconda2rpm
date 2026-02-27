@@ -70,6 +70,7 @@ FR-011 Reporting
   - JSON summary
   - CSV report
   - Markdown summary
+  - Per-package dependency graph reports (JSON + Markdown) capturing dependency resolution source and status.
 
 FR-012 Naming profile
 - Default naming profile shall follow Phoreus:
@@ -98,6 +99,15 @@ FR-016 Architecture restriction capture policy
 - The classification shall be recorded in run reports and quarantine notes/reasons.
 - Architecture restrictions shall not block processing of other packages in the same run.
 
+FR-017 Build dependency tolerance and sourcing policy
+- During containerized SRPM->RPM rebuild, the system shall preflight `BuildRequires` and attempt resolution in this order:
+  1. Already installed packages in the build container.
+  2. Locally produced RPM artifacts under `<topdir>/RPMS`.
+  3. Enabled distribution/core repositories.
+- The workflow shall tolerate unavailable/auxiliary repositories by using package-manager settings that avoid hard failure from missing optional repos.
+- Generated payload RPMs shall provide the plain software identifier (for example `samtools`) so downstream package builds can consume locally produced RPMs.
+- If any dependency remains unresolved, the package shall be quarantined and unresolved dependencies shall be recorded in reports.
+
 ## 4. Non-Functional Requirements
 
 NFR-001 Reproducibility
@@ -107,7 +117,7 @@ NFR-002 Determinism
 - Given fixed recipe input and source state, repeated runs shall produce consistent decisions and outputs.
 
 NFR-003 Traceability
-- Quarantine, resolution, and build decisions shall be recorded in structured reports.
+- Quarantine, resolution, and build decisions shall be recorded in structured reports, including dependency resolution graphs with source attribution (`installed`, `local_rpm`, `repo`, `unresolved`).
 
 NFR-004 Maintainability
 - CLI behavior shall be covered by unit tests for parsing defaults and overrides.

@@ -78,7 +78,11 @@ Per generated SPEC:
 1. Resolve/prepare sources from Bioconda metadata.
 2. Build SRPM inside container:
    - `rpmbuild -bs`
-3. Rebuild RPM from SRPM inside container:
+3. Preflight `BuildRequires` inside container:
+   - Use installed packages when already present.
+   - Reuse matching local RPMs from `<topdir>/RPMS`.
+   - Install remaining requirements from configured repos (with unavailable-repo tolerance).
+4. Rebuild RPM from SRPM inside container:
    - `rpmbuild --rebuild <generated.src.rpm>`
 
 This enforces an auditable SRPM-to-RPM lineage.
@@ -94,6 +98,8 @@ Under `<topdir>`:
 - `reports/priority_spec_generation.json`
 - `reports/priority_spec_generation.csv`
 - `reports/priority_spec_generation.md`
+- `reports/dependency_graphs/*.json` per-package dependency resolution graph
+- `reports/dependency_graphs/*.md` per-package dependency resolution graph
 - `BAD_SPEC/` quarantine notes for failed/unresolved items
 
 ## 8. Reports and Status Interpretation
@@ -108,6 +114,11 @@ Each report entry includes:
 - reason/message
 
 Use the Markdown report for quick review and JSON/CSV for automation.
+For dependency analysis, inspect `reports/dependency_graphs/`:
+- `status=resolved` entries include `source` (`installed`, `local_rpm`, `repo`).
+- `status=unresolved` entries include captured package-manager detail.
+
+Generated payload RPMs include `Provides: <tool>` (for example `Provides: samtools`) so downstream builds can consume previously generated local RPMs when available.
 
 Architecture restriction policy:
 
@@ -130,11 +141,13 @@ Set engine explicitly or install Docker:
 Check:
 
 - `<topdir>/reports/priority_spec_generation.md`
+- `<topdir>/reports/dependency_graphs/<tool>.md`
 - `<topdir>/BAD_SPEC/<tool>.txt`
 - container logs printed during run
 
 Failures typically reflect recipe/toolchain incompatibilities for the target architecture, not workflow failure.
 When detected, the error reason includes `arch_policy=...` to capture compatibility constraints.
+If failure is dependency-related, the reason includes dependency graph paths and unresolved dependency names.
 
 ### Wrong or missing sources
 

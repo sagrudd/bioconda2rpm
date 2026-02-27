@@ -27,6 +27,11 @@ The product is structured as layered components:
 4. Dependency Graph Layer
 - Extracts `build/host/run` relationships.
 - Applies configurable policy with default `build+host+run` closure.
+- Records build-time dependency preflight outcomes with source attribution:
+  - `installed` (already present in container)
+  - `local_rpm` (reused from `<topdir>/RPMS`)
+  - `repo` (resolved from distribution repositories)
+  - `unresolved` (quarantined with reason)
 
 5. Packaging Layer
 - Maps recipes to single-SPEC Phoreus naming profile.
@@ -40,6 +45,10 @@ The product is structured as layered components:
   - SRPM build (`rpmbuild -bs`) in container
   - RPM rebuild from SRPM (`rpmbuild --rebuild`) in container
 - Container image is provided at runtime via CLI flag.
+- Before SRPM rebuild, `BuildRequires` are preflight-resolved with tolerant sourcing:
+  - already installed packages
+  - local RPM artifact reuse
+  - repository install with unavailable-repo tolerance settings
 
 7. Compliance and Quarantine Layer
 - SPDX normalization and policy evaluation.
@@ -48,6 +57,7 @@ The product is structured as layered components:
 
 8. Reporting Layer
 - Emits JSON, CSV, Markdown summaries plus console logs.
+- Emits per-package dependency graph artifacts (`reports/dependency_graphs/*.json` and `*.md`) for auditability.
 
 9. Priority Selection Layer
 - Reads `tools.csv` and ranks requested tools by `RPM Priority Score`.
@@ -64,7 +74,7 @@ The product is structured as layered components:
 - Outputs:
   - SPEC/SRPM/RPM artifacts in default topdir `~/bioconda2rpm` or user override
   - Quarantine artifacts in default `<topdir>/BAD_SPEC` or user override
-  - Run reports in external report directory (or `<topdir>/reports`)
+  - Run reports in external report directory (or `<topdir>/reports`), including dependency graph artifacts
 
 - Constraint:
   - No build artifacts or recipe staging shall default into the crate workspace.

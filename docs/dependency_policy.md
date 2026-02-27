@@ -50,3 +50,13 @@ Define dependency closure behavior for `bioconda2rpm build`.
 - Multi-output recipes (`outputs:`) expand into discrete package outputs.
 - Versioned recipe directories use highest version selection.
 - Compliance failures (license SPDX/policy) also route to quarantine.
+
+## BuildRequires Sourcing (Container Rebuild Chain)
+
+During `SPEC -> SRPM -> RPM` rebuild, `BuildRequires` are resolved with tolerant ordering:
+
+1. Already installed in the container image.
+2. Matching local artifacts from `<topdir>/RPMS`.
+3. Enabled distro/core repositories.
+
+Dependency resolution is captured per package in `reports/dependency_graphs/` with source attribution and unresolved reasons.

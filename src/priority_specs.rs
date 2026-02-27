@@ -58,6 +58,22 @@ struct BuildConfig {
     host_arch: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct DependencyResolutionEvent {
+    dependency: String,
+    status: String,
+    source: String,
+    provider: String,
+    detail: String,
+}
+
+#[derive(Debug, Clone)]
+struct DependencyGraphSummary {
+    json_path: PathBuf,
+    md_path: PathBuf,
+    unresolved: Vec<String>,
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct ReportEntry {
     pub software: String,
@@ -1063,6 +1079,7 @@ fn normalize_dependency_name(raw: &str) -> Option<String> {
         "c-compiler" | "ccompiler" => "gcc".to_string(),
         "cxx-compiler" | "cpp-compiler" => "gcc-c++".to_string(),
         "fortran-compiler" => "gcc-gfortran".to_string(),
+        "openjdk" => "java-11-openjdk".to_string(),
         other => other.to_string(),
     };
 
@@ -1104,6 +1121,7 @@ fn render_payload_spec(
 Name:           phoreus-%{{tool}}-%{{upstream_version}}\n\
 Version:        %{{upstream_version}}\n\
 Release:        1%{{?dist}}\n\
+Provides:       %{{tool}} = %{{version}}-%{{release}}\n\
 Summary:        {summary}\n\
 License:        {license}\n\
 URL:            {homepage}\n\
@@ -1299,6 +1317,18 @@ fn build_spec_chain_in_container(
 
     let script = format!(
         "set -euo pipefail\n\
+sanitize_field() {{\n\
+  printf '%s' \"$1\" | tr '\\n' ' ' | tr '|' '/'\n\
+}}\n\
+emit_depgraph() {{\n\
+  local dep status source provider detail\n\
+  dep=$(sanitize_field \"$1\")\n\
+  status=$(sanitize_field \"$2\")\n\
+  source=$(sanitize_field \"$3\")\n\
+  provider=$(sanitize_field \"$4\")\n\
+  detail=$(sanitize_field \"$5\")\n\
+  printf 'DEPGRAPH|%s|%s|%s|%s|%s\\n' \"$dep\" \"$status\" \"$source\" \"$provider\" \"$detail\"\n\
+}}\n\
 build_root=/work/.build-work/{label}\n\
 rm -rf \"$build_root\"\n\
 mkdir -p \"$build_root\"/BUILD \"$build_root\"/BUILDROOT \"$build_root\"/RPMS \"$build_root\"/SOURCES \"$build_root\"/SPECS \"$build_root\"/SRPMS\n\
@@ -1325,6 +1355,72 @@ if [[ -z \"${{srpm_path}}\" ]]; then\n\
   echo 'no SRPM produced from spec build step' >&2\n\
   exit 4\n\
 fi\n\
+\n\
+pm=''\n\
+if command -v dnf >/dev/null 2>&1; then\n\
+  pm='dnf'\n\
+elif command -v microdnf >/dev/null 2>&1; then\n\
+  pm='microdnf'\n\
+elif command -v yum >/dev/null 2>&1; then\n\
+  pm='yum'\n\
+fi\n\
+if [[ -z \"$pm\" ]]; then\n\
+  echo 'no supported package manager for dependency preflight' >&2\n\
+  exit 5\n\
+fi\n\
+pm_install() {{\n\
+  \"$pm\" -y --setopt='*.skip_if_unavailable=true' --disablerepo=dropworm install \"$@\"\n\
+}}\n\
+\n\
+declare -A local_candidates\n\
+while IFS= read -r -d '' rpmf; do\n\
+  name=$(rpm -qp --qf '%{{NAME}}\\n' \"$rpmf\" 2>/dev/null || true)\n\
+  if [[ -n \"$name\" && -z \"${{local_candidates[$name]:-}}\" ]]; then\n\
+    local_candidates[\"$name\"]=\"$rpmf\"\n\
+  fi\n\
+  while IFS= read -r provide; do\n\
+    key=$(printf '%s' \"$provide\" | awk '{{print $1}}')\n\
+    if [[ -n \"$key\" && -z \"${{local_candidates[$key]:-}}\" ]]; then\n\
+      local_candidates[\"$key\"]=\"$rpmf\"\n\
+    fi\n\
+  done < <(rpm -qp --provides \"$rpmf\" 2>/dev/null || true)\n\
+done < <(find /work/RPMS -type f -name '*.rpm' -print0 2>/dev/null)\n\
+\n\
+mapfile -t build_requires < <(rpmspec -q --buildrequires --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}' | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
+dep_log=\"/tmp/bioconda2rpm-dep-{label}.log\"\n\
+for dep in \"${{build_requires[@]}}\"; do\n\
+  if rpm -q --whatprovides \"$dep\" >/dev/null 2>&1; then\n\
+    provider=$(rpm -q --whatprovides \"$dep\" | head -n 1 || true)\n\
+    emit_depgraph \"$dep\" 'resolved' 'installed' \"$provider\" 'already_installed'\n\
+    continue\n\
+  fi\n\
+\n\
+  local_rpm=\"${{local_candidates[$dep]:-}}\"\n\
+  if [[ -n \"$local_rpm\" ]]; then\n\
+    if pm_install \"$local_rpm\" >\"$dep_log\" 2>&1; then\n\
+      if rpm -q --whatprovides \"$dep\" >/dev/null 2>&1; then\n\
+        provider=$(rpm -q --whatprovides \"$dep\" | head -n 1 || true)\n\
+        emit_depgraph \"$dep\" 'resolved' 'local_rpm' \"$provider\" \"installed_from_$(basename \"$local_rpm\")\"\n\
+        continue\n\
+      fi\n\
+    elif rpm -Uvh --nodeps --force \"$local_rpm\" >\"$dep_log\" 2>&1; then\n\
+      if rpm -q --whatprovides \"$dep\" >/dev/null 2>&1; then\n\
+        provider=$(rpm -q --whatprovides \"$dep\" | head -n 1 || true)\n\
+        emit_depgraph \"$dep\" 'resolved' 'local_rpm' \"$provider\" \"installed_nodeps_from_$(basename \"$local_rpm\")\"\n\
+        continue\n\
+      fi\n\
+    fi\n\
+  fi\n\
+\n\
+  if pm_install \"$dep\" >\"$dep_log\" 2>&1; then\n\
+    provider=$(rpm -q --whatprovides \"$dep\" | head -n 1 || true)\n\
+    emit_depgraph \"$dep\" 'resolved' 'repo' \"$provider\" 'installed_from_repo'\n\
+  else\n\
+    detail=$(tail -n 3 \"$dep_log\" | tr '\\n' ';' | sed 's/;/; /g')\n\
+    emit_depgraph \"$dep\" 'unresolved' 'unresolved' '-' \"$detail\"\n\
+  fi\n\
+done\n\
+\n\
 rpmbuild --rebuild --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' \"${{srpm_path}}\"\n\
 find \"$build_root/SRPMS\" -type f -name '*.src.rpm' -exec cp -f {{}} /work/SRPMS/ \\;\n\
 while IFS= read -r rpmf; do\n\
@@ -1344,11 +1440,9 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
             .arg("-v")
             .arg(&work_mount)
             .arg("-w")
-            .arg("/work");
-
-        if let Some(user_spec) = host_user_spec() {
-            cmd.arg("--user").arg(user_spec);
-        }
+            .arg("/work")
+            .arg("--user")
+            .arg("0:0");
 
         cmd.arg(&build_config.container_image)
             .arg("bash")
@@ -1379,6 +1473,16 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         );
     }
 
+    let dep_events = parse_dependency_events(&combined);
+    let dep_summary = persist_dependency_graph(
+        &build_config.reports_dir,
+        &build_label,
+        &spec_name.replace(".spec", ""),
+        &dep_events,
+    )
+    .ok()
+    .flatten();
+
     let logs_dir = build_config.reports_dir.join("build_logs");
     fs::create_dir_all(&logs_dir)
         .with_context(|| format!("creating build logs dir {}", logs_dir.display()))?;
@@ -1390,13 +1494,29 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         let arch_policy =
             classify_arch_policy(&combined, &build_config.host_arch).unwrap_or("unknown");
         let tail = tail_lines(&combined, 20);
+        let dep_hint = dep_summary
+            .as_ref()
+            .map(|summary| {
+                format!(
+                    " dependency_graph_json={} dependency_graph_md={} unresolved_deps={}",
+                    summary.json_path.display(),
+                    summary.md_path.display(),
+                    if summary.unresolved.is_empty() {
+                        "none".to_string()
+                    } else {
+                        summary.unresolved.join(",")
+                    }
+                )
+            })
+            .unwrap_or_default();
         anyhow::bail!(
-            "container build chain failed for {} (exit status: {}) arch_policy={} log={} tail={}",
+            "container build chain failed for {} (exit status: {}) arch_policy={} log={} tail={}{}",
             spec_name,
             output.status,
             arch_policy,
             log_path.display(),
-            tail
+            tail,
+            dep_hint
         );
     }
 
@@ -1468,24 +1588,97 @@ fn fix_host_source_permissions(sources_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn host_user_spec() -> Option<String> {
-    let uid = Command::new("id").arg("-u").output().ok()?;
-    let gid = Command::new("id").arg("-g").output().ok()?;
-    if !uid.status.success() || !gid.status.success() {
-        return None;
-    }
-    let uid_s = String::from_utf8_lossy(&uid.stdout).trim().to_string();
-    let gid_s = String::from_utf8_lossy(&gid.stdout).trim().to_string();
-    if uid_s.is_empty() || gid_s.is_empty() {
-        return None;
-    }
-    Some(format!("{uid_s}:{gid_s}"))
-}
-
 fn quarantine_note(bad_spec_dir: &Path, slug: &str, reason: &str) {
     let note_path = bad_spec_dir.join(format!("{slug}.txt"));
     let body = format!("status=quarantined\nreason={reason}\n");
     let _ = fs::write(note_path, body);
+}
+
+fn parse_dependency_events(build_log: &str) -> Vec<DependencyResolutionEvent> {
+    build_log
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split('|');
+            if parts.next()? != "DEPGRAPH" {
+                return None;
+            }
+            let dependency = parts.next()?.trim().to_string();
+            let status = parts.next()?.trim().to_string();
+            let source = parts.next()?.trim().to_string();
+            let provider = parts.next().unwrap_or_default().trim().to_string();
+            let detail = parts.next().unwrap_or_default().trim().to_string();
+            Some(DependencyResolutionEvent {
+                dependency,
+                status,
+                source,
+                provider,
+                detail,
+            })
+        })
+        .collect()
+}
+
+fn persist_dependency_graph(
+    reports_dir: &Path,
+    label: &str,
+    spec_name: &str,
+    events: &[DependencyResolutionEvent],
+) -> Result<Option<DependencyGraphSummary>> {
+    if events.is_empty() {
+        return Ok(None);
+    }
+
+    let dep_graph_dir = reports_dir.join("dependency_graphs");
+    fs::create_dir_all(&dep_graph_dir)
+        .with_context(|| format!("creating dependency graph dir {}", dep_graph_dir.display()))?;
+
+    let slug = sanitize_label(label);
+    let json_path = dep_graph_dir.join(format!("{slug}.json"));
+    let md_path = dep_graph_dir.join(format!("{slug}.md"));
+
+    let payload =
+        serde_json::to_string_pretty(events).context("serializing dependency graph events")?;
+    fs::write(&json_path, payload)
+        .with_context(|| format!("writing dependency graph json {}", json_path.display()))?;
+
+    let mut unresolved = BTreeSet::new();
+    let mut resolved_count = 0usize;
+    let mut md = String::new();
+    md.push_str("# Dependency Resolution Graph\n\n");
+    md.push_str(&format!("- Spec: `{}`\n", spec_name));
+    md.push_str(&format!("- Total dependencies: {}\n", events.len()));
+    for event in events {
+        if event.status == "unresolved" {
+            unresolved.insert(event.dependency.clone());
+        } else if event.status == "resolved" {
+            resolved_count += 1;
+        }
+    }
+    md.push_str(&format!("- Resolved dependencies: {}\n", resolved_count));
+    md.push_str(&format!(
+        "- Unresolved dependencies: {}\n\n",
+        unresolved.len()
+    ));
+    md.push_str("| Dependency | Status | Source | Provider | Detail |\n");
+    md.push_str("|---|---|---|---|---|\n");
+    for event in events {
+        md.push_str(&format!(
+            "| {} | {} | {} | {} | {} |\n",
+            event.dependency.replace('|', "\\|"),
+            event.status.replace('|', "\\|"),
+            event.source.replace('|', "\\|"),
+            event.provider.replace('|', "\\|"),
+            event.detail.replace('|', "\\|")
+        ));
+    }
+    fs::write(&md_path, md)
+        .with_context(|| format!("writing dependency graph markdown {}", md_path.display()))?;
+
+    Ok(Some(DependencyGraphSummary {
+        json_path,
+        md_path,
+        unresolved: unresolved.into_iter().collect(),
+    }))
 }
 
 fn write_reports(
@@ -1556,7 +1749,7 @@ mod tests {
         );
         assert_eq!(
             normalize_dependency_name("openjdk >=11.0.1"),
-            Some("openjdk".to_string())
+            Some("java-11-openjdk".to_string())
         );
     }
 
