@@ -1299,7 +1299,10 @@ fn build_spec_chain_in_container(
 
     let script = format!(
         "set -euo pipefail\n\
-mkdir -p /work/BUILD /work/BUILDROOT /work/RPMS /work/SOURCES /work/SPECS /work/SRPMS\n\
+build_root=/work/.build-work/{label}\n\
+rm -rf \"$build_root\"\n\
+mkdir -p \"$build_root\"/BUILD \"$build_root\"/BUILDROOT \"$build_root\"/RPMS \"$build_root\"/SOURCES \"$build_root\"/SPECS \"$build_root\"/SRPMS\n\
+mkdir -p /work/RPMS /work/SRPMS /work/SOURCES /work/SPECS\n\
 if ! command -v rpmbuild >/dev/null 2>&1; then\n\
   if command -v dnf >/dev/null 2>&1; then dnf -y install rpm-build rpmdevtools >/dev/null; \\\n\
   elif command -v microdnf >/dev/null 2>&1; then microdnf -y install rpm-build rpmdevtools >/dev/null; \\\n\
@@ -1313,16 +1316,23 @@ if ! command -v spectool >/dev/null 2>&1; then\n\
   else echo 'spectool unavailable and rpmdevtools cannot be installed' >&2; exit 3; fi\n\
 fi\n\
 touch /work/.build-start-{label}.ts\n\
-spectool -g -R --define '_topdir /work' --define '_sourcedir /work/SOURCES' '{spec}'\n\
+spectool -g -R --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}'\n\
 find /work/SPECS -type f -name '*.spec' -exec chmod 0644 {{}} + || true\n\
 find /work/SOURCES -type f -exec chmod 0644 {{}} + || true\n\
-rpmbuild -bs --define '_topdir /work' --define '_sourcedir /work/SOURCES' '{spec}'\n\
-srpm_path=$(find /work/SRPMS -type f -name '*.src.rpm' -newer /work/.build-start-{label}.ts | sort | tail -n 1)\n\
+rpmbuild -bs --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}'\n\
+srpm_path=$(find \"$build_root/SRPMS\" -type f -name '*.src.rpm' | sort | tail -n 1)\n\
 if [[ -z \"${{srpm_path}}\" ]]; then\n\
   echo 'no SRPM produced from spec build step' >&2\n\
   exit 4\n\
 fi\n\
-rpmbuild --rebuild --define '_topdir /work' --define '_sourcedir /work/SOURCES' \"${{srpm_path}}\"\n",
+rpmbuild --rebuild --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' \"${{srpm_path}}\"\n\
+find \"$build_root/SRPMS\" -type f -name '*.src.rpm' -exec cp -f {{}} /work/SRPMS/ \\;\n\
+while IFS= read -r rpmf; do\n\
+  rel=\"${{rpmf#$build_root/RPMS/}}\"\n\
+  dst=\"/work/RPMS/$(dirname \"$rel\")\"\n\
+  mkdir -p \"$dst\"\n\
+  cp -f \"$rpmf\" \"$dst/\"\n\
+done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         label = build_label,
         spec = sh_single_quote(&spec_in_container),
     );
