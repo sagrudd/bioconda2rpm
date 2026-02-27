@@ -43,6 +43,7 @@ Defaults when omitted:
 - `docs/RPM_charter.md`
 - `docs/Python_RPM_charter.md`
 - `docs/R_RPM_charter.md`
+- `docs/USERGUIDE.md`
 - `docs/SRS.md`
 - `docs/ARD.md`
 - `docs/CLI_contract.md`

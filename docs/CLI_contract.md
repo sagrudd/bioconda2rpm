@@ -66,3 +66,4 @@ bioconda2rpm generate-priority-specs \
 - Priority SPEC generation uses only Bioconda metadata inputs (`meta.yaml` + `build.sh`) and `tools.csv` priority rows.
 - Priority SPEC generation performs overlap resolution and SPEC creation in parallel workers.
 - For each generated SPEC, build order is always `SPEC -> SRPM -> RPM` in the selected container image.
+- RPM stage is executed as SRPM rebuild (`rpmbuild --rebuild <src.rpm>`).

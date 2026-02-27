@@ -90,6 +90,7 @@ FR-014 Priority SPEC generation workflow
 FR-015 Containerized build chain
 - For generated SPECs, the build order shall always be `SPEC -> SRPM -> RPM`.
 - SRPM generation shall execute inside a user-selected container image.
+- RPM generation shall rebuild from the generated SRPM (not direct SPEC-to-RPM).
 - The CLI shall expose a container image flag for this selection.
 
 ## 4. Non-Functional Requirements

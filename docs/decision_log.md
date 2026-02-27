@@ -88,7 +88,7 @@
 - Build flow for generated specs must always run in order:
   - SPEC generation
   - SRPM build
-  - RPM build
+  - RPM rebuild from SRPM
 - SRPM and RPM stages run inside a user-selected container image.
 - CLI now exposes container image selection for this workflow.
 - Current reference image in use: `dropworm_dev_almalinux_9_5:0.1.2`.
