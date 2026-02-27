@@ -1241,7 +1241,12 @@ fi\n\
 touch /work/.build-start-{label}.ts\n\
 spectool -g -R --define '_topdir /work' --define '_sourcedir /work/SOURCES' '{spec}'\n\
 rpmbuild -bs --define '_topdir /work' --define '_sourcedir /work/SOURCES' '{spec}'\n\
-rpmbuild -ba --define '_topdir /work' --define '_sourcedir /work/SOURCES' '{spec}'\n",
+srpm_path=$(find /work/SRPMS -type f -name '*.src.rpm' -newer /work/.build-start-{label}.ts | sort | tail -n 1)\n\
+if [[ -z \"${{srpm_path}}\" ]]; then\n\
+  echo 'no SRPM produced from spec build step' >&2\n\
+  exit 4\n\
+fi\n\
+rpmbuild --rebuild --define '_topdir /work' --define '_sourcedir /work/SOURCES' \"${{srpm_path}}\"\n",
         label = build_label,
         spec = sh_single_quote(&spec_in_container),
     );
