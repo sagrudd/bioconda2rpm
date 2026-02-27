@@ -40,6 +40,8 @@ The product is structured as layered components:
   - venv rooted at `/usr/local/phoreus/<tool>/<version>/venv`
   - dependency lock/install inside venv with hash-verified pip workflow
   - avoids shared python RPM dependency coupling.
+- For R ecosystem dependencies, routes dependency mapping through a Phoreus R interpreter package (`phoreus-r-4.5.2`) rather than shared distro R module dependencies.
+- For R project recipes, configures isolated R library trees under the tool prefix and supports `renv.lock` restoration in build-time setup.
 
 6. Build Execution Layer
 - Runs stage-selected build steps (`spec`/`srpm`/`rpm`) in containers.

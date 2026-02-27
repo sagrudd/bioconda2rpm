@@ -124,6 +124,12 @@ Python charter behavior:
 - Python library dependencies are not emitted as shared RPM `Requires`; payload runtime requires are limited to `phoreus` and `phoreus-python-3.11`.
 - This avoids unresolved distro RPM names such as `jinja2`/`rich` and follows the Python RPM charter isolation model.
 
+R charter behavior:
+
+- `bioconda2rpm` provisions `phoreus-r-4.5.2` on demand when a recipe or dependency graph references R ecosystem dependencies (`r`, `r-base`, `r-*`, `bioconductor-*`).
+- R ecosystem dependencies are mapped to `phoreus-r-4.5.2` instead of distro `R-*` RPMs, and are not pushed into `pip` lock generation.
+- For R project recipes, the generated SPEC exports `R_HOME`/`R_LIBS_USER` into an isolated tool prefix and performs `renv::restore()` when `renv.lock` is present.
+
 ## 7. Output Layout
 
 Under `<topdir>`:

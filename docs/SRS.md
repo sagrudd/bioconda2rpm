@@ -121,6 +121,12 @@ FR-019 Python dependency isolation policy
 - Python dependency resolution for these recipes shall occur inside the venv using lockfile/hash workflow (`pip-compile --generate-hashes`, then `pip install --require-hashes`).
 - Generated RPM specs for Python applications shall not emit shared python library RPM dependencies (for example `Requires: jinja2`); runtime dependencies shall be limited to `phoreus` and the selected `phoreus-python-*` interpreter package.
 
+FR-020 R runtime and dependency isolation policy
+- The system shall provide a bootstrap runtime package `phoreus-r-4.5.2` for R-dependent recipe builds.
+- R ecosystem dependencies (`r`, `r-base`, `r-*`, `bioconductor-*`) shall map to the Phoreus R runtime package rather than distro `R-*` packages.
+- R ecosystem dependencies shall never be converted into Python lock requirements for `pip-compile`.
+- For R project recipes, generated SPECs shall configure isolated R library roots (`R_LIBS_USER`) under the Phoreus tool prefix and perform lock restoration when `renv.lock` is present.
+
 ## 4. Non-Functional Requirements
 
 NFR-001 Reproducibility

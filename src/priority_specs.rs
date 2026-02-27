@@ -13,6 +13,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -71,6 +72,10 @@ struct BuildConfig {
 const PHOREUS_PYTHON_VERSION: &str = "3.11";
 const PHOREUS_PYTHON_PACKAGE: &str = "phoreus-python-3.11";
 const REFERENCE_PYTHON_SPECS_DIR: &str = "../software_query/rpm/python/specs";
+const PHOREUS_R_VERSION: &str = "4.5.2";
+const PHOREUS_R_MINOR: &str = "4.5";
+const PHOREUS_R_PACKAGE: &str = "phoreus-r-4.5.2";
+static PHOREUS_R_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn log_progress(message: impl AsRef<str>) {
     println!("progress {}", message.as_ref());
@@ -637,6 +642,13 @@ fn visit_build_plan_node(
                 ));
                 continue;
             }
+            if is_r_ecosystem_dependency_name(&dep) {
+                log_progress(format!(
+                    "phase=dependency action=skip from={} to={} reason=r-runtime-provided",
+                    canonical, dep
+                ));
+                continue;
+            }
             log_progress(format!(
                 "phase=dependency action=follow from={} to={}",
                 canonical, dep
@@ -1116,6 +1128,50 @@ fn process_tool(
             };
         }
     };
+    let r_script_hint = match staged_build_script_indicates_r(&staged_build_sh) {
+        Ok(v) => v,
+        Err(err) => {
+            let reason = format!(
+                "failed to inspect staged build.sh {} for R policy: {err}",
+                staged_build_sh.display()
+            );
+            quarantine_note(bad_spec_dir, &software_slug, &reason);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "quarantined".to_string(),
+                reason,
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: staged_build_sh.display().to_string(),
+            };
+        }
+    };
+    if recipe_requires_r_runtime(&parsed) || is_r_project_recipe(&parsed) || r_script_hint {
+        if let Err(err) = ensure_phoreus_r_bootstrap(build_config, specs_dir) {
+            let reason = format!("bootstrapping Phoreus R runtime failed: {err}");
+            quarantine_note(bad_spec_dir, &software_slug, &reason);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "quarantined".to_string(),
+                reason,
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: staged_build_sh.display().to_string(),
+            };
+        }
+    }
 
     let staged_patch_sources = match stage_recipe_patches(
         &parsed.source_patches,
@@ -1174,6 +1230,7 @@ fn process_tool(
         &resolved.variant_dir,
         parsed.noarch_python,
         python_script_hint,
+        r_script_hint,
     );
     let meta_version = match next_meta_package_version(&build_config.topdir, &software_slug) {
         Ok(v) => v,
@@ -1883,6 +1940,28 @@ fn is_python_recipe(parsed: &ParsedMeta) -> bool {
         .unwrap_or(false)
 }
 
+fn recipe_requires_r_runtime(parsed: &ParsedMeta) -> bool {
+    parsed
+        .build_deps
+        .iter()
+        .chain(parsed.host_deps.iter())
+        .chain(parsed.run_deps.iter())
+        .any(|dep| is_r_ecosystem_dependency_name(dep))
+}
+
+fn is_r_project_recipe(parsed: &ParsedMeta) -> bool {
+    let package = parsed.package_name.trim().replace('_', "-").to_lowercase();
+    package == "r"
+        || package == "r-base"
+        || package.starts_with("r-")
+        || package.starts_with("bioconductor-")
+        || parsed
+            .build_script
+            .as_deref()
+            .map(script_text_indicates_r)
+            .unwrap_or(false)
+}
+
 fn build_python_requirements(parsed: &ParsedMeta) -> Vec<String> {
     let mut out = BTreeSet::new();
     for raw in parsed
@@ -1914,6 +1993,9 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
     let name_token = parts.next()?;
     let normalized = name_token.replace('_', "-").to_lowercase();
     if is_phoreus_python_toolchain_dependency(&normalized) {
+        return None;
+    }
+    if is_r_ecosystem_dependency_name(&normalized) {
         return None;
     }
     if !is_python_ecosystem_dependency_name(&normalized) {
@@ -1961,6 +2043,9 @@ fn should_keep_rpm_dependency_for_python(dep: &str) -> bool {
 }
 
 fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
+    if is_r_ecosystem_dependency_name(normalized) {
+        return false;
+    }
     if is_phoreus_python_toolchain_dependency(normalized) {
         return true;
     }
@@ -2159,6 +2244,12 @@ fn staged_build_script_indicates_python(path: &Path) -> Result<bool> {
     Ok(script_text_indicates_python(&text))
 }
 
+fn staged_build_script_indicates_r(path: &Path) -> Result<bool> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("reading staged build script {}", path.display()))?;
+    Ok(script_text_indicates_r(&text))
+}
+
 fn script_text_indicates_python(script: &str) -> bool {
     let lower = script.to_lowercase();
     lower.contains("pip install")
@@ -2166,6 +2257,15 @@ fn script_text_indicates_python(script: &str) -> bool {
         || lower.contains("python3 -m pip")
         || lower.contains("python setup.py")
         || lower.contains("setup.py install")
+}
+
+fn script_text_indicates_r(script: &str) -> bool {
+    let lower = script.to_lowercase();
+    lower.contains("rscript ")
+        || lower.contains(" r -e")
+        || lower.contains("r -e ")
+        || lower.contains("renv::")
+        || lower.contains("install.packages(")
 }
 
 fn extract_package_scalar(rendered: &str, key: &str) -> Option<String> {
@@ -2339,6 +2439,7 @@ fn render_payload_spec(
     variant_dir: &Path,
     noarch_python: bool,
     python_script_hint: bool,
+    r_script_hint: bool,
 ) -> String {
     let license = spec_escape(&parsed.license);
     let summary = spec_escape(&parsed.summary);
@@ -2364,19 +2465,25 @@ fn render_payload_spec(
     // Python policy is applied when either metadata or staged build script indicates
     // Python packaging/install semantics.
     let python_recipe = is_python_recipe(parsed) || python_script_hint;
+    let r_runtime_required = recipe_requires_r_runtime(parsed) || r_script_hint;
+    let r_project_recipe = is_r_project_recipe(parsed) || r_script_hint;
     let python_requirements = if python_recipe {
         build_python_requirements(parsed)
     } else {
         Vec::new()
     };
     let python_venv_setup = render_python_venv_setup_block(python_recipe, &python_requirements);
-    let module_lua_env = render_module_lua_env_block(python_recipe);
+    let r_runtime_setup = render_r_runtime_setup_block(r_runtime_required, r_project_recipe);
+    let module_lua_env = render_module_lua_env_block(python_recipe, r_runtime_required);
 
     let mut build_requires = BTreeSet::new();
     build_requires.insert("bash".to_string());
     // Enforce canonical builder policy: every payload build uses Phoreus Python,
     // never the system interpreter.
     build_requires.insert(PHOREUS_PYTHON_PACKAGE.to_string());
+    if r_runtime_required {
+        build_requires.insert(PHOREUS_R_PACKAGE.to_string());
+    }
     build_requires.extend(
         parsed
             .build_deps
@@ -2399,6 +2506,9 @@ fn render_payload_spec(
     runtime_requires.insert("phoreus".to_string());
     if python_recipe {
         runtime_requires.insert(PHOREUS_PYTHON_PACKAGE.to_string());
+        if r_runtime_required {
+            runtime_requires.insert(PHOREUS_R_PACKAGE.to_string());
+        }
         runtime_requires.extend(
             parsed
                 .run_deps
@@ -2407,6 +2517,9 @@ fn render_payload_spec(
                 .map(|d| map_runtime_dependency(d)),
         );
     } else {
+        if r_runtime_required {
+            runtime_requires.insert(PHOREUS_R_PACKAGE.to_string());
+        }
         runtime_requires.extend(parsed.run_deps.iter().map(|d| map_runtime_dependency(d)));
     }
 
@@ -2577,6 +2690,8 @@ mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\"\n\
 \n\
 {python_venv_setup}\
 \n\
+{r_runtime_setup}\
+\n\
 # BLAST recipes in Bioconda assume a conda-style shared prefix where ncbi-vdb\n\
 # lives under the same PREFIX. In Phoreus, ncbi-vdb is a separate payload.\n\
 # Retarget the generated build.sh argument to the newest installed ncbi-vdb prefix.\n\
@@ -2680,6 +2795,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         meta_path = spec_escape(&meta_path.display().to_string()),
         variant_dir = spec_escape(&variant_dir.display().to_string()),
         phoreus_python_version = PHOREUS_PYTHON_VERSION,
+        r_runtime_setup = r_runtime_setup,
     )
 }
 
@@ -2719,18 +2835,65 @@ export PIP_DISABLE_PIP_VERSION_CHECK=1\n\
     )
 }
 
-fn render_module_lua_env_block(python_recipe: bool) -> String {
-    if python_recipe {
-        "setenv(\"VIRTUAL_ENV\", pathJoin(prefix, \"venv\"))\n\
-prepend_path(\"PATH\", pathJoin(prefix, \"venv/bin\"))\n\
-prepend_path(\"LD_LIBRARY_PATH\", pathJoin(prefix, \"lib\"))\n"
+fn render_r_runtime_setup_block(r_runtime_required: bool, r_project_recipe: bool) -> String {
+    if !r_runtime_required {
+        return String::new();
+    }
+
+    let renv_restore = if r_project_recipe {
+        "if [[ -f \"renv.lock\" ]]; then\n\
+  \"$PHOREUS_R_PREFIX/bin/Rscript\" -e 'install.packages(\"renv\", repos=\"https://cran.r-project.org\")'\n\
+  \"$PHOREUS_R_PREFIX/bin/Rscript\" -e 'renv::restore(lockfile = \"renv.lock\", prompt = FALSE)'\n\
+fi\n"
             .to_string()
     } else {
-        "prepend_path(\"PATH\", pathJoin(prefix, \"bin\"))\n\
+        String::new()
+    };
+
+    format!(
+        "# Charter-compliant R runtime handling: route all R dependency roots through Phoreus R.\n\
+export PHOREUS_R_PREFIX=/usr/local/phoreus/r/{phoreus_r_version}\n\
+if [[ ! -x \"$PHOREUS_R_PREFIX/bin/Rscript\" ]]; then\n\
+  echo \"missing Phoreus R runtime at $PHOREUS_R_PREFIX\" >&2\n\
+  exit 42\n\
+fi\n\
+export PATH=\"$PHOREUS_R_PREFIX/bin:$PATH\"\n\
+export LD_LIBRARY_PATH=\"$PHOREUS_R_PREFIX/lib64:$PHOREUS_R_PREFIX/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n\
+export R_HOME=\"$PHOREUS_R_PREFIX/lib64/R\"\n\
+export R_LIBS_USER=\"$PREFIX/R/library\"\n\
+mkdir -p \"$R_LIBS_USER\"\n\
+{renv_restore}",
+        phoreus_r_version = PHOREUS_R_VERSION,
+        renv_restore = renv_restore
+    )
+}
+
+fn render_module_lua_env_block(python_recipe: bool, r_runtime_required: bool) -> String {
+    let mut out = String::new();
+    if python_recipe {
+        out.push_str(
+            "setenv(\"VIRTUAL_ENV\", pathJoin(prefix, \"venv\"))\n\
+prepend_path(\"PATH\", pathJoin(prefix, \"venv/bin\"))\n\
+prepend_path(\"LD_LIBRARY_PATH\", pathJoin(prefix, \"lib\"))\n",
+        );
+    } else {
+        out.push_str(
+            "prepend_path(\"PATH\", pathJoin(prefix, \"bin\"))\n\
 prepend_path(\"LD_LIBRARY_PATH\", pathJoin(prefix, \"lib\"))\n\
-prepend_path(\"MANPATH\", pathJoin(prefix, \"share/man\"))\n"
-            .to_string()
+prepend_path(\"MANPATH\", pathJoin(prefix, \"share/man\"))\n",
+        );
     }
+
+    if r_runtime_required {
+        out.push_str(&format!(
+            "setenv(\"PHOREUS_R_VERSION\", \"{phoreus_r_version}\")\n\
+setenv(\"R_HOME\", \"/usr/local/phoreus/r/{phoreus_r_version}/lib64/R\")\n\
+setenv(\"R_LIBS_USER\", pathJoin(prefix, \"R/library\"))\n",
+            phoreus_r_version = PHOREUS_R_VERSION
+        ));
+    }
+
+    out
 }
 
 fn render_default_spec(software_slug: &str, parsed: &ParsedMeta, meta_version: u64) -> String {
@@ -2955,6 +3118,9 @@ fn map_build_dependency(dep: &str) -> String {
     if let Some(mapped) = map_perl_core_dependency(dep) {
         return mapped;
     }
+    if is_r_ecosystem_dependency_name(dep) {
+        return PHOREUS_R_PACKAGE.to_string();
+    }
     if is_phoreus_python_toolchain_dependency(dep) {
         return PHOREUS_PYTHON_PACKAGE.to_string();
     }
@@ -2977,6 +3143,9 @@ fn map_build_dependency(dep: &str) -> String {
 fn map_runtime_dependency(dep: &str) -> String {
     if let Some(mapped) = map_perl_core_dependency(dep) {
         return mapped;
+    }
+    if is_r_ecosystem_dependency_name(dep) {
+        return PHOREUS_R_PACKAGE.to_string();
     }
     if is_phoreus_python_toolchain_dependency(dep) {
         return PHOREUS_PYTHON_PACKAGE.to_string();
@@ -3001,6 +3170,16 @@ fn is_phoreus_python_toolchain_dependency(dep: &str) -> bool {
             | "wheel"
             | PHOREUS_PYTHON_PACKAGE
     )
+}
+
+fn is_r_ecosystem_dependency_name(dep: &str) -> bool {
+    let normalized = dep.trim().replace('_', "-").to_lowercase();
+    normalized == "r"
+        || normalized == "r-base"
+        || normalized == "r-essentials"
+        || normalized.starts_with("r-")
+        || normalized.starts_with("bioconductor-")
+        || normalized == PHOREUS_R_PACKAGE
 }
 
 fn sync_reference_python_specs(specs_dir: &Path) -> Result<()> {
@@ -3058,6 +3237,111 @@ fn ensure_phoreus_python_bootstrap(build_config: &BuildConfig, specs_dir: &Path)
     build_spec_chain_in_container(build_config, &spec_path, PHOREUS_PYTHON_PACKAGE)
         .with_context(|| format!("building bootstrap package {}", PHOREUS_PYTHON_PACKAGE))?;
     Ok(())
+}
+
+fn ensure_phoreus_r_bootstrap(build_config: &BuildConfig, specs_dir: &Path) -> Result<()> {
+    let lock = PHOREUS_R_BOOTSTRAP_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow::anyhow!("phoreus R bootstrap lock poisoned"))?;
+
+    if topdir_has_package_artifact(&build_config.topdir, PHOREUS_R_PACKAGE)? {
+        return Ok(());
+    }
+
+    let spec_name = format!("{PHOREUS_R_PACKAGE}.spec");
+    let spec_path = specs_dir.join(&spec_name);
+    let spec_body = render_phoreus_r_bootstrap_spec();
+    fs::write(&spec_path, spec_body)
+        .with_context(|| format!("writing R bootstrap spec {}", spec_path.display()))?;
+    #[cfg(unix)]
+    fs::set_permissions(&spec_path, fs::Permissions::from_mode(0o644))
+        .with_context(|| format!("setting permissions on {}", spec_path.display()))?;
+
+    build_spec_chain_in_container(build_config, &spec_path, PHOREUS_R_PACKAGE)
+        .with_context(|| format!("building bootstrap package {}", PHOREUS_R_PACKAGE))?;
+    Ok(())
+}
+
+fn render_phoreus_r_bootstrap_spec() -> String {
+    let changelog_date = rpm_changelog_date();
+    format!(
+        "%global r_minor {r_minor}\n\
+%global debug_package %{{nil}}\n\
+%global __brp_mangle_shebangs %{{nil}}\n\
+\n\
+Name:           {name}\n\
+Version:        {version}\n\
+Release:        1%{{?dist}}\n\
+Summary:        Phoreus R {r_minor} runtime built from CRAN source\n\
+License:        GPL-2.0-or-later\n\
+URL:            https://cran.r-project.org/\n\
+Source0:        https://cran.r-project.org/src/base/R-4/R-%{{version}}.tar.gz\n\
+\n\
+Requires:       phoreus\n\
+Provides:       phoreus-R-{version} = %{{version}}-%{{release}}\n\
+Provides:       phoreus-r = %{{version}}-%{{release}}\n\
+\n\
+%global phoreus_tool r\n\
+%global phoreus_prefix /usr/local/phoreus/%{{phoreus_tool}}/{version}\n\
+%global phoreus_moddir /usr/local/phoreus/modules/%{{phoreus_tool}}\n\
+\n\
+BuildRequires:  gcc\n\
+BuildRequires:  gcc-c++\n\
+BuildRequires:  gcc-gfortran\n\
+BuildRequires:  make\n\
+BuildRequires:  readline-devel\n\
+BuildRequires:  pcre2-devel\n\
+BuildRequires:  libcurl-devel\n\
+BuildRequires:  zlib-devel\n\
+BuildRequires:  bzip2-devel\n\
+BuildRequires:  xz-devel\n\
+BuildRequires:  libjpeg-turbo-devel\n\
+BuildRequires:  libpng-devel\n\
+BuildRequires:  cairo-devel\n\
+\n\
+%description\n\
+Phoreus R runtime package for R {version}. Builds R from upstream CRAN source\n\
+into a dedicated Phoreus prefix for hermetic R-dependent bioinformatics tools.\n\
+\n\
+%prep\n\
+%autosetup -n R-%{{version}}\n\
+\n\
+%build\n\
+./configure \\\n\
+  --prefix=%{{phoreus_prefix}} \\\n\
+  --enable-R-shlib\n\
+make %{{?_smp_mflags}}\n\
+\n\
+%install\n\
+rm -rf %{{buildroot}}\n\
+make install DESTDIR=%{{buildroot}}\n\
+\n\
+mkdir -p %{{buildroot}}%{{phoreus_moddir}}\n\
+cat > %{{buildroot}}%{{phoreus_moddir}}/{r_minor}.lua <<'LUAEOF'\n\
+help([[ Phoreus R {r_minor} runtime module ]])\n\
+whatis(\"Name: r\")\n\
+whatis(\"Version: {r_minor}\")\n\
+local prefix = \"/usr/local/phoreus/r/{version}\"\n\
+setenv(\"PHOREUS_R_VERSION\", \"{version}\")\n\
+setenv(\"R_HOME\", pathJoin(prefix, \"lib64/R\"))\n\
+prepend_path(\"PATH\", pathJoin(prefix, \"bin\"))\n\
+prepend_path(\"LD_LIBRARY_PATH\", pathJoin(prefix, \"lib64\"))\n\
+LUAEOF\n\
+chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/{r_minor}.lua\n\
+\n\
+%files\n\
+%{{phoreus_prefix}}/\n\
+%{{phoreus_moddir}}/{r_minor}.lua\n\
+\n\
+%changelog\n\
+* {changelog_date} bioconda2rpm <packaging@bioconda2rpm.local> - {version}-1\n\
+- Build R {version} from upstream CRAN source under Phoreus prefix\n",
+        name = PHOREUS_R_PACKAGE,
+        version = PHOREUS_R_VERSION,
+        r_minor = PHOREUS_R_MINOR,
+        changelog_date = changelog_date
+    )
 }
 
 fn topdir_has_package_artifact(topdir: &Path, package_name: &str) -> Result<bool> {
@@ -3895,6 +4179,7 @@ requirements:
             Path::new("/tmp"),
             false,
             false,
+            false,
         );
         assert!(spec.contains("Source2:"));
         assert!(spec.contains("patch -p1 -i %{SOURCE2}"));
@@ -3968,6 +4253,35 @@ requirements:
     }
 
     #[test]
+    fn r_dependencies_are_not_converted_to_pip_specs() {
+        assert_eq!(conda_dep_to_pip_requirement("r-ggplot2 >=3.5.0"), None);
+        assert_eq!(
+            conda_dep_to_pip_requirement("bioconductor-genomicranges"),
+            None
+        );
+    }
+
+    #[test]
+    fn r_dependencies_map_to_phoreus_r_runtime() {
+        assert_eq!(
+            map_build_dependency("r-ggplot2"),
+            PHOREUS_R_PACKAGE.to_string()
+        );
+        assert_eq!(
+            map_runtime_dependency("r-base"),
+            PHOREUS_R_PACKAGE.to_string()
+        );
+    }
+
+    #[test]
+    fn phoreus_r_bootstrap_spec_is_rendered_with_expected_name() {
+        let spec = render_phoreus_r_bootstrap_spec();
+        assert!(spec.contains("Name:           phoreus-r-4.5.2"));
+        assert!(spec.contains("Version:        4.5.2"));
+        assert!(spec.contains("Source0:        https://cran.r-project.org/src/base/R-4/R-%{version}.tar.gz"));
+    }
+
+    #[test]
     fn python_payload_spec_routes_python_build_deps_to_venv() {
         let mut build_deps = BTreeSet::new();
         build_deps.insert("gcc".to_string());
@@ -4019,6 +4333,7 @@ requirements:
             Path::new("/tmp"),
             false,
             false,
+            false,
         );
         assert!(spec.contains("BuildRequires:  gcc"));
         assert!(!spec.contains("BuildRequires:  cython"));
@@ -4033,6 +4348,47 @@ requirements:
         let generated = synthesize_build_sh_from_meta_script(script);
         assert!(generated.contains("set -euxo pipefail"));
         assert!(generated.contains("$PYTHON -m pip install . --no-deps --no-build-isolation"));
+    }
+
+    #[test]
+    fn python_payload_with_r_dependency_requires_phoreus_r_runtime() {
+        let mut run_deps = BTreeSet::new();
+        run_deps.insert("r-ggplot2".to_string());
+        run_deps.insert(PHOREUS_PYTHON_PACKAGE.to_string());
+
+        let parsed = ParsedMeta {
+            package_name: "gatk".to_string(),
+            version: "3.8".to_string(),
+            source_url: "https://example.invalid/gatk-3.8.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://gatk.broadinstitute.org/".to_string(),
+            license: "BSD-3-Clause".to_string(),
+            summary: "gatk".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["python".to_string()],
+            run_dep_specs_raw: vec!["python".to_string(), "r-ggplot2".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps,
+        };
+
+        let spec = render_payload_spec(
+            "gatk",
+            &parsed,
+            "bioconda-gatk-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains(&format!("BuildRequires:  {}", PHOREUS_R_PACKAGE)));
+        assert!(spec.contains(&format!("Requires:  {}", PHOREUS_R_PACKAGE)));
+        assert!(!spec.contains("r-ggplot2"));
     }
 
     #[test]
