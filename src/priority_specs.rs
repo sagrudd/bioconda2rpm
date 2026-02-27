@@ -518,6 +518,9 @@ fn visit_build_plan_node(
             if dep == canonical {
                 continue;
             }
+            if map_perl_core_dependency(&dep).is_some() {
+                continue;
+            }
             if let Some(dep_key) = visit_build_plan_node(
                 &dep,
                 false,
@@ -2809,6 +2812,8 @@ fn map_perl_core_dependency(dep: &str) -> Option<String> {
         "perl-encode" => "perl-Encode",
         "perl-exporter-tiny" => "perl-Exporter-Tiny",
         "perl-test-leaktrace" => "perl-Test-LeakTrace",
+        "perl-canary-stability" => "perl-Canary-Stability",
+        "perl-types-serialiser" => "perl-Types-Serialiser",
         _ => return None,
     };
     Some(mapped.to_string())
@@ -3419,6 +3424,14 @@ mod tests {
     fn dependency_mapping_handles_conda_aliases() {
         assert_eq!(map_build_dependency("boost-cpp"), "boost-devel".to_string());
         assert_eq!(map_runtime_dependency("boost-cpp"), "boost".to_string());
+        assert_eq!(
+            map_build_dependency("perl-canary-stability"),
+            "perl-Canary-Stability".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl-types-serialiser"),
+            "perl-Types-Serialiser".to_string()
+        );
         assert_eq!(
             map_build_dependency("python"),
             PHOREUS_PYTHON_PACKAGE.to_string()
