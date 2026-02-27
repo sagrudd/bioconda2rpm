@@ -1762,6 +1762,9 @@ fn render_payload_spec(
 
     let mut build_requires = BTreeSet::new();
     build_requires.insert("bash".to_string());
+    // Enforce canonical builder policy: every payload build uses Phoreus Python,
+    // never the system interpreter.
+    build_requires.insert(PHOREUS_PYTHON_PACKAGE.to_string());
     build_requires.extend(parsed.build_deps.iter().map(|d| map_build_dependency(d)));
     build_requires.extend(parsed.host_deps.iter().map(|d| map_build_dependency(d)));
     build_requires.extend(parsed.run_deps.iter().map(|d| map_build_dependency(d)));
