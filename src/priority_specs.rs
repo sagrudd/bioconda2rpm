@@ -1955,6 +1955,7 @@ fn map_build_dependency(dep: &str) -> String {
     match dep {
         "boost-cpp" => "boost-devel".to_string(),
         "python" => "python3".to_string(),
+        "setuptools" => "python3-setuptools".to_string(),
         other => other.to_string(),
     }
 }
@@ -1963,6 +1964,7 @@ fn map_runtime_dependency(dep: &str) -> String {
     match dep {
         "boost-cpp" => "boost".to_string(),
         "python" => "python3".to_string(),
+        "setuptools" => "python3-setuptools".to_string(),
         other => other.to_string(),
     }
 }
@@ -2574,6 +2576,14 @@ mod tests {
         assert_eq!(map_runtime_dependency("boost-cpp"), "boost".to_string());
         assert_eq!(map_build_dependency("python"), "python3".to_string());
         assert_eq!(map_runtime_dependency("python"), "python3".to_string());
+        assert_eq!(
+            map_build_dependency("setuptools"),
+            "python3-setuptools".to_string()
+        );
+        assert_eq!(
+            map_runtime_dependency("setuptools"),
+            "python3-setuptools".to_string()
+        );
     }
 
     #[test]
