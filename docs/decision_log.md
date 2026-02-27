@@ -13,3 +13,8 @@
   - `srpm`
   - `rpm`
 - Initial default should map to `rpm` (full build through binary RPM).
+
+### Q2 - Dependency closure default
+- Dependency closure policy must be configurable via CLI.
+- Default policy: include `build + host + run` dependency sets.
+- Tool should support switching policies for stricter or lighter closure behavior.
