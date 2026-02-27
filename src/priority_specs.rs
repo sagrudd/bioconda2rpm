@@ -662,6 +662,13 @@ fn visit_build_plan_node(
                 ));
                 continue;
             }
+            if is_phoreus_python_toolchain_dependency(&dep) {
+                log_progress(format!(
+                    "phase=dependency action=skip from={} to={} reason=python-runtime-provided",
+                    canonical, dep
+                ));
+                continue;
+            }
             if is_conda_only_dependency(&dep) {
                 log_progress(format!(
                     "phase=dependency action=skip from={} to={} reason=conda-helper-not-rpm",
@@ -699,6 +706,13 @@ fn visit_build_plan_node(
                 nodes,
                 order,
             )? {
+                if dep_key == canonical {
+                    log_progress(format!(
+                        "phase=dependency action=skip from={} to={} reason=alias-self-resolution",
+                        canonical, dep
+                    ));
+                    continue;
+                }
                 bioconda_deps.insert(dep_key);
             } else {
                 log_progress(format!(
@@ -1658,6 +1672,15 @@ fn select_fallback_recipe<'a>(
     tool_lower: &str,
     recipe_dirs: &'a [RecipeDir],
 ) -> Option<&'a RecipeDir> {
+    // Prefer script bundles when users request the base tool name.
+    let scripts_candidate = format!("{tool_lower}-scripts");
+    if let Some(recipe) = recipe_dirs
+        .iter()
+        .find(|r| r.name.eq_ignore_ascii_case(&scripts_candidate))
+    {
+        return Some(recipe);
+    }
+
     // Prefer explicit package namespaces when users request a base tool name.
     let direct_prefix = format!("{tool_lower}-");
     let direct_matches: Vec<&RecipeDir> = recipe_dirs
@@ -1914,6 +1937,7 @@ fn render_meta_yaml(meta: &str) -> Result<String> {
         format!("{}-compiler", lang.to_lowercase())
     });
     env.add_function("pin_subpackage", |name: String, _kwargs: Kwargs| name);
+    env.add_function("pin_compatible", |name: String, _kwargs: Kwargs| name);
 
     let template = env
         .template_from_str(meta)
@@ -1924,6 +1948,7 @@ fn render_meta_yaml(meta: &str) -> Result<String> {
             PYTHON => "$PYTHON",
             PIP => "$PIP",
             PREFIX => "$PREFIX",
+            SRC_DIR => "$SRC_DIR",
             RECIPE_DIR => "$RECIPE_DIR",
             R => "R",
             environ => context! {
@@ -1931,6 +1956,7 @@ fn render_meta_yaml(meta: &str) -> Result<String> {
                 RECIPE_DIR => "$RECIPE_DIR",
                 PYTHON => "$PYTHON",
                 PIP => "$PIP",
+                SRC_DIR => "$SRC_DIR",
             },
         })
         .context("rendering meta.yaml jinja template")
@@ -2330,6 +2356,7 @@ fn is_r_project_recipe(parsed: &ParsedMeta) -> bool {
 }
 
 fn build_python_requirements(parsed: &ParsedMeta) -> Vec<String> {
+    let runtime_incompatible = recipe_python_runtime_incompatible(parsed);
     let mut out = BTreeSet::new();
     for raw in parsed
         .host_dep_specs_raw
@@ -2337,7 +2364,17 @@ fn build_python_requirements(parsed: &ParsedMeta) -> Vec<String> {
         .chain(parsed.run_dep_specs_raw.iter())
     {
         if let Some(req) = conda_dep_to_pip_requirement(raw) {
-            out.insert(req);
+            let normalized_req = if runtime_incompatible {
+                relax_pip_requirement_for_runtime(req)
+            } else {
+                req
+            };
+            if runtime_incompatible
+                && requirement_hits_python_abi_incompatible_legacy_dep(&normalized_req)
+            {
+                continue;
+            }
+            out.insert(normalized_req);
         }
     }
     // Legacy pomegranate releases (used by Bioconda CNVKit) are not compatible
@@ -2347,6 +2384,150 @@ fn build_python_requirements(parsed: &ParsedMeta) -> Vec<String> {
         out.insert("numpy<2".to_string());
     }
     out.into_iter().collect()
+}
+
+fn recipe_python_runtime_incompatible(parsed: &ParsedMeta) -> bool {
+    parsed
+        .build_dep_specs_raw
+        .iter()
+        .chain(parsed.host_dep_specs_raw.iter())
+        .chain(parsed.run_dep_specs_raw.iter())
+        .any(|raw| python_dep_spec_conflicts_with_runtime(raw, 3, 11))
+}
+
+fn python_dep_spec_conflicts_with_runtime(
+    raw: &str,
+    runtime_major: u64,
+    runtime_minor: u64,
+) -> bool {
+    let cleaned = raw
+        .split('#')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'');
+    if cleaned.is_empty() {
+        return false;
+    }
+
+    let mut parts = cleaned.split_whitespace();
+    let Some(first_token) = parts.next() else {
+        return false;
+    };
+    let name_token = extract_dependency_name_from_token(first_token);
+    if normalize_dependency_token(name_token) != "python" {
+        return false;
+    }
+
+    let inline_spec = first_token[name_token.len()..].trim();
+    let remainder = cleaned[first_token.len()..].trim();
+    let spec = if !inline_spec.is_empty() {
+        inline_spec
+    } else {
+        remainder
+    };
+    if spec.is_empty() {
+        return false;
+    }
+
+    for clause in spec.split(',') {
+        let token = clause.trim();
+        if token.is_empty() {
+            continue;
+        }
+        if let Some(version) = token.strip_prefix("<=")
+            && let Some((major, minor)) = parse_major_minor(version)
+            && (runtime_major, runtime_minor) > (major, minor)
+        {
+            return true;
+        } else if let Some(version) = token.strip_prefix('<')
+            && let Some((major, minor)) = parse_major_minor(version)
+            && (runtime_major, runtime_minor) >= (major, minor)
+        {
+            return true;
+        } else if let Some(version) = token.strip_prefix("==")
+            && let Some((major, minor)) = parse_major_minor(version)
+            && (runtime_major, runtime_minor) != (major, minor)
+        {
+            return true;
+        } else if let Some(version) = token.strip_prefix('=')
+            && let Some((major, minor)) = parse_major_minor(version)
+            && (runtime_major, runtime_minor) != (major, minor)
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn parse_major_minor(version: &str) -> Option<(u64, u64)> {
+    let mut pieces = version
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .split('.');
+    let major = pieces.next()?.trim().parse::<u64>().ok()?;
+    let minor = pieces
+        .next()
+        .and_then(|m| m.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    Some((major, minor))
+}
+
+fn relax_pip_requirement_for_runtime(requirement: String) -> String {
+    let split_at = requirement
+        .char_indices()
+        .find(|(_, c)| ['<', '>', '=', '!', '~'].contains(c))
+        .map(|(idx, _)| idx);
+    let Some(split_at) = split_at else {
+        return requirement;
+    };
+
+    let name = requirement[..split_at].trim();
+    let spec = requirement[split_at..].trim();
+    if name.is_empty() || spec.is_empty() {
+        return requirement;
+    }
+
+    let mut clauses: Vec<String> = Vec::new();
+    for token in spec.split(',') {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("<=") || trimmed.starts_with('<') {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("==") {
+            clauses.push(format!(">={}", rest.trim()));
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix('=')
+            && !trimmed.starts_with("=>")
+        {
+            clauses.push(format!(">={}", rest.trim()));
+            continue;
+        }
+        clauses.push(trimmed.to_string());
+    }
+
+    if clauses.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}{}", clauses.join(","))
+    }
+}
+
+fn requirement_hits_python_abi_incompatible_legacy_dep(requirement: &str) -> bool {
+    let split_at = requirement
+        .char_indices()
+        .find(|(_, c)| ['<', '>', '=', '!', '~'].contains(c))
+        .map(|(idx, _)| idx)
+        .unwrap_or(requirement.len());
+    let name = requirement[..split_at].trim().to_lowercase();
+    matches!(name.as_str(), "fa2" | "mnnpy")
 }
 
 fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
@@ -2362,9 +2543,16 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
     }
 
     let mut parts = cleaned.split_whitespace();
-    let name_token = parts.next()?;
-    let normalized = name_token.replace('_', "-").to_lowercase();
+    let first_token = parts.next()?;
+    let name_token = extract_dependency_name_from_token(first_token);
+    if name_token.is_empty() {
+        return None;
+    }
+    let normalized = normalize_dependency_token(name_token);
     if is_phoreus_python_toolchain_dependency(&normalized) {
+        return None;
+    }
+    if is_python_dev_test_dependency_name(&normalized) {
         return None;
     }
     if is_r_ecosystem_dependency_name(&normalized) {
@@ -2386,22 +2574,26 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
         other => other.to_string(),
     };
 
-    let remainder = cleaned[name_token.len()..].trim();
-    if remainder.is_empty() {
-        return Some(pip_name);
-    }
-
-    let spec_token = remainder
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .trim();
+    let inline_spec = first_token[name_token.len()..].trim();
+    let remainder_after_first = cleaned[first_token.len()..].trim();
+    let spec_token = if !inline_spec.is_empty() {
+        inline_spec
+    } else {
+        remainder_after_first
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .trim()
+    };
     if spec_token.is_empty() {
         return Some(pip_name);
     }
 
     let requirement = if spec_token.starts_with(['>', '<', '=', '!', '~']) {
-        format!("{pip_name}{spec_token}")
+        format!(
+            "{pip_name}{}",
+            normalize_conda_version_spec_for_pip(spec_token)
+        )
     } else if spec_token
         .chars()
         .next()
@@ -2416,9 +2608,46 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
     Some(requirement)
 }
 
+fn normalize_conda_version_spec_for_pip(spec: &str) -> String {
+    let trimmed = spec.trim();
+    if trimmed.starts_with('=') && !trimmed.starts_with("==") {
+        format!("=={}", trimmed.trim_start_matches('='))
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn extract_dependency_name_from_token(token: &str) -> &str {
+    let trimmed = token.trim().trim_matches(',');
+    let split_idx = trimmed
+        .find(['<', '>', '=', '!', '~'])
+        .unwrap_or(trimmed.len());
+    trimmed[..split_idx].trim()
+}
+
 fn should_keep_rpm_dependency_for_python(dep: &str) -> bool {
     let normalized = dep.trim().replace('_', "-").to_lowercase();
     !is_python_ecosystem_dependency_name(&normalized)
+}
+
+fn is_python_dev_test_dependency_name(dep: &str) -> bool {
+    let normalized = normalize_dependency_token(dep);
+    matches!(
+        normalized.as_str(),
+        "bats"
+            | "black"
+            | "coverage"
+            | "flake8"
+            | "hypothesis"
+            | "mypy"
+            | "nose"
+            | "pre-commit"
+            | "pytest"
+            | "pytest-cov"
+            | "pytest-runner"
+            | "ruff"
+            | "tox"
+    )
 }
 
 fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
@@ -2810,14 +3039,17 @@ fn normalize_dependency_name(raw: &str) -> Option<String> {
     let token = cleaned
         .split_whitespace()
         .next()
-        .map(|t| t.trim_matches(','))
+        .map(extract_dependency_name_from_token)
         .unwrap_or_default();
 
     if token.is_empty() {
         return None;
     }
 
-    let normalized = normalize_dependency_token(token);
+    let mut normalized = normalize_dependency_token(token);
+    if normalized.starts_with("bioconductor-") || normalized.starts_with("r-") {
+        normalized = normalized.replace('.', "-");
+    }
     if is_phoreus_python_toolchain_dependency(&normalized) {
         return Some(PHOREUS_PYTHON_PACKAGE.to_string());
     }
@@ -2859,14 +3091,10 @@ fn render_payload_spec(
             format!("buildsrc/{folder}")
         }
     };
-    let source_relsubdir = {
-        let folder = parsed.source_folder.trim().trim_matches('/');
-        if folder.is_empty() {
-            ".".to_string()
-        } else {
-            folder.to_string()
-        }
-    };
+    // Conda-build exposes SRC_DIR as the parent work directory; when source
+    // entries specify `folder:`, recipes typically address those as
+    // `$SRC_DIR/<folder>`.
+    let source_relsubdir = ".".to_string();
     // Python policy is applied when either metadata or staged build script indicates
     // Python packaging/install semantics.
     let python_recipe = is_python_recipe(parsed) || python_script_hint;
@@ -3045,7 +3273,7 @@ fn render_payload_spec(
     mkdir -p %{{buildroot}}%{{phoreus_prefix}}\n\
     cd buildsrc\n\
     export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
-    export SRC_DIR=${{SRC_DIR:-$(pwd)/%{{bioconda_source_relsubdir}}}}\n\
+    export SRC_DIR=$(pwd)/%{{bioconda_source_relsubdir}}\n\
     export CPU_COUNT=1\n\
     export MAKEFLAGS=-j1\n\
     export CMAKE_BUILD_PARALLEL_LEVEL=1\n\
@@ -3911,10 +4139,7 @@ fn normalize_name(name: &str) -> String {
 }
 
 fn normalize_dependency_token(dep: &str) -> String {
-    dep.trim()
-        .replace('_', "-")
-        .replace('.', "-")
-        .to_lowercase()
+    dep.trim().replace('_', "-").to_lowercase()
 }
 
 fn normalize_identifier_key(name: &str) -> String {
@@ -5336,6 +5561,14 @@ mod tests {
             normalize_dependency_name("openjdk >=11.0.1"),
             Some("java-11-openjdk".to_string())
         );
+        assert_eq!(
+            normalize_dependency_name("pandas>=0.21,<0.24"),
+            Some("pandas".to_string())
+        );
+        assert_eq!(
+            normalize_dependency_name("bioconductor-ucsc.utils >=1.2.0"),
+            Some("bioconductor-ucsc-utils".to_string())
+        );
     }
 
     #[test]
@@ -5649,8 +5882,42 @@ source:
             conda_dep_to_pip_requirement("matplotlib-base >=3.5.2"),
             Some("matplotlib>=3.5.2".to_string())
         );
+        assert_eq!(
+            conda_dep_to_pip_requirement("pandas>=0.21,<0.24"),
+            Some("pandas>=0.21,<0.24".to_string())
+        );
+        assert_eq!(
+            conda_dep_to_pip_requirement("scanpy=1.9.3"),
+            Some("scanpy==1.9.3".to_string())
+        );
+        assert_eq!(conda_dep_to_pip_requirement("bats"), None);
         assert_eq!(conda_dep_to_pip_requirement("python >=3.8"), None);
         assert_eq!(conda_dep_to_pip_requirement("c-compiler"), None);
+    }
+
+    #[test]
+    fn python_requirement_relaxation_for_runtime_conflict() {
+        let rendered = r#"
+package:
+  name: scanpy-scripts
+  version: 1.9.301
+requirements:
+  host:
+    - python <3.10
+  run:
+    - scanpy =1.9.3
+    - scipy <1.9.0
+    - bbknn >=1.5.0,<1.6.0
+    - fa2
+    - mnnpy >=0.1.9.5
+"#;
+        let parsed = parse_rendered_meta(rendered).expect("parse meta");
+        let reqs = build_python_requirements(&parsed);
+        assert!(reqs.contains(&"scanpy>=1.9.3".to_string()));
+        assert!(reqs.contains(&"scipy".to_string()));
+        assert!(reqs.contains(&"bbknn>=1.5.0".to_string()));
+        assert!(!reqs.iter().any(|r| r.starts_with("fa2")));
+        assert!(!reqs.iter().any(|r| r.starts_with("mnnpy")));
     }
 
     #[test]
@@ -6249,6 +6516,26 @@ requirements:
     }
 
     #[test]
+    fn fallback_recipe_selection_prefers_scripts_over_other_prefix_matches() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let recipes = vec![
+            RecipeDir {
+                name: "scanpy-cli".to_string(),
+                normalized: normalize_name("scanpy-cli"),
+                path: tmp.path().join("scanpy-cli"),
+            },
+            RecipeDir {
+                name: "scanpy-scripts".to_string(),
+                normalized: normalize_name("scanpy-scripts"),
+                path: tmp.path().join("scanpy-scripts"),
+            },
+        ];
+
+        let selected = select_fallback_recipe("scanpy", &recipes).expect("fallback recipe");
+        assert_eq!(selected.name, "scanpy-scripts");
+    }
+
+    #[test]
     fn render_meta_supports_environ_prefix_lookup() {
         let src = r#"
 package:
@@ -6259,6 +6546,16 @@ about:
 "#;
         let rendered = render_meta_yaml(src).expect("render jinja with environ");
         assert!(rendered.contains("$PREFIX/lib/R/share/licenses/GPL-3"));
+    }
+
+    #[test]
+    fn render_meta_supports_src_dir_lookup() {
+        let src = r#"
+build:
+  script: "{{ PYTHON }} -m pip install {{ SRC_DIR }}/scanpy-scripts --no-deps"
+"#;
+        let rendered = render_meta_yaml(src).expect("render jinja with SRC_DIR");
+        assert!(rendered.contains("$SRC_DIR/scanpy-scripts"));
     }
 
     #[test]
