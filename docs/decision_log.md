@@ -67,3 +67,7 @@
 ### Q13 - Licensing/compliance policy
 - Default compliance behavior must include SPDX normalization and license policy checks.
 - Packages failing license normalization/policy checks are quarantined.
+
+### Q14 - Implementation phase priority
+- Phase priority is documentation and CLI skeleton first.
+- Parser, dependency resolver, and build pipeline follow after baseline docs/CLI contracts are stable.
