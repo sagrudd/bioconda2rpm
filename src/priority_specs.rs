@@ -3102,6 +3102,7 @@ fn render_payload_spec(
     let rust_runtime_required = recipe_requires_rust_runtime(parsed) || rust_script_hint;
     let nim_runtime_required = recipe_requires_nim_runtime(parsed);
     let perl_recipe = normalize_name(&parsed.package_name).starts_with("perl-");
+    let runtime_only_metapackage = is_runtime_only_metapackage(parsed);
     let r_project_recipe = is_r_project_recipe(parsed) || r_script_hint;
     let r_cran_requirements = if r_runtime_required {
         build_r_cran_requirements(parsed)
@@ -3173,7 +3174,7 @@ fn render_payload_spec(
             .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
             .map(|d| map_build_dependency(d)),
     );
-    if !python_recipe && !perl_recipe {
+    if !python_recipe && !perl_recipe && !runtime_only_metapackage {
         build_requires.extend(
             parsed
                 .run_deps
@@ -3641,7 +3642,19 @@ set -euxo pipefail\n\
                 .to_string(),
         );
     }
+    if is_runtime_only_metapackage(parsed) {
+        return Some(
+            "#!/usr/bin/env bash\n\
+set -euxo pipefail\n\
+echo \"bioconda2rpm metapackage fallback: no payload build steps required\"\n"
+                .to_string(),
+        );
+    }
     None
+}
+
+fn is_runtime_only_metapackage(parsed: &ParsedMeta) -> bool {
+    parsed.build_deps.is_empty() && parsed.host_deps.is_empty() && !parsed.run_deps.is_empty()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -6663,6 +6676,73 @@ requirements:
         assert!(!script_text_indicates_python(
             "#!/bin/bash\nmake -j${CPU_COUNT}\n"
         ));
+    }
+
+    #[test]
+    fn fallback_build_script_supports_metapackage_runtime_only_recipes() {
+        let mut run_deps = BTreeSet::new();
+        run_deps.insert("snakemake-minimal".to_string());
+        let parsed = ParsedMeta {
+            package_name: "snakemake".to_string(),
+            version: "9.16.3".to_string(),
+            source_url: "https://example.invalid/snakemake.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://snakemake.github.io".to_string(),
+            license: "MIT".to_string(),
+            summary: "meta package".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: vec!["snakemake-minimal".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps,
+        };
+        let generated = synthesize_fallback_build_sh(&parsed).expect("metapackage fallback");
+        assert!(generated.contains("metapackage fallback"));
+    }
+
+    #[test]
+    fn runtime_only_metapackage_does_not_promote_run_deps_to_buildrequires() {
+        let mut run_deps = BTreeSet::new();
+        run_deps.insert("snakemake-minimal".to_string());
+        run_deps.insert("pandas".to_string());
+        let parsed = ParsedMeta {
+            package_name: "snakemake".to_string(),
+            version: "9.16.3".to_string(),
+            source_url: "https://example.invalid/snakemake.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://snakemake.github.io".to_string(),
+            license: "MIT".to_string(),
+            summary: "meta package".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: vec!["snakemake-minimal".to_string(), "pandas".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps,
+        };
+        let spec = render_payload_spec(
+            "snakemake",
+            &parsed,
+            "bioconda-snakemake-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(!spec.contains("BuildRequires:  snakemake-minimal"));
+        assert!(!spec.contains("BuildRequires:  pandas"));
+        assert!(spec.contains("Requires:  snakemake-minimal"));
+        assert!(spec.contains("Requires:  pandas"));
     }
 
     #[test]
