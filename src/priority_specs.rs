@@ -8,6 +8,8 @@ use serde_yaml::Value;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -50,8 +52,10 @@ struct ParsedMeta {
 #[derive(Debug, Clone)]
 struct BuildConfig {
     topdir: PathBuf,
+    reports_dir: PathBuf,
     container_engine: String,
     container_image: String,
+    host_arch: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -111,8 +115,10 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
     let recipe_dirs = discover_recipe_dirs(&args.recipe_root)?;
     let build_config = BuildConfig {
         topdir: topdir.clone(),
+        reports_dir: reports_dir.clone(),
         container_engine: args.container_engine.clone(),
         container_image: args.container_image.clone(),
+        host_arch: std::env::consts::ARCH.to_string(),
     };
 
     let indexed_tools: Vec<(usize, PriorityTool)> = tools.into_iter().enumerate().collect();
@@ -366,6 +372,28 @@ fn process_tool(
                 staged_build_sh: String::new(),
             };
         }
+        #[cfg(unix)]
+        if let Err(err) = fs::set_permissions(&staged_build_sh, fs::Permissions::from_mode(0o755)) {
+            let reason = format!(
+                "failed to set staged build.sh permissions {}: {err}",
+                staged_build_sh.display()
+            );
+            quarantine_note(bad_spec_dir, &software_slug, &reason);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "quarantined".to_string(),
+                reason,
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: staged_build_sh.display().to_string(),
+            };
+        }
     } else {
         let reason = "recipe does not provide build.sh in selected or root variant".to_string();
         quarantine_note(bad_spec_dir, &software_slug, &reason);
@@ -417,6 +445,52 @@ fn process_tool(
             meta_spec_path: String::new(),
             staged_build_sh: staged_build_sh.display().to_string(),
         };
+    }
+    #[cfg(unix)]
+    {
+        if let Err(err) = fs::set_permissions(&payload_spec_path, fs::Permissions::from_mode(0o644))
+        {
+            let reason = format!(
+                "failed to set spec permissions {}: {err}",
+                payload_spec_path.display()
+            );
+            quarantine_note(bad_spec_dir, &software_slug, &reason);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "quarantined".to_string(),
+                reason,
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: payload_spec_path.display().to_string(),
+                meta_spec_path: meta_spec_path.display().to_string(),
+                staged_build_sh: staged_build_sh.display().to_string(),
+            };
+        }
+        if let Err(err) = fs::set_permissions(&meta_spec_path, fs::Permissions::from_mode(0o644)) {
+            let reason = format!(
+                "failed to set spec permissions {}: {err}",
+                meta_spec_path.display()
+            );
+            quarantine_note(bad_spec_dir, &software_slug, &reason);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "quarantined".to_string(),
+                reason,
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: payload_spec_path.display().to_string(),
+                meta_spec_path: meta_spec_path.display().to_string(),
+                staged_build_sh: staged_build_sh.display().to_string(),
+            };
+        }
     }
 
     if let Err(err) =
@@ -1240,6 +1314,8 @@ if ! command -v spectool >/dev/null 2>&1; then\n\
 fi\n\
 touch /work/.build-start-{label}.ts\n\
 spectool -g -R --define '_topdir /work' --define '_sourcedir /work/SOURCES' '{spec}'\n\
+find /work/SPECS -type f -name '*.spec' -exec chmod 0644 {{}} + || true\n\
+find /work/SOURCES -type f -exec chmod 0644 {{}} + || true\n\
 rpmbuild -bs --define '_topdir /work' --define '_sourcedir /work/SOURCES' '{spec}'\n\
 srpm_path=$(find /work/SRPMS -type f -name '*.src.rpm' -newer /work/.build-start-{label}.ts | sort | tail -n 1)\n\
 if [[ -z \"${{srpm_path}}\" ]]; then\n\
@@ -1251,32 +1327,66 @@ rpmbuild --rebuild --define '_topdir /work' --define '_sourcedir /work/SOURCES' 
         spec = sh_single_quote(&spec_in_container),
     );
 
-    let status = Command::new(&build_config.container_engine)
-        .args([
-            "run",
-            "--rm",
-            "-v",
-            &work_mount,
-            "-w",
-            "/work",
-            &build_config.container_image,
-            "bash",
-            "-lc",
-            &script,
-        ])
-        .status()
-        .with_context(|| {
-            format!(
-                "running container build chain for {} using image {}",
-                spec_name, build_config.container_image
-            )
-        })?;
+    let run_once = || -> Result<std::process::Output> {
+        let mut cmd = Command::new(&build_config.container_engine);
+        cmd.arg("run")
+            .arg("--rm")
+            .arg("-v")
+            .arg(&work_mount)
+            .arg("-w")
+            .arg("/work");
 
-    if !status.success() {
+        if let Some(user_spec) = host_user_spec() {
+            cmd.arg("--user").arg(user_spec);
+        }
+
+        cmd.arg(&build_config.container_image)
+            .arg("bash")
+            .arg("-lc")
+            .arg(&script)
+            .output()
+            .with_context(|| {
+                format!(
+                    "running container build chain for {} using image {}",
+                    spec_name, build_config.container_image
+                )
+            })
+    };
+
+    let mut output = run_once()?;
+    let mut combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !output.status.success() && is_source_permission_denied(&combined) {
+        fix_host_source_permissions(&build_config.topdir.join("SOURCES"))?;
+        output = run_once()?;
+        combined = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let logs_dir = build_config.reports_dir.join("build_logs");
+    fs::create_dir_all(&logs_dir)
+        .with_context(|| format!("creating build logs dir {}", logs_dir.display()))?;
+    let log_path = logs_dir.join(format!("{}.log", sanitize_label(&build_label)));
+    fs::write(&log_path, &combined)
+        .with_context(|| format!("writing build log {}", log_path.display()))?;
+
+    if !output.status.success() {
+        let arch_policy =
+            classify_arch_policy(&combined, &build_config.host_arch).unwrap_or("unknown");
+        let tail = tail_lines(&combined, 20);
         anyhow::bail!(
-            "container build chain failed for {} (exit status: {})",
+            "container build chain failed for {} (exit status: {}) arch_policy={} log={} tail={}",
             spec_name,
-            status
+            output.status,
+            arch_policy,
+            log_path.display(),
+            tail
         );
     }
 
@@ -1285,6 +1395,81 @@ rpmbuild --rebuild --define '_topdir /work' --define '_sourcedir /work/SOURCES' 
 
 fn sh_single_quote(input: &str) -> String {
     input.replace('\'', "'\"'\"'")
+}
+
+fn sanitize_label(input: &str) -> String {
+    input
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn tail_lines(text: &str, line_count: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(line_count);
+    lines[start..].join(" | ")
+}
+
+fn classify_arch_policy(build_log: &str, host_arch: &str) -> Option<&'static str> {
+    let lower = build_log.to_lowercase();
+    let x86_intrinsics = lower.contains("emmintrin.h")
+        || lower.contains("xmmintrin.h")
+        || lower.contains("pmmintrin.h")
+        || lower.contains("immintrin.h");
+    if (host_arch == "aarch64" || host_arch == "arm64") && x86_intrinsics {
+        return Some("amd64_only");
+    }
+
+    let arm_intrinsics = lower.contains("arm_neon.h") || lower.contains("neon");
+    if (host_arch == "x86_64" || host_arch == "amd64") && arm_intrinsics {
+        return Some("aarch64_only");
+    }
+
+    None
+}
+
+fn is_source_permission_denied(build_log: &str) -> bool {
+    let lower = build_log.to_lowercase();
+    lower.contains("bad file: /work/sources/") && lower.contains("permission denied")
+}
+
+fn fix_host_source_permissions(sources_dir: &Path) -> Result<()> {
+    if !sources_dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(sources_dir)
+        .with_context(|| format!("reading sources directory {}", sources_dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("reading entry in {}", sources_dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        #[cfg(unix)]
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
+            .with_context(|| format!("setting source permissions {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn host_user_spec() -> Option<String> {
+    let uid = Command::new("id").arg("-u").output().ok()?;
+    let gid = Command::new("id").arg("-g").output().ok()?;
+    if !uid.status.success() || !gid.status.success() {
+        return None;
+    }
+    let uid_s = String::from_utf8_lossy(&uid.stdout).trim().to_string();
+    let gid_s = String::from_utf8_lossy(&gid.stdout).trim().to_string();
+    if uid_s.is_empty() || gid_s.is_empty() {
+        return None;
+    }
+    Some(format!("{uid_s}:{gid_s}"))
 }
 
 fn quarantine_note(bad_spec_dir: &Path, slug: &str, reason: &str) {
