@@ -80,6 +80,13 @@ FR-013 Compliance policy
 - The workflow shall normalize licenses to SPDX identifiers and run policy checks.
 - Packages failing license compliance checks shall be quarantined.
 
+FR-014 Priority SPEC generation workflow
+- The system shall support generating SPEC pairs for top-priority tools from a user-provided `tools.csv`.
+- Priority selection shall use `RPM Priority Score` ordering.
+- Overlap resolution against Bioconda recipes shall be automated.
+- SPEC generation shall be parallelizable via worker configuration.
+- Generated SPEC content shall be derived programmatically from Bioconda metadata (`meta.yaml` and `build.sh`) without reusing pre-generated external SPEC files.
+
 ## 4. Non-Functional Requirements
 
 NFR-001 Reproducibility

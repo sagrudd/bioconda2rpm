@@ -6,6 +6,16 @@
 bioconda2rpm build <package> --recipe-root <path>
 ```
 
+## Priority SPEC Generation Command
+
+```bash
+bioconda2rpm generate-priority-specs \
+  --recipe-root <path> \
+  --tools-csv <path/to/tools.csv> \
+  [--top-n 10] \
+  [--workers <n>]
+```
+
 ## Required Inputs
 
 - `<package>`: Bioconda package name.
@@ -46,3 +56,5 @@ bioconda2rpm build <package> --recipe-root <path>
 - Unresolved dependencies quarantine by default.
 - Default quarantine path is `<topdir>/BAD_SPEC`.
 - Console + JSON + CSV + Markdown reporting is expected per run.
+- Priority SPEC generation uses only Bioconda metadata inputs (`meta.yaml` + `build.sh`) and `tools.csv` priority rows.
+- Priority SPEC generation performs overlap resolution and SPEC creation in parallel workers.

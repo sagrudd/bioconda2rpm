@@ -19,6 +19,7 @@ The product is structured as layered components:
 2. Recipe Discovery Layer
 - Resolves package recipe location under user-provided recipe root.
 - Applies versioned-subdirectory selection rule (highest version).
+- Resolves overlap from priority input tools to Bioconda recipe directories.
 
 3. Rendering Layer
 - Full Jinja rendering of `meta.yaml` into normalized recipe metadata.
@@ -41,6 +42,10 @@ The product is structured as layered components:
 
 8. Reporting Layer
 - Emits JSON, CSV, Markdown summaries plus console logs.
+
+9. Priority Selection Layer
+- Reads `tools.csv` and ranks requested tools by `RPM Priority Score`.
+- Provides deterministic top-N tool set for parallel SPEC generation.
 
 ## 3. Runtime Boundaries
 
