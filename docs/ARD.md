@@ -35,6 +35,11 @@ The product is structured as layered components:
 6. Build Execution Layer
 - Runs stage-selected build steps (`spec`/`srpm`/`rpm`) in containers.
 - Default container mode: ephemeral per build.
+- For generated priority specs, execution is strictly ordered per spec as:
+  - SPEC generation
+  - SRPM build (`rpmbuild -bs`) in container
+  - RPM build (`rpmbuild -ba`) in container
+- Container image is provided at runtime via CLI flag.
 
 7. Compliance and Quarantine Layer
 - SPDX normalization and policy evaluation.

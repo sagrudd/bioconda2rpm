@@ -16,6 +16,7 @@ Generate Phoreus payload/meta SPEC pairs for top-priority tools directly from Bi
 cargo run -- generate-priority-specs \
   --recipe-root ../bioconda-recipes/recipes \
   --tools-csv ../software_query/tools.csv \
+  --container-image dropworm_dev_almalinux_9_5:0.1.2 \
   --top-n 10 \
   --workers 6
 ```
@@ -25,6 +26,10 @@ Outputs are written under `--topdir` (default `~/bioconda2rpm`):
 - `SOURCES/` staged `build.sh` sources from Bioconda recipes
 - `reports/priority_spec_generation.{json,csv,md}`
 - `BAD_SPEC/` quarantine notes for unresolved/invalid entries
+
+Behavior:
+- Build chain is always: `SPEC -> SRPM -> RPM`.
+- SRPM and RPM build stages run inside the specified container image.
 
 Defaults when omitted:
 - `--topdir` -> `~/bioconda2rpm`

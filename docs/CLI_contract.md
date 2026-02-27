@@ -12,8 +12,10 @@ bioconda2rpm build <package> --recipe-root <path>
 bioconda2rpm generate-priority-specs \
   --recipe-root <path> \
   --tools-csv <path/to/tools.csv> \
+  --container-image <image[:tag]> \
   [--top-n 10] \
-  [--workers <n>]
+  [--workers <n>] \
+  [--container-engine docker]
 ```
 
 ## Required Inputs
@@ -41,6 +43,11 @@ bioconda2rpm generate-priority-specs \
   - Optional. Default resolves to `<topdir>/BAD_SPEC` (auto-created if missing).
 - `--reports-dir <path>`
   - Optional. Default resolves to `<topdir>/reports` (auto-created if missing).
+- `--container-image <image[:tag]>`
+  - Required for `generate-priority-specs`.
+  - Used to execute SRPM/RPM builds in-container.
+- `--container-engine <docker|podman|...>`
+  - Optional. Default: `docker`.
 - `--naming-profile <phoreus>`
   - Default: `phoreus`
 - `--render-strategy <jinja-full>`
@@ -58,3 +65,4 @@ bioconda2rpm generate-priority-specs \
 - Console + JSON + CSV + Markdown reporting is expected per run.
 - Priority SPEC generation uses only Bioconda metadata inputs (`meta.yaml` + `build.sh`) and `tools.csv` priority rows.
 - Priority SPEC generation performs overlap resolution and SPEC creation in parallel workers.
+- For each generated SPEC, build order is always `SPEC -> SRPM -> RPM` in the selected container image.

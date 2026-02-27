@@ -87,6 +87,11 @@ FR-014 Priority SPEC generation workflow
 - SPEC generation shall be parallelizable via worker configuration.
 - Generated SPEC content shall be derived programmatically from Bioconda metadata (`meta.yaml` and `build.sh`) without reusing pre-generated external SPEC files.
 
+FR-015 Containerized build chain
+- For generated SPECs, the build order shall always be `SPEC -> SRPM -> RPM`.
+- SRPM generation shall execute inside a user-selected container image.
+- The CLI shall expose a container image flag for this selection.
+
 ## 4. Non-Functional Requirements
 
 NFR-001 Reproducibility

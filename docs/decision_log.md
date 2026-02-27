@@ -83,3 +83,12 @@
 - Default BAD_SPEC quarantine directory set to `<topdir>/BAD_SPEC`.
 - Tool must create default topdir and BAD_SPEC directories if they do not exist.
 - Users can override both with `--topdir` and `--bad-spec-dir`.
+
+### 2026-02-27 Amendment - Containerized build sequence
+- Build flow for generated specs must always run in order:
+  - SPEC generation
+  - SRPM build
+  - RPM build
+- SRPM and RPM stages run inside a user-selected container image.
+- CLI now exposes container image selection for this workflow.
+- Current reference image in use: `dropworm_dev_almalinux_9_5:0.1.2`.
