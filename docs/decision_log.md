@@ -71,3 +71,9 @@
 ### Q14 - Implementation phase priority
 - Phase priority is documentation and CLI skeleton first.
 - Parser, dependency resolver, and build pipeline follow after baseline docs/CLI contracts are stable.
+
+### Q15 - Immediate delivery scope
+- Deliver both in one pass:
+  - Rust crate scaffold + CLAP command structure
+  - Requirements documentation pack aligned to decisions
+- Include initial unit-test scaffolding with the CLI skeleton.
