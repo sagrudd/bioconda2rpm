@@ -44,6 +44,7 @@ struct ResolvedRecipe {
 struct ParsedMeta {
     package_name: String,
     version: String,
+    build_number: String,
     source_url: String,
     source_folder: String,
     homepage: String,
@@ -2136,6 +2137,11 @@ fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
     let build_script = build
         .and_then(|m| m.get(Value::String("script".to_string())))
         .and_then(extract_build_script);
+    let build_number = build
+        .and_then(|m| m.get(Value::String("number".to_string())))
+        .and_then(value_to_string)
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "0".to_string());
     let noarch_python = build
         .and_then(|m| m.get(Value::String("noarch".to_string())))
         .and_then(value_to_string)
@@ -2173,6 +2179,7 @@ fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
     Ok(ParsedMeta {
         package_name,
         version,
+        build_number,
         source_url,
         source_folder,
         homepage,
@@ -3509,7 +3516,7 @@ mkdir -p %{bioconda_source_subdir}\n"
     export RECIPE_DIR=/work/SOURCES\n\
     export PKG_NAME=\"${{PKG_NAME:-{conda_pkg_name}}}\"\n\
     export PKG_VERSION=\"${{PKG_VERSION:-{conda_pkg_version}}}\"\n\
-    export PKG_BUILDNUM=\"${{PKG_BUILDNUM:-0}}\"\n\
+    export PKG_BUILDNUM=\"${{PKG_BUILDNUM:-{conda_pkg_build_number}}}\"\n\
     export PKG_BUILD_STRING=\"${{PKG_BUILD_STRING:-${{PKG_BUILDNUM}}}}\"\n\
 # Some autotools recipes abort if CONFIG_SITE is the literal token NONE.\n\
     if [[ \"${{CONFIG_SITE:-}}\" == \"NONE\" ]]; then\n\
@@ -3791,6 +3798,7 @@ fi\n\
         phoreus_python_version = PHOREUS_PYTHON_VERSION,
         conda_pkg_name = spec_escape(&parsed.package_name),
         conda_pkg_version = spec_escape(&parsed.version),
+        conda_pkg_build_number = spec_escape(&parsed.build_number),
         r_runtime_setup = r_runtime_setup,
         rust_runtime_setup = rust_runtime_setup,
         nim_runtime_setup = nim_runtime_setup,
@@ -3823,7 +3831,10 @@ echo \"bioconda2rpm metapackage fallback: no payload build steps required\"\n"
 }
 
 fn is_runtime_only_metapackage(parsed: &ParsedMeta) -> bool {
-    parsed.build_deps.is_empty() && parsed.host_deps.is_empty() && !parsed.run_deps.is_empty()
+    parsed.build_deps.is_empty()
+        && parsed.host_deps.is_empty()
+        && !parsed.run_deps.is_empty()
+        && parsed.source_url.trim().is_empty()
 }
 
 fn parse_git_source_descriptor(source_url: &str) -> Option<(String, String)> {
@@ -5216,6 +5227,20 @@ if [[ \"$source0_url\" =~ ^https://bioconductor.org/packages/.*/bioc/src/contrib
   archive_url=$(printf '%s' \"$source0_url\" | sed -E \"s#(/bioc/src/contrib/)#\\\\1Archive/$bioc_pkg/#\")\n\
   source_candidates+=(\"$archive_url\")\n\
 fi\n\
+if [[ \"$source0_url\" =~ ^(.*/)([^/]+)-([0-9][0-9\\.]*)-([0-9]+)\\.zip$ ]]; then\n\
+  source_prefix=\"${{BASH_REMATCH[1]}}\"\n\
+  source_name=\"${{BASH_REMATCH[2]}}\"\n\
+  source_version=\"${{BASH_REMATCH[3]}}\"\n\
+  source_build=\"${{BASH_REMATCH[4]}}\"\n\
+  source_candidates+=(\"${{source_prefix}}${{source_name}}-${{source_version}}.zip\")\n\
+  if [[ \"$source_build\" =~ ^[0-9]+$ ]]; then\n\
+    build_num=$source_build\n\
+    while (( build_num > 1 )); do\n\
+      build_num=$((build_num - 1))\n\
+      source_candidates+=(\"${{source_prefix}}${{source_name}}-${{source_version}}-${{build_num}}.zip\")\n\
+    done\n\
+  fi\n\
+fi\n\
 spectool_ok=0\n\
 if [[ -z \"$source0_url\" ]]; then\n\
   spectool_ok=1\n\
@@ -6010,6 +6035,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "blast".to_string(),
             version: "2.5.0".to_string(),
+            build_number: "0".to_string(),
             source_url: "http://example.invalid/src.tar.gz".to_string(),
             source_folder: String::new(),
             homepage: "http://example.invalid".to_string(),
@@ -6080,6 +6106,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "fastqc".to_string(),
             version: "0.12.1".to_string(),
+            build_number: "0".to_string(),
             source_url: "https://example.invalid/fastqc_v0.12.1.zip".to_string(),
             source_folder: String::new(),
             homepage: "https://example.invalid/fastqc".to_string(),
@@ -6120,6 +6147,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "nextflow".to_string(),
             version: "25.10.4".to_string(),
+            build_number: "0".to_string(),
             source_url: "https://example.invalid/nextflow".to_string(),
             source_folder: String::new(),
             homepage: "https://example.invalid/nextflow".to_string(),
@@ -6306,6 +6334,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "cnvkit".to_string(),
             version: "0.9.12".to_string(),
+            build_number: "0".to_string(),
             source_url: "https://example.invalid/cnvkit-0.9.12.tar.gz".to_string(),
             source_folder: String::new(),
             homepage: "https://example.invalid/cnvkit".to_string(),
@@ -6419,6 +6448,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "k8".to_string(),
             version: "1.2".to_string(),
+            build_number: "0".to_string(),
             source_url: "https://example.invalid/source.tar.gz".to_string(),
             source_folder: String::new(),
             homepage: "https://github.com/attractivechaos/k8".to_string(),
@@ -6458,6 +6488,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "k8".to_string(),
             version: "1.2".to_string(),
+            build_number: "0".to_string(),
             source_url: "https://example.invalid/source.tar.gz".to_string(),
             source_folder: String::new(),
             homepage: "https://github.com/attractivechaos/k8".to_string(),
@@ -6486,6 +6517,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "stringtie".to_string(),
             version: "3.0.3".to_string(),
+            build_number: "0".to_string(),
             source_url: "https://example.invalid/stringtie-3.0.3.tar.gz".to_string(),
             source_folder: String::new(),
             homepage: "https://example.invalid/stringtie".to_string(),
@@ -6515,6 +6547,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "python-demo".to_string(),
             version: "1.0.0".to_string(),
+            build_number: "0".to_string(),
             source_url: "https://example.invalid/python-demo-1.0.0.tar.gz".to_string(),
             source_folder: String::new(),
             homepage: "https://example.invalid/python-demo".to_string(),
@@ -6548,6 +6581,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "k8".to_string(),
             version: "1.2".to_string(),
+            build_number: "0".to_string(),
             source_url: "https://example.invalid/source.tar.gz".to_string(),
             source_folder: String::new(),
             homepage: "https://github.com/attractivechaos/k8".to_string(),
@@ -6584,6 +6618,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "cutadapt".to_string(),
             version: "5.2".to_string(),
+            build_number: "0".to_string(),
             source_url: "https://example.invalid/cutadapt-5.2.tar.gz".to_string(),
             source_folder: String::new(),
             homepage: "https://cutadapt.readthedocs.io/".to_string(),
@@ -6647,6 +6682,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "gatk".to_string(),
             version: "3.8".to_string(),
+            build_number: "0".to_string(),
             source_url: "https://example.invalid/gatk-3.8.tar.gz".to_string(),
             source_folder: String::new(),
             homepage: "https://gatk.broadinstitute.org/".to_string(),
@@ -6691,6 +6727,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "sdust".to_string(),
             version: "1.0".to_string(),
+            build_number: "0".to_string(),
             source_url: "https://example.invalid/sdust-1.0.tar.gz".to_string(),
             source_folder: String::new(),
             homepage: "https://example.invalid/sdust".to_string(),
@@ -6732,6 +6769,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "mosdepth".to_string(),
             version: "0.3.13".to_string(),
+            build_number: "0".to_string(),
             source_url: "https://example.invalid/mosdepth-0.3.13.tar.gz".to_string(),
             source_folder: String::new(),
             homepage: "https://github.com/brentp/mosdepth".to_string(),
@@ -6776,6 +6814,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "igv".to_string(),
             version: "2.19.7".to_string(),
+            build_number: "0".to_string(),
             source_url: "https://example.invalid/igv-2.19.7.tar.gz".to_string(),
             source_folder: String::new(),
             homepage: "https://igv.org".to_string(),
@@ -6820,6 +6859,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "perl-file-find-rule".to_string(),
             version: "0.35".to_string(),
+            build_number: "0".to_string(),
             source_url: "https://example.invalid/perl-file-find-rule-0.35.tar.gz".to_string(),
             source_folder: String::new(),
             homepage: "https://metacpan.org".to_string(),
@@ -6865,6 +6905,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "perl-file-find-rule".to_string(),
             version: "0.35".to_string(),
+            build_number: "0".to_string(),
             source_url: "https://example.invalid/perl-file-find-rule-0.35.tar.gz".to_string(),
             source_folder: String::new(),
             homepage: "https://metacpan.org".to_string(),
@@ -6929,7 +6970,8 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "snakemake".to_string(),
             version: "9.16.3".to_string(),
-            source_url: "https://example.invalid/snakemake.tar.gz".to_string(),
+            build_number: "0".to_string(),
+            source_url: String::new(),
             source_folder: String::new(),
             homepage: "https://snakemake.github.io".to_string(),
             license: "MIT".to_string(),
@@ -6956,7 +6998,8 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "snakemake".to_string(),
             version: "9.16.3".to_string(),
-            source_url: "https://example.invalid/snakemake.tar.gz".to_string(),
+            build_number: "0".to_string(),
+            source_url: String::new(),
             source_folder: String::new(),
             homepage: "https://snakemake.github.io".to_string(),
             license: "MIT".to_string(),
@@ -7013,6 +7056,7 @@ requirements:
         let parsed = ParsedMeta {
             package_name: "ont_vbz_hdf_plugin".to_string(),
             version: "1.0.12".to_string(),
+            build_number: "0".to_string(),
             source_url: "git+https://github.com/nanoporetech/vbz_compression.git#1.0.12"
                 .to_string(),
             source_folder: String::new(),
