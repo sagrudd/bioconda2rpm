@@ -18,3 +18,8 @@
 - Dependency closure policy must be configurable via CLI.
 - Default policy: include `build + host + run` dependency sets.
 - Tool should support switching policies for stricter or lighter closure behavior.
+
+### Q3 - `meta.yaml` templating/rendering strategy
+- Use full Jinja rendering support (enterprise-grade behavior), not partial templating.
+- Build/runtime environment is expected to be containerized (Docker/Podman) for repeatability.
+- Packaging workflow should support bootstrap/install of build prerequisites required for RPM generation.

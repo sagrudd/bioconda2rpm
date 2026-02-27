@@ -33,6 +33,20 @@
 ## Documentation Action Taken
 - Copied authoritative RPM charter into this repository:
   - `docs/RPM_charter.md` (copied from `../software_query/RPM_charter.md`).
+- Copied language-specific charters:
+  - `docs/Python_RPM_charter.md`
+  - `docs/R_RPM_charter.md`
+
+## Reuse Candidates from `software_query`
+- Containerized build script with image/container dual mode:
+  - `../software_query/rpm/python/scripts/build_in_container.sh`
+- Existing container-oriented workflow wrapper scripts:
+  - `../software_query/rpm/top25/scripts/build_top25.sh`
+  - `../software_query/rpm/next75/scripts/build_next75.sh`
+  - `../software_query/rpm/remaining/scripts/build_remaining.sh`
+- Prior docs explicitly target AlmaLinux containerized build context:
+  - `../software_query/docs/SRS.md`
+  - `../software_query/docs/ARD.md`
 
 ## Immediate Next Step
 - Run a structured 15-question clarification sequence (one question at a time, multiple-choice) to define:
