@@ -5,8 +5,15 @@ Rust CLI to convert Bioconda recipes into Phoreus-style RPM artifacts.
 ## Baseline CLI
 
 ```bash
-cargo run -- build <package> --recipe-root <path/to/bioconda-recipes/recipes> --topdir <external/rpmbuild/path>
+cargo run -- build <package> --recipe-root <path/to/bioconda-recipes/recipes>
 ```
+
+Defaults when omitted:
+- `--topdir` -> `~/bioconda2rpm`
+- `BAD_SPEC` quarantine -> `~/bioconda2rpm/BAD_SPEC`
+- reports -> `~/bioconda2rpm/reports`
+
+`--topdir` and `--bad-spec-dir` can be provided to override these paths.
 
 ## Documentation
 

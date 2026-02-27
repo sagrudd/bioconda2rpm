@@ -3,14 +3,13 @@
 ## Primary Command
 
 ```bash
-bioconda2rpm build <package> --recipe-root <path> --topdir <path>
+bioconda2rpm build <package> --recipe-root <path>
 ```
 
 ## Required Inputs
 
 - `<package>`: Bioconda package name.
 - `--recipe-root <path>`: external path to Bioconda recipes clone.
-- `--topdir <path>`: external RPM build output root.
 
 ## Core Options
 
@@ -26,8 +25,12 @@ bioconda2rpm build <package> --recipe-root <path> --topdir <path>
   - Default: `quarantine`
 - `--arch <host|x86-64|aarch64>`
   - Default: `host`
+- `--topdir <path>`
+  - Optional. Default: `~/bioconda2rpm` (auto-created if missing).
+- `--bad-spec-dir <path>`
+  - Optional. Default resolves to `<topdir>/BAD_SPEC` (auto-created if missing).
 - `--reports-dir <path>`
-  - Optional. Default resolves to `<topdir>/reports`.
+  - Optional. Default resolves to `<topdir>/reports` (auto-created if missing).
 - `--naming-profile <phoreus>`
   - Default: `phoreus`
 - `--render-strategy <jinja-full>`
@@ -41,4 +44,5 @@ bioconda2rpm build <package> --recipe-root <path> --topdir <path>
 - Recipes with `outputs:` are expanded into discrete package outputs.
 - Highest versioned recipe subdirectory is selected when present.
 - Unresolved dependencies quarantine by default.
+- Default quarantine path is `<topdir>/BAD_SPEC`.
 - Console + JSON + CSV + Markdown reporting is expected per run.

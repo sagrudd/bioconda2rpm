@@ -43,6 +43,7 @@ Define dependency closure behavior for `bioconda2rpm build`.
 
 3. `quarantine` (default)
 - Move unresolved targets to quarantine set and continue resolvable subset.
+- Default quarantine location is `<topdir>/BAD_SPEC` (topdir defaults to `~/bioconda2rpm`).
 
 ## Related Rules
 

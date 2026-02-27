@@ -77,3 +77,9 @@
   - Rust crate scaffold + CLAP command structure
   - Requirements documentation pack aligned to decisions
 - Include initial unit-test scaffolding with the CLI skeleton.
+
+### 2026-02-27 Amendment - Default topdir and BAD_SPEC location
+- Default topdir set to `~/bioconda2rpm` when user does not pass `--topdir`.
+- Default BAD_SPEC quarantine directory set to `<topdir>/BAD_SPEC`.
+- Tool must create default topdir and BAD_SPEC directories if they do not exist.
+- Users can override both with `--topdir` and `--bad-spec-dir`.

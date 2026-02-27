@@ -47,10 +47,12 @@ The product is structured as layered components:
 - Inputs:
   - External Bioconda recipe root (required)
   - Package name
-  - Explicit external build output topdir
+  - Optional build output topdir override (`--topdir`)
+  - Optional quarantine directory override (`--bad-spec-dir`)
 
 - Outputs:
-  - SPEC/SRPM/RPM artifacts in external topdir
+  - SPEC/SRPM/RPM artifacts in default topdir `~/bioconda2rpm` or user override
+  - Quarantine artifacts in default `<topdir>/BAD_SPEC` or user override
   - Run reports in external report directory (or `<topdir>/reports`)
 
 - Constraint:

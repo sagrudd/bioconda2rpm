@@ -58,7 +58,10 @@ FR-009 Architecture behavior
 - The system shall maintain one SPEC per software package.
 
 FR-010 Artifact/output location
-- The CLI shall require explicit external output paths for build artifacts.
+- The CLI shall default build artifact output to `~/bioconda2rpm` when `--topdir` is omitted.
+- The CLI shall create default output directories when missing.
+- The default quarantine path shall be `<topdir>/BAD_SPEC`.
+- The CLI shall allow overriding topdir and quarantine paths.
 - The crate repository shall not be used as default build artifact location.
 
 FR-011 Reporting
