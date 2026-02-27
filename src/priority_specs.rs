@@ -3125,15 +3125,15 @@ fn render_payload_spec(
         nim_runtime_required,
     );
 
-    let source_is_zip = source_archive_is_zip(&parsed.source_url);
-    let source_unpack_prep = render_source_unpack_prep_block(source_is_zip);
+    let source_kind = source_archive_kind(&parsed.source_url);
+    let source_unpack_prep = render_source_unpack_prep_block(source_kind);
 
     let mut build_requires = BTreeSet::new();
     build_requires.insert("bash".to_string());
     // Enforce canonical builder policy: every payload build uses Phoreus Python,
     // never the system interpreter.
     build_requires.insert(PHOREUS_PYTHON_PACKAGE.to_string());
-    if source_is_zip {
+    if source_kind == SourceArchiveKind::Zip {
         build_requires.insert("unzip".to_string());
     }
     if r_runtime_required {
@@ -3527,6 +3527,7 @@ mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\"\n\
     \n\
     # Capture a pristine buildsrc snapshot so serial retries run from a clean tree,\n\
     # not from a partially mutated/failed first attempt.\n\
+    chmod -R u+rwX . 2>/dev/null || true\n\
     retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\"\n\
     rm -f \"$retry_snapshot\"\n\
     tar --exclude='.bioconda2rpm-retry-snapshot.tar' -cf \"$retry_snapshot\" .\n\
@@ -3643,7 +3644,14 @@ set -euxo pipefail\n\
     None
 }
 
-fn source_archive_is_zip(source_url: &str) -> bool {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SourceArchiveKind {
+    Tar,
+    Zip,
+    File,
+}
+
+fn source_archive_kind(source_url: &str) -> SourceArchiveKind {
     let lowered = source_url.trim().to_ascii_lowercase();
     let trimmed = lowered
         .split_once('?')
@@ -3653,18 +3661,32 @@ fn source_archive_is_zip(source_url: &str) -> bool {
         .split_once('#')
         .map(|(base, _)| base)
         .unwrap_or(trimmed);
-    trimmed.ends_with(".zip")
+    if trimmed.ends_with(".zip") {
+        return SourceArchiveKind::Zip;
+    }
+    if trimmed.ends_with(".tar")
+        || trimmed.ends_with(".tar.gz")
+        || trimmed.ends_with(".tgz")
+        || trimmed.ends_with(".tar.bz2")
+        || trimmed.ends_with(".tbz")
+        || trimmed.ends_with(".tbz2")
+        || trimmed.ends_with(".tar.xz")
+        || trimmed.ends_with(".txz")
+        || trimmed.ends_with(".tar.zst")
+        || trimmed.ends_with(".tzst")
+    {
+        return SourceArchiveKind::Tar;
+    }
+    SourceArchiveKind::File
 }
 
-fn render_source_unpack_prep_block(source_is_zip: bool) -> String {
-    if !source_is_zip {
-        return "rm -rf buildsrc\n\
+fn render_source_unpack_prep_block(source_kind: SourceArchiveKind) -> String {
+    match source_kind {
+        SourceArchiveKind::Tar => "rm -rf buildsrc\n\
 mkdir -p %{bioconda_source_subdir}\n\
 tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1\n"
-            .to_string();
-    }
-
-    "rm -rf buildsrc\n\
+            .to_string(),
+        SourceArchiveKind::Zip => "rm -rf buildsrc\n\
 mkdir -p %{bioconda_source_subdir}\n\
 zip_unpack_dir=buildsrc/.bioconda2rpm-unpack\n\
 rm -rf \"$zip_unpack_dir\"\n\
@@ -3678,7 +3700,12 @@ if [[ \"$zip_top_dirs\" -eq 1 && \"$zip_top_files\" -eq 0 ]]; then\n\
 fi\n\
 cp -a \"$zip_root\"/. %{bioconda_source_subdir}/\n\
 rm -rf \"$zip_unpack_dir\"\n"
-        .to_string()
+            .to_string(),
+        SourceArchiveKind::File => "rm -rf buildsrc\n\
+mkdir -p %{bioconda_source_subdir}\n\
+cp -f %{SOURCE0} %{bioconda_source_subdir}/\n"
+            .to_string(),
+    }
 }
 
 fn render_python_venv_setup_block(python_recipe: bool, python_requirements: &[String]) -> String {
@@ -5800,16 +5827,23 @@ requirements:
     }
 
     #[test]
-    fn source_archive_zip_detection_handles_queries_and_fragments() {
-        assert!(source_archive_is_zip(
-            "https://example.invalid/fastqc_v0.12.1.zip"
-        ));
-        assert!(source_archive_is_zip(
-            "https://example.invalid/fastqc_v0.12.1.zip?download=1#section"
-        ));
-        assert!(!source_archive_is_zip(
-            "https://example.invalid/tool-1.0.tar.gz"
-        ));
+    fn source_archive_kind_detection_handles_queries_and_fragments() {
+        assert_eq!(
+            source_archive_kind("https://example.invalid/fastqc_v0.12.1.zip"),
+            SourceArchiveKind::Zip
+        );
+        assert_eq!(
+            source_archive_kind("https://example.invalid/fastqc_v0.12.1.zip?download=1#section"),
+            SourceArchiveKind::Zip
+        );
+        assert_eq!(
+            source_archive_kind("https://example.invalid/tool-1.0.tar.gz"),
+            SourceArchiveKind::Tar
+        );
+        assert_eq!(
+            source_archive_kind("https://example.invalid/nextflow"),
+            SourceArchiveKind::File
+        );
     }
 
     #[test]
@@ -5850,6 +5884,44 @@ requirements:
         assert!(
             !spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1")
         );
+    }
+
+    #[test]
+    fn payload_spec_copies_single_file_sources() {
+        let parsed = ParsedMeta {
+            package_name: "nextflow".to_string(),
+            version: "25.10.4".to_string(),
+            source_url: "https://example.invalid/nextflow".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/nextflow".to_string(),
+            license: "Apache-2.0".to_string(),
+            summary: "nextflow".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "nextflow",
+            &parsed,
+            "bioconda-nextflow-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains("cp -f %{SOURCE0} %{bioconda_source_subdir}/"));
+        assert!(!spec.contains("tar -xf %{SOURCE0}"));
+        assert!(!spec.contains("unzip -q %{SOURCE0}"));
     }
 
     #[test]
