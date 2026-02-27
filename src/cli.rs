@@ -106,6 +106,14 @@ pub struct BuildArgs {
     #[arg(long, value_enum, default_value_t = ContainerMode::Ephemeral)]
     pub container_mode: ContainerMode,
 
+    /// Container image to use for RPM builds (SPEC -> SRPM -> RPM).
+    #[arg(long, default_value = "dropworm_dev_almalinux_9_5:0.1.2")]
+    pub container_image: String,
+
+    /// Container engine binary. Defaults to docker.
+    #[arg(long, default_value = "docker")]
+    pub container_engine: String,
+
     /// Behavior when dependency recipes cannot be resolved.
     #[arg(long, value_enum, default_value_t = MissingDependencyPolicy::Quarantine)]
     pub missing_dependency: MissingDependencyPolicy,
@@ -200,7 +208,7 @@ impl BuildArgs {
 
     pub fn execution_summary(&self) -> String {
         format!(
-            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} arch={arch:?} naming={naming:?} render={render:?} outputs={outputs:?} missing_dependency={missing:?}",
+            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} arch={arch:?} naming={naming:?} render={render:?} outputs={outputs:?} missing_dependency={missing:?}",
             pkg = self.package,
             stage = self.stage,
             deps = self.with_deps(),
@@ -210,6 +218,8 @@ impl BuildArgs {
             bad_spec = self.effective_bad_spec_dir().display(),
             reports = self.effective_reports_dir().display(),
             container = self.container_mode,
+            container_image = self.container_image,
+            container_engine = self.container_engine,
             arch = self.arch,
             naming = self.naming_profile,
             render = self.render_strategy,

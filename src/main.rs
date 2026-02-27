@@ -29,6 +29,24 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             println!("{}", args.execution_summary());
+            match priority_specs::run_build(&args) {
+                Ok(summary) => {
+                    println!(
+                        "build requested={} generated={} quarantined={} order={} report_json={} report_csv={} report_md={}",
+                        summary.requested,
+                        summary.generated,
+                        summary.quarantined,
+                        summary.build_order.join("->"),
+                        summary.report_json.display(),
+                        summary.report_csv.display(),
+                        summary.report_md.display()
+                    );
+                }
+                Err(err) => {
+                    eprintln!("build failed: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+            }
         }
         cli::Command::GeneratePrioritySpecs(args) => {
             let topdir = args.effective_topdir();

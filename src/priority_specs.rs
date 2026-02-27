@@ -1,4 +1,4 @@
-use crate::cli::GeneratePrioritySpecsArgs;
+use crate::cli::{BuildArgs, DependencyPolicy, GeneratePrioritySpecsArgs, MissingDependencyPolicy};
 use anyhow::{Context, Result};
 use csv::{ReaderBuilder, Writer};
 use minijinja::{Environment, context, value::Kwargs};
@@ -6,7 +6,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -100,6 +100,23 @@ pub struct GenerationSummary {
     pub report_md: PathBuf,
 }
 
+#[derive(Debug)]
+pub struct BuildSummary {
+    pub requested: usize,
+    pub generated: usize,
+    pub quarantined: usize,
+    pub build_order: Vec<String>,
+    pub report_json: PathBuf,
+    pub report_csv: PathBuf,
+    pub report_md: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct BuildPlanNode {
+    name: String,
+    direct_bioconda_deps: BTreeSet<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ToolsCsvRow {
     #[serde(rename = "Software")]
@@ -188,6 +205,320 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
         report_csv,
         report_md,
     })
+}
+
+pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
+    let topdir = args.effective_topdir();
+    let specs_dir = topdir.join("SPECS");
+    let sources_dir = topdir.join("SOURCES");
+    let reports_dir = args.effective_reports_dir();
+    let bad_spec_dir = args.effective_bad_spec_dir();
+
+    fs::create_dir_all(&specs_dir)
+        .with_context(|| format!("creating specs dir {}", specs_dir.display()))?;
+    fs::create_dir_all(&sources_dir)
+        .with_context(|| format!("creating sources dir {}", sources_dir.display()))?;
+    fs::create_dir_all(&reports_dir)
+        .with_context(|| format!("creating reports dir {}", reports_dir.display()))?;
+    fs::create_dir_all(&bad_spec_dir)
+        .with_context(|| format!("creating bad spec dir {}", bad_spec_dir.display()))?;
+
+    ensure_container_engine_available(&args.container_engine)?;
+    let recipe_dirs = discover_recipe_dirs(&args.recipe_root)?;
+
+    let build_config = BuildConfig {
+        topdir: topdir.clone(),
+        reports_dir: reports_dir.clone(),
+        container_engine: args.container_engine.clone(),
+        container_image: args.container_image.clone(),
+        host_arch: std::env::consts::ARCH.to_string(),
+    };
+
+    let (plan_order, plan_nodes) = collect_build_plan(
+        &args.package,
+        args.with_deps(),
+        &args.dependency_policy,
+        &args.recipe_root,
+        &recipe_dirs,
+    )?;
+    let build_order = plan_order
+        .iter()
+        .filter_map(|key| plan_nodes.get(key).map(|node| node.name.clone()))
+        .collect::<Vec<_>>();
+
+    let mut built = HashSet::new();
+    let mut results = Vec::new();
+    let mut fail_reason: Option<String> = None;
+
+    for key in &plan_order {
+        let Some(node) = plan_nodes.get(key) else {
+            continue;
+        };
+
+        let blocked_by = node
+            .direct_bioconda_deps
+            .iter()
+            .filter(|dep| !built.contains(*dep))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if !blocked_by.is_empty() {
+            let reason = format!(
+                "blocked by unresolved bioconda dependencies: {}",
+                blocked_by.join(", ")
+            );
+            let status = match args.missing_dependency {
+                MissingDependencyPolicy::Skip => "skipped",
+                _ => "quarantined",
+            }
+            .to_string();
+
+            if status == "quarantined" {
+                quarantine_note(&bad_spec_dir, key, &reason);
+            }
+            results.push(ReportEntry {
+                software: node.name.clone(),
+                priority: 0,
+                status,
+                reason: reason.clone(),
+                overlap_recipe: node.name.clone(),
+                overlap_reason: "dependency-closure".to_string(),
+                variant_dir: String::new(),
+                package_name: String::new(),
+                version: String::new(),
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: String::new(),
+            });
+            if args.missing_dependency == MissingDependencyPolicy::Fail {
+                fail_reason = Some(reason);
+                break;
+            }
+            continue;
+        }
+
+        let tool = PriorityTool {
+            line_no: 0,
+            software: node.name.clone(),
+            priority: 0,
+        };
+        let entry = process_tool(
+            &tool,
+            &args.recipe_root,
+            &recipe_dirs,
+            &specs_dir,
+            &sources_dir,
+            &bad_spec_dir,
+            &build_config,
+        );
+        if entry.status == "generated" {
+            built.insert(key.clone());
+        } else if args.missing_dependency == MissingDependencyPolicy::Fail {
+            fail_reason = Some(entry.reason.clone());
+            results.push(entry);
+            break;
+        }
+        results.push(entry);
+    }
+
+    let report_stem = normalize_name(&args.package);
+    let report_json = reports_dir.join(format!("build_{report_stem}.json"));
+    let report_csv = reports_dir.join(format!("build_{report_stem}.csv"));
+    let report_md = reports_dir.join(format!("build_{report_stem}.md"));
+    write_reports(&results, &report_json, &report_csv, &report_md)?;
+
+    if let Some(reason) = fail_reason {
+        anyhow::bail!(
+            "build failed under missing-dependency policy fail: {} (report_md={})",
+            reason,
+            report_md.display()
+        );
+    }
+
+    let generated = results.iter().filter(|r| r.status == "generated").count();
+    let quarantined = results.len().saturating_sub(generated);
+    Ok(BuildSummary {
+        requested: results.len(),
+        generated,
+        quarantined,
+        build_order,
+        report_json,
+        report_csv,
+        report_md,
+    })
+}
+
+fn collect_build_plan(
+    root: &str,
+    with_deps: bool,
+    policy: &DependencyPolicy,
+    recipe_root: &Path,
+    recipe_dirs: &[RecipeDir],
+) -> Result<(Vec<String>, BTreeMap<String, BuildPlanNode>)> {
+    let mut visiting = HashSet::new();
+    let mut visited = HashSet::new();
+    let mut order = Vec::new();
+    let mut nodes = BTreeMap::new();
+
+    let root_key = visit_build_plan_node(
+        root,
+        true,
+        with_deps,
+        policy,
+        recipe_root,
+        recipe_dirs,
+        &mut visiting,
+        &mut visited,
+        &mut nodes,
+        &mut order,
+    )?;
+    if root_key.is_none() {
+        anyhow::bail!("no overlapping recipe found in bioconda metadata for '{}'", root);
+    }
+
+    Ok((order, nodes))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn visit_build_plan_node(
+    query: &str,
+    is_root: bool,
+    with_deps: bool,
+    policy: &DependencyPolicy,
+    recipe_root: &Path,
+    recipe_dirs: &[RecipeDir],
+    visiting: &mut HashSet<String>,
+    visited: &mut HashSet<String>,
+    nodes: &mut BTreeMap<String, BuildPlanNode>,
+    order: &mut Vec<String>,
+) -> Result<Option<String>> {
+    let resolved_and_parsed = match resolve_and_parse_recipe(
+        query,
+        recipe_root,
+        recipe_dirs,
+        is_root,
+    ) {
+        Ok(v) => v,
+        Err(err) => {
+            if is_root {
+                return Err(err);
+            }
+            return Ok(None);
+        }
+    };
+
+    let Some((resolved, parsed)) = resolved_and_parsed else {
+        if is_root {
+            anyhow::bail!(
+                "no overlapping recipe found in bioconda metadata for '{}'",
+                query
+            );
+        }
+        return Ok(None);
+    };
+
+    let canonical = normalize_name(&resolved.recipe_name);
+    if visited.contains(&canonical) {
+        return Ok(Some(canonical));
+    }
+    if visiting.contains(&canonical) {
+        return Ok(Some(canonical));
+    }
+
+    visiting.insert(canonical.clone());
+    let mut bioconda_deps = BTreeSet::new();
+
+    if with_deps {
+        for dep in selected_dependency_set(&parsed, policy, is_root) {
+            if dep == canonical {
+                continue;
+            }
+            if let Some(dep_key) = visit_build_plan_node(
+                &dep,
+                false,
+                with_deps,
+                policy,
+                recipe_root,
+                recipe_dirs,
+                visiting,
+                visited,
+                nodes,
+                order,
+            )? {
+                bioconda_deps.insert(dep_key);
+            }
+        }
+    }
+
+    visiting.remove(&canonical);
+    visited.insert(canonical.clone());
+    nodes.insert(
+        canonical.clone(),
+        BuildPlanNode {
+            name: resolved.recipe_name,
+            direct_bioconda_deps: bioconda_deps,
+        },
+    );
+    order.push(canonical.clone());
+    Ok(Some(canonical))
+}
+
+fn selected_dependency_set(
+    parsed: &ParsedMeta,
+    policy: &DependencyPolicy,
+    is_root: bool,
+) -> BTreeSet<String> {
+    match policy {
+        DependencyPolicy::RunOnly => parsed.run_deps.clone(),
+        DependencyPolicy::BuildHostRun => {
+            let mut out = BTreeSet::new();
+            out.extend(parsed.build_deps.iter().cloned());
+            out.extend(parsed.host_deps.iter().cloned());
+            out.extend(parsed.run_deps.iter().cloned());
+            out
+        }
+        DependencyPolicy::RuntimeTransitiveRootBuildHost => {
+            if is_root {
+                let mut out = BTreeSet::new();
+                out.extend(parsed.build_deps.iter().cloned());
+                out.extend(parsed.host_deps.iter().cloned());
+                out.extend(parsed.run_deps.iter().cloned());
+                out
+            } else {
+                parsed.run_deps.clone()
+            }
+        }
+    }
+}
+
+fn resolve_and_parse_recipe(
+    tool_name: &str,
+    recipe_root: &Path,
+    recipe_dirs: &[RecipeDir],
+    allow_identifier_lookup: bool,
+) -> Result<Option<(ResolvedRecipe, ParsedMeta)>> {
+    let Some(resolved) = resolve_recipe_for_tool_mode(
+        tool_name,
+        recipe_root,
+        recipe_dirs,
+        allow_identifier_lookup,
+    )?
+    else {
+        return Ok(None);
+    };
+    let meta_text = fs::read_to_string(&resolved.meta_path)
+        .with_context(|| format!("failed to read metadata {}", resolved.meta_path.display()))?;
+    let selector_ctx = SelectorContext::for_rpm_build();
+    let selected_meta = apply_selectors(&meta_text, &selector_ctx);
+    let rendered = render_meta_yaml(&selected_meta)
+        .with_context(|| format!("failed to render Jinja for {}", resolved.meta_path.display()))?;
+    let parsed = parse_rendered_meta(&rendered).with_context(|| {
+        format!(
+            "failed to parse rendered metadata for {}",
+            resolved.meta_path.display()
+        )
+    })?;
+    Ok(Some((resolved, parsed)))
 }
 
 fn load_top_tools(tools_csv: &Path, top_n: usize) -> Result<Vec<PriorityTool>> {
@@ -553,6 +884,8 @@ fn process_tool(
         };
     }
 
+    clear_quarantine_note(bad_spec_dir, &software_slug);
+
     ReportEntry {
         software: tool.software.clone(),
         priority: tool.priority,
@@ -574,6 +907,15 @@ fn resolve_recipe_for_tool(
     recipe_root: &Path,
     recipe_dirs: &[RecipeDir],
 ) -> Result<Option<ResolvedRecipe>> {
+    resolve_recipe_for_tool_mode(tool_name, recipe_root, recipe_dirs, true)
+}
+
+fn resolve_recipe_for_tool_mode(
+    tool_name: &str,
+    recipe_root: &Path,
+    recipe_dirs: &[RecipeDir],
+    allow_identifier_lookup: bool,
+) -> Result<Option<ResolvedRecipe>> {
     let lower = tool_name.trim().to_lowercase();
     let normalized = normalize_name(tool_name);
 
@@ -592,9 +934,11 @@ fn resolve_recipe_for_tool(
         return build_resolved(recipe, "plus-normalization-match");
     }
 
-    let key = normalize_identifier_key(&lower);
-    if let Some(recipe) = find_recipe_by_identifier(recipe_root, &key)? {
-        return build_resolved(&recipe, "identifier-match");
+    if allow_identifier_lookup {
+        let key = normalize_identifier_key(&lower);
+        if let Some(recipe) = find_recipe_by_identifier(recipe_root, &key)? {
+            return build_resolved(&recipe, "identifier-match");
+        }
     }
 
     Ok(None)
@@ -1167,6 +1511,18 @@ export CPPFLAGS=\"${{CPPFLAGS:-}}\"\n\
 export LDFLAGS=\"${{LDFLAGS:-}}\"\n\
 bash ./build.sh\n\
 \n\
+# Some Bioconda build scripts emit absolute symlinks into %{{buildroot}}.\n\
+# Rewrite those targets so RPM payload validation does not see buildroot leaks.\n\
+while IFS= read -r -d '' link_path; do\n\
+  link_target=$(readlink \"$link_path\" || true)\n\
+  case \"$link_target\" in\n\
+    %{{buildroot}}/*)\n\
+      fixed_target=\"${{link_target#%{{buildroot}}}}\"\n\
+      ln -snf \"$fixed_target\" \"$link_path\"\n\
+      ;;\n\
+  esac\n\
+done < <(find %{{buildroot}}%{{phoreus_prefix}} -type l -print0 2>/dev/null)\n\
+\n\
 mkdir -p %{{buildroot}}%{{phoreus_moddir}}\n\
 cat > %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua <<'LUAEOF'\n\
 help([[ {summary} ]])\n\
@@ -1346,7 +1702,18 @@ if ! command -v spectool >/dev/null 2>&1; then\n\
   else echo 'spectool unavailable and rpmdevtools cannot be installed' >&2; exit 3; fi\n\
 fi\n\
 touch /work/.build-start-{label}.ts\n\
-spectool -g -R --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}'\n\
+spectool_ok=0\n\
+for attempt in 1 2 3; do\n\
+  if spectool -g -R --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}'; then\n\
+    spectool_ok=1\n\
+    break\n\
+  fi\n\
+  sleep $((attempt * 2))\n\
+done\n\
+if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
+  echo 'source download failed after retries' >&2\n\
+  exit 6\n\
+fi\n\
 find /work/SPECS -type f -name '*.spec' -exec chmod 0644 {{}} + || true\n\
 find /work/SOURCES -type f -exec chmod 0644 {{}} + || true\n\
 rpmbuild -bs --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}'\n\
@@ -1592,6 +1959,13 @@ fn quarantine_note(bad_spec_dir: &Path, slug: &str, reason: &str) {
     let note_path = bad_spec_dir.join(format!("{slug}.txt"));
     let body = format!("status=quarantined\nreason={reason}\n");
     let _ = fs::write(note_path, body);
+}
+
+fn clear_quarantine_note(bad_spec_dir: &Path, slug: &str) {
+    let note_path = bad_spec_dir.join(format!("{slug}.txt"));
+    if note_path.exists() {
+        let _ = fs::remove_file(note_path);
+    }
 }
 
 fn parse_dependency_events(build_log: &str) -> Vec<DependencyResolutionEvent> {
