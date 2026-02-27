@@ -4764,6 +4764,7 @@ fn map_perl_core_dependency(dep: &str) -> Option<String> {
         "perl-types-serialiser" => "perl-Types-Serialiser",
         "perl-data-dumper" => "perl-Data-Dumper",
         "perl-xml-parser" => "perl-XML-Parser",
+        "perl-importer" => "perl-Importer",
         _ => return None,
     };
     Some(mapped.to_string())
