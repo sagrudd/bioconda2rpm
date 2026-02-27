@@ -117,6 +117,7 @@ FR-018 Version freshness and metapackage update policy
 
 FR-019 Python dependency isolation policy
 - Python application recipes shall be packaged as hermetic virtual environments under `/usr/local/phoreus/<tool>/<version>/venv`.
+- Python application detection shall include both metadata signals (`requirements`, `noarch: python`, recipe build script fields) and staged build script inspection for Python install patterns.
 - Python dependency resolution for these recipes shall occur inside the venv using lockfile/hash workflow (`pip-compile --generate-hashes`, then `pip install --require-hashes`).
 - Generated RPM specs for Python applications shall not emit shared python library RPM dependencies (for example `Requires: jinja2`); runtime dependencies shall be limited to `phoreus` and the selected `phoreus-python-*` interpreter package.
 

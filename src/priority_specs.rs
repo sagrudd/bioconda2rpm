@@ -946,6 +946,30 @@ fn process_tool(
             staged_build_sh: staged_build_sh.display().to_string(),
         };
     }
+    let python_script_hint = match staged_build_script_indicates_python(&staged_build_sh) {
+        Ok(v) => v,
+        Err(err) => {
+            let reason = format!(
+                "failed to inspect staged build.sh {} for python policy: {err}",
+                staged_build_sh.display()
+            );
+            quarantine_note(bad_spec_dir, &software_slug, &reason);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "quarantined".to_string(),
+                reason,
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: staged_build_sh.display().to_string(),
+            };
+        }
+    };
 
     let staged_patch_sources = match stage_recipe_patches(
         &parsed.source_patches,
@@ -1003,6 +1027,7 @@ fn process_tool(
         &resolved.meta_path,
         &resolved.variant_dir,
         parsed.noarch_python,
+        python_script_hint,
     );
     let meta_version = match next_meta_package_version(&build_config.topdir, &software_slug) {
         Ok(v) => v,
@@ -1913,6 +1938,21 @@ fn canonicalize_meta_build_script(script: &str) -> String {
     }
 }
 
+fn staged_build_script_indicates_python(path: &Path) -> Result<bool> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("reading staged build script {}", path.display()))?;
+    Ok(script_text_indicates_python(&text))
+}
+
+fn script_text_indicates_python(script: &str) -> bool {
+    let lower = script.to_lowercase();
+    lower.contains("pip install")
+        || lower.contains("python -m pip")
+        || lower.contains("python3 -m pip")
+        || lower.contains("python setup.py")
+        || lower.contains("setup.py install")
+}
+
 fn extract_package_scalar(rendered: &str, key: &str) -> Option<String> {
     let mut in_package = false;
     for line in rendered.lines() {
@@ -2083,6 +2123,7 @@ fn render_payload_spec(
     meta_path: &Path,
     variant_dir: &Path,
     noarch_python: bool,
+    python_script_hint: bool,
 ) -> String {
     let license = spec_escape(&parsed.license);
     let summary = spec_escape(&parsed.summary);
@@ -2105,7 +2146,9 @@ fn render_payload_spec(
             folder.to_string()
         }
     };
-    let python_recipe = is_python_recipe(parsed);
+    // Python policy is applied when either metadata or staged build script indicates
+    // Python packaging/install semantics.
+    let python_recipe = is_python_recipe(parsed) || python_script_hint;
     let python_requirements = if python_recipe {
         build_python_requirements(parsed)
     } else {
@@ -3505,6 +3548,7 @@ requirements:
             Path::new("/tmp/meta.yaml"),
             Path::new("/tmp"),
             false,
+            false,
         );
         assert!(spec.contains("Source2:"));
         assert!(spec.contains("patch -p1 -i %{SOURCE2}"));
@@ -3624,6 +3668,7 @@ requirements:
             Path::new("/tmp/meta.yaml"),
             Path::new("/tmp"),
             false,
+            false,
         );
         assert!(spec.contains("BuildRequires:  gcc"));
         assert!(!spec.contains("BuildRequires:  cython"));
@@ -3638,6 +3683,19 @@ requirements:
         let generated = synthesize_build_sh_from_meta_script(script);
         assert!(generated.contains("set -euxo pipefail"));
         assert!(generated.contains("$PYTHON -m pip install . --no-deps --no-build-isolation"));
+    }
+
+    #[test]
+    fn build_script_python_detection_works_for_common_patterns() {
+        assert!(script_text_indicates_python(
+            "#!/bin/bash\npython -m pip install . --no-deps\n"
+        ));
+        assert!(script_text_indicates_python(
+            "#!/bin/bash\npython setup.py install\n"
+        ));
+        assert!(!script_text_indicates_python(
+            "#!/bin/bash\nmake -j${CPU_COUNT}\n"
+        ));
     }
 
     #[test]
