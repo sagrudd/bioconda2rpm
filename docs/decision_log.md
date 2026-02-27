@@ -1,0 +1,15 @@
+# bioconda2rpm Decision Log
+
+## 2026-02-27
+
+### Q1 - Phase 1 output target
+- Default target: build `SPEC + SRPM + binary RPM`.
+- Must be configurable via CLI so users can select lower-output modes.
+- Long-term direction: support `SPEC-only` mode as sufficient for some workflows.
+
+### Planned CLI behavior (from Q1)
+- Expose an option to select output stage, e.g.:
+  - `spec`
+  - `srpm`
+  - `rpm`
+- Initial default should map to `rpm` (full build through binary RPM).
