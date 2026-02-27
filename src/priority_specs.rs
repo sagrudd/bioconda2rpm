@@ -1060,6 +1060,23 @@ fn process_tool(
             };
         }
     };
+    if rendered_meta_declares_build_skip(&rendered) {
+        clear_quarantine_note(bad_spec_dir, &software_slug);
+        return ReportEntry {
+            software: tool.software.clone(),
+            priority: tool.priority,
+            status: "skipped".to_string(),
+            reason: "recipe declares build.skip=true for this render context".to_string(),
+            overlap_recipe: resolved.recipe_name,
+            overlap_reason: resolved.overlap_reason,
+            variant_dir: resolved.variant_dir.display().to_string(),
+            package_name: parsed.package_name,
+            version: parsed.version,
+            payload_spec_path: String::new(),
+            meta_spec_path: String::new(),
+            staged_build_sh: String::new(),
+        };
+    }
 
     let version_state =
         match payload_version_state(&build_config.topdir, &software_slug, &parsed.version) {
@@ -2171,6 +2188,29 @@ fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
         host_deps,
         run_deps,
     })
+}
+
+fn rendered_meta_declares_build_skip(rendered: &str) -> bool {
+    let doc: Value = match serde_yaml::from_str(rendered) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let build = match doc.get("build") {
+        Some(v) => v,
+        None => return false,
+    };
+    let skip = match build.get("skip") {
+        Some(v) => v,
+        None => return false,
+    };
+    if let Some(b) = skip.as_bool() {
+        return b;
+    }
+    if let Some(s) = skip.as_str() {
+        let normalized = s.trim().to_ascii_lowercase();
+        return normalized == "true" || normalized == "yes" || normalized == "1";
+    }
+    false
 }
 
 fn extract_dep_specs_raw(node: &Value) -> Vec<String> {
@@ -5958,6 +5998,20 @@ about:
             Some("$PYTHON -m pip install . --no-deps")
         );
         assert!(parsed.noarch_python);
+    }
+
+    #[test]
+    fn rendered_meta_build_skip_detection_handles_true_and_false() {
+        let skipped = r#"
+build:
+  skip: true
+"#;
+        let not_skipped = r#"
+build:
+  skip: false
+"#;
+        assert!(rendered_meta_declares_build_skip(skipped));
+        assert!(!rendered_meta_declares_build_skip(not_skipped));
     }
 
     #[test]
