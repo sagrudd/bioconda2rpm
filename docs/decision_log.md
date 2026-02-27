@@ -31,3 +31,6 @@
 - Default naming and layout follows Phoreus convention:
   - versioned payload: `phoreus-<tool>-<version>`
   - meta/default package: `phoreus-<tool>`
+
+### Q6 - Handling `outputs:` multi-package recipes
+- For recipes that define `outputs:`, build all outputs as discrete RPMs.
