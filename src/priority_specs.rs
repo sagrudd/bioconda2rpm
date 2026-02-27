@@ -9,6 +9,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Debug, Clone)]
 struct PriorityTool {
@@ -44,6 +45,13 @@ struct ParsedMeta {
     build_deps: BTreeSet<String>,
     host_deps: BTreeSet<String>,
     run_deps: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BuildConfig {
+    topdir: PathBuf,
+    container_engine: String,
+    container_image: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -95,11 +103,17 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
         .with_context(|| format!("creating reports dir {}", reports_dir.display()))?;
     fs::create_dir_all(&bad_spec_dir)
         .with_context(|| format!("creating bad spec dir {}", bad_spec_dir.display()))?;
+    ensure_container_engine_available(&args.container_engine)?;
 
     let mut tools = load_top_tools(&args.tools_csv, args.top_n)?;
     tools.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.line_no.cmp(&b.line_no)));
 
     let recipe_dirs = discover_recipe_dirs(&args.recipe_root)?;
+    let build_config = BuildConfig {
+        topdir: topdir.clone(),
+        container_engine: args.container_engine.clone(),
+        container_image: args.container_image.clone(),
+    };
 
     let indexed_tools: Vec<(usize, PriorityTool)> = tools.into_iter().enumerate().collect();
     let worker_count = args.workers.filter(|w| *w > 0);
@@ -115,6 +129,7 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
                     &specs_dir,
                     &sources_dir,
                     &bad_spec_dir,
+                    &build_config,
                 );
                 (*idx, entry)
             })
@@ -210,6 +225,7 @@ fn process_tool(
     specs_dir: &Path,
     sources_dir: &Path,
     bad_spec_dir: &Path,
+    build_config: &BuildConfig,
 ) -> ReportEntry {
     let software_slug = normalize_name(&tool.software);
 
@@ -278,7 +294,7 @@ fn process_tool(
         }
     };
 
-    let selector_ctx = SelectorContext::host();
+    let selector_ctx = SelectorContext::for_rpm_build();
     let selected_meta = apply_selectors(&meta_text, &selector_ctx);
 
     let rendered = match render_meta_yaml(&selected_meta) {
@@ -403,11 +419,55 @@ fn process_tool(
         };
     }
 
+    if let Err(err) =
+        build_spec_chain_in_container(build_config, &payload_spec_path, &software_slug)
+    {
+        let reason = format!("payload spec build failed in container: {err}");
+        quarantine_note(bad_spec_dir, &software_slug, &reason);
+        return ReportEntry {
+            software: tool.software.clone(),
+            priority: tool.priority,
+            status: "quarantined".to_string(),
+            reason,
+            overlap_recipe: resolved.recipe_name,
+            overlap_reason: resolved.overlap_reason,
+            variant_dir: resolved.variant_dir.display().to_string(),
+            package_name: parsed.package_name,
+            version: parsed.version,
+            payload_spec_path: payload_spec_path.display().to_string(),
+            meta_spec_path: meta_spec_path.display().to_string(),
+            staged_build_sh: staged_build_sh.display().to_string(),
+        };
+    }
+
+    if let Err(err) = build_spec_chain_in_container(
+        build_config,
+        &meta_spec_path,
+        &format!("{software_slug}-default"),
+    ) {
+        let reason = format!("meta spec build failed in container: {err}");
+        quarantine_note(bad_spec_dir, &software_slug, &reason);
+        return ReportEntry {
+            software: tool.software.clone(),
+            priority: tool.priority,
+            status: "quarantined".to_string(),
+            reason,
+            overlap_recipe: resolved.recipe_name,
+            overlap_reason: resolved.overlap_reason,
+            variant_dir: resolved.variant_dir.display().to_string(),
+            package_name: parsed.package_name,
+            version: parsed.version,
+            payload_spec_path: payload_spec_path.display().to_string(),
+            meta_spec_path: meta_spec_path.display().to_string(),
+            staged_build_sh: staged_build_sh.display().to_string(),
+        };
+    }
+
     ReportEntry {
         software: tool.software.clone(),
         priority: tool.priority,
         status: "generated".to_string(),
-        reason: "spec files generated from bioconda metadata".to_string(),
+        reason: "spec/srpm/rpm generated from bioconda metadata in container".to_string(),
         overlap_recipe: resolved.recipe_name,
         overlap_reason: resolved.overlap_reason,
         variant_dir: resolved.variant_dir.display().to_string(),
@@ -671,12 +731,11 @@ struct SelectorContext {
 }
 
 impl SelectorContext {
-    fn host() -> Self {
-        let os = std::env::consts::OS;
+    fn for_rpm_build() -> Self {
         let arch = std::env::consts::ARCH;
-        let linux = os == "linux";
-        let osx = os == "macos";
-        let win = os == "windows";
+        let linux = true;
+        let osx = false;
+        let win = false;
         let aarch64 = arch == "aarch64" || arch == "arm64";
         let x86_64 = arch == "x86_64" || arch == "amd64";
         Self {
@@ -1116,51 +1175,111 @@ fn spec_escape_or_default(input: &str, fallback: &str) -> String {
 }
 
 fn normalize_name(name: &str) -> String {
+    let mut input = name.trim().to_lowercase();
+    input = input.replace('+', "-plus-");
     let mut out = String::new();
     let mut last_dash = false;
 
-    for ch in name.trim().to_lowercase().chars() {
-        let mapped = if ch.is_ascii_alphanumeric() {
-            Some(ch)
-        } else if ch == '+' {
-            Some('-')
-        } else {
-            None
-        };
-
-        match mapped {
-            Some(c) => {
-                if c == '-' {
-                    if !last_dash && !out.is_empty() {
-                        out.push('-');
-                        last_dash = true;
-                    }
-                } else {
-                    out.push(c);
-                    last_dash = false;
-                }
-            }
-            None => {
-                if !last_dash && !out.is_empty() {
-                    out.push('-');
-                    last_dash = true;
-                }
-            }
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            last_dash = false;
+        } else if !last_dash && !out.is_empty() {
+            out.push('-');
+            last_dash = true;
         }
     }
 
-    while out.ends_with('-') {
-        out.pop();
-    }
-    while out.starts_with('-') {
-        out.remove(0);
-    }
-
-    out
+    out.trim_matches('-').to_string()
 }
 
 fn normalize_identifier_key(name: &str) -> String {
     normalize_name(name).replace("-plus", "")
+}
+
+fn ensure_container_engine_available(engine: &str) -> Result<()> {
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {engine} >/dev/null 2>&1"))
+        .status()
+        .with_context(|| format!("checking container engine '{engine}'"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("container engine not found: {engine}");
+    }
+}
+
+fn build_spec_chain_in_container(
+    build_config: &BuildConfig,
+    spec_path: &Path,
+    label: &str,
+) -> Result<()> {
+    let spec_name = spec_path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .context("spec filename missing")?;
+    let spec_in_container = format!("/work/SPECS/{spec_name}");
+    let work_mount = format!("{}:/work", build_config.topdir.display());
+    let build_label = label.replace('\'', "_");
+
+    let script = format!(
+        "set -euo pipefail\n\
+mkdir -p /work/BUILD /work/BUILDROOT /work/RPMS /work/SOURCES /work/SPECS /work/SRPMS\n\
+if ! command -v rpmbuild >/dev/null 2>&1; then\n\
+  if command -v dnf >/dev/null 2>&1; then dnf -y install rpm-build rpmdevtools >/dev/null; \\\n\
+  elif command -v microdnf >/dev/null 2>&1; then microdnf -y install rpm-build rpmdevtools >/dev/null; \\\n\
+  elif command -v yum >/dev/null 2>&1; then yum -y install rpm-build rpmdevtools >/dev/null; \\\n\
+  else echo 'no supported package manager for rpm-build install' >&2; exit 2; fi\n\
+fi\n\
+if ! command -v spectool >/dev/null 2>&1; then\n\
+  if command -v dnf >/dev/null 2>&1; then dnf -y install rpmdevtools >/dev/null; \\\n\
+  elif command -v microdnf >/dev/null 2>&1; then microdnf -y install rpmdevtools >/dev/null; \\\n\
+  elif command -v yum >/dev/null 2>&1; then yum -y install rpmdevtools >/dev/null; \\\n\
+  else echo 'spectool unavailable and rpmdevtools cannot be installed' >&2; exit 3; fi\n\
+fi\n\
+touch /work/.build-start-{label}.ts\n\
+spectool -g -R --define '_topdir /work' --define '_sourcedir /work/SOURCES' '{spec}'\n\
+rpmbuild -bs --define '_topdir /work' --define '_sourcedir /work/SOURCES' '{spec}'\n\
+rpmbuild -ba --define '_topdir /work' --define '_sourcedir /work/SOURCES' '{spec}'\n",
+        label = build_label,
+        spec = sh_single_quote(&spec_in_container),
+    );
+
+    let status = Command::new(&build_config.container_engine)
+        .args([
+            "run",
+            "--rm",
+            "-v",
+            &work_mount,
+            "-w",
+            "/work",
+            &build_config.container_image,
+            "bash",
+            "-lc",
+            &script,
+        ])
+        .status()
+        .with_context(|| {
+            format!(
+                "running container build chain for {} using image {}",
+                spec_name, build_config.container_image
+            )
+        })?;
+
+    if !status.success() {
+        anyhow::bail!(
+            "container build chain failed for {} (exit status: {})",
+            spec_name,
+            status
+        );
+    }
+
+    Ok(())
+}
+
+fn sh_single_quote(input: &str) -> String {
+    input.replace('\'', "'\"'\"'")
 }
 
 fn quarantine_note(bad_spec_dir: &Path, slug: &str, reason: &str) {

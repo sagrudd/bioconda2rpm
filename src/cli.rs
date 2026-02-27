@@ -148,6 +148,14 @@ pub struct GeneratePrioritySpecsArgs {
     #[arg(long)]
     pub workers: Option<usize>,
 
+    /// Container image to use for RPM builds (SPEC -> SRPM -> RPM).
+    #[arg(long)]
+    pub container_image: String,
+
+    /// Container engine binary. Defaults to docker.
+    #[arg(long, default_value = "docker")]
+    pub container_engine: String,
+
     /// RPM build topdir. Defaults to ~/bioconda2rpm when omitted.
     #[arg(long)]
     pub topdir: Option<PathBuf>,
@@ -350,6 +358,8 @@ mod tests {
             "/recipes",
             "--tools-csv",
             "/tmp/tools.csv",
+            "--container-image",
+            "almalinux:9",
         ])
         .expect("generate-priority-specs defaults should parse");
 
@@ -357,6 +367,8 @@ mod tests {
             panic!("expected generate-priority-specs subcommand");
         };
         assert_eq!(args.top_n, 10);
+        assert_eq!(args.container_image, "almalinux:9");
+        assert_eq!(args.container_engine, "docker");
         assert!(args.effective_topdir().ends_with("bioconda2rpm"));
         assert!(
             args.effective_bad_spec_dir()
