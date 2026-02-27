@@ -103,3 +103,9 @@
 - Rust ecosystem recipe dependencies (`rust`, `rustc`, `cargo`, `rustup`, `rust-*`, `cargo-*`) map to `phoreus-rust-1.92` rather than distro toolchain RPMs.
 - Generated payload specs must route Rust/Cargo through `/usr/local/phoreus/rust/1.92`.
 - Cargo execution policy remains deterministic and single-core by default.
+
+### 2026-02-27 Amendment - Phoreus Nim runtime policy
+- Introduce a Nim runtime bootstrap package: `phoreus-nim-2.2`.
+- Nim ecosystem dependencies (`nim`, `nimble`, `nim-*`) map to `phoreus-nim-2.2` rather than distro Nim package names.
+- Generated payload specs must route Nim/Nimble through `/usr/local/phoreus/nim/2.2` and isolate nimble state under payload prefix.
+- Selector handling distinguishes Linux `aarch64` from `arm64` (macOS) to avoid dropping valid Linux build dependencies.

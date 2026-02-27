@@ -138,6 +138,11 @@ FR-022 Rust runtime and cargo policy
 - Generated SPECs for Rust-dependent recipes shall export Rust/Cargo environment roots from `/usr/local/phoreus/rust/1.92` and fail deterministically if the pinned runtime is absent.
 - Cargo-based builds shall default to single-core execution for deterministic enterprise builds.
 
+FR-023 Nim runtime policy
+- The system shall provide a bootstrap runtime package `phoreus-nim-2.2` for Nim-dependent recipe builds.
+- Nim ecosystem dependencies (`nim`, `nimble`, `nim-*`) shall map to `phoreus-nim-2.2` rather than distro Nim package names.
+- Generated SPECs for Nim-dependent recipes shall export `PHOREUS_NIM_PREFIX=/usr/local/phoreus/nim/2.2` and deterministic nimble cache roots under the payload prefix.
+
 ## 4. Non-Functional Requirements
 
 NFR-001 Reproducibility

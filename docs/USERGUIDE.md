@@ -136,6 +136,12 @@ Rust charter behavior:
 - Rust ecosystem dependencies are mapped to `phoreus-rust-1.92` instead of distro Rust toolchain RPMs.
 - Generated SPECs route all Rust/Cargo execution through `/usr/local/phoreus/rust/1.92` and export deterministic cargo settings (`CARGO_BUILD_JOBS=1`, `CARGO_INCREMENTAL=0`) for reproducible builds.
 
+Nim runtime behavior:
+
+- `bioconda2rpm` provisions `phoreus-nim-2.2` on demand when a recipe dependency set references Nim ecosystem packages (`nim`, `nimble`, `nim-*`).
+- Nim ecosystem dependencies are mapped to `phoreus-nim-2.2` instead of distro Nim package names.
+- Generated SPECs route Nim/Nimble execution through `/usr/local/phoreus/nim/2.2` and set `NIMBLE_DIR` under the payload prefix for isolated builds.
+
 Precompiled binary policy:
 
 - `bioconda2rpm` supports package-specific precompiled-binary overrides when upstream guidance recommends binary consumption over source builds.
