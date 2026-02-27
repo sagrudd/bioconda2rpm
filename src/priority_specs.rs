@@ -2836,6 +2836,8 @@ fn harden_build_script_text(script: &str) -> String {
         if let Some(expanded) = rewrite_streamed_wget_tar_line(line, rewrite_counter) {
             rewritten_lines.extend(expanded);
             rewrite_counter += 1;
+        } else if let Some(rewritten) = rewrite_cargo_bundle_licenses_line(line) {
+            rewritten_lines.push(rewritten);
         } else {
             rewritten_lines.push(line.to_string());
         }
@@ -2846,6 +2848,18 @@ fn harden_build_script_text(script: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+fn rewrite_cargo_bundle_licenses_line(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with("cargo-bundle-licenses") {
+        return None;
+    }
+
+    let indent = &line[..line.len() - trimmed.len()];
+    Some(format!(
+        "{indent}echo \"Skipping cargo-bundle-licenses (not required for RPM payload build)\""
+    ))
 }
 
 fn rewrite_streamed_wget_tar_line(line: &str, counter: usize) -> Option<Vec<String>> {
@@ -3166,15 +3180,22 @@ fn render_payload_spec(
         nim_runtime_required,
     );
 
+    let include_source0 = !runtime_only_metapackage;
     let source_kind = source_archive_kind(&parsed.source_url);
-    let source_unpack_prep = render_source_unpack_prep_block(source_kind);
+    let source_unpack_prep = if include_source0 {
+        render_source_unpack_prep_block(source_kind)
+    } else {
+        "rm -rf buildsrc\n\
+mkdir -p %{bioconda_source_subdir}\n"
+            .to_string()
+    };
 
     let mut build_requires = BTreeSet::new();
     build_requires.insert("bash".to_string());
     // Enforce canonical builder policy: every payload build uses Phoreus Python,
     // never the system interpreter.
     build_requires.insert(PHOREUS_PYTHON_PACKAGE.to_string());
-    if source_kind == SourceArchiveKind::Zip {
+    if include_source0 && source_kind == SourceArchiveKind::Zip {
         build_requires.insert("unzip".to_string());
     }
     if r_runtime_required {
@@ -3193,6 +3214,8 @@ fn render_payload_spec(
     }
     if rust_runtime_required {
         build_requires.insert(PHOREUS_RUST_PACKAGE.to_string());
+        build_requires.insert("perl".to_string());
+        build_requires.insert("perl-FindBin".to_string());
     }
     if nim_runtime_required {
         build_requires.insert(PHOREUS_NIM_PACKAGE.to_string());
@@ -3263,6 +3286,11 @@ fn render_payload_spec(
 
     let build_requires_lines = format_dep_lines("BuildRequires", &build_requires);
     let requires_lines = format_dep_lines("Requires", &runtime_requires);
+    let source0_line = if include_source0 {
+        format!("Source0:        {source_url}\n")
+    } else {
+        String::new()
+    };
     let patch_source_lines = render_patch_source_lines(staged_patch_sources);
     let patch_apply_lines =
         render_patch_apply_lines(staged_patch_sources, "%{bioconda_source_subdir}");
@@ -3290,7 +3318,7 @@ fn render_payload_spec(
     License:        {license}\n\
     URL:            {homepage}\n\
     {build_arch}\
-    Source0:        {source_url}\n\
+    {source0_line}\
     Source1:        {build_sh}\n\
     {patch_sources}\n\
     {build_requires}\n\
@@ -3646,7 +3674,7 @@ mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\"\n\
         summary = summary,
         license = license,
         homepage = homepage,
-        source_url = source_url,
+        source0_line = source0_line,
         build_sh = spec_escape(staged_build_sh_name),
         patch_sources = patch_source_lines,
         patch_apply = patch_apply_lines,
@@ -3946,9 +3974,8 @@ if [[ ! -x \"$PHOREUS_RUST_PREFIX/bin/rustc\" || ! -x \"$PHOREUS_RUST_PREFIX/bin
   exit 43\n\
 fi\n\
 export PATH=\"$PHOREUS_RUST_PREFIX/bin:$PATH\"\n\
-export CARGO_HOME=\"$PREFIX/.cargo\"\n\
-export RUSTUP_HOME=\"$PREFIX/.rustup\"\n\
-mkdir -p \"$CARGO_HOME\" \"$RUSTUP_HOME\"\n\
+export CARGO_HOME=\"$PHOREUS_RUST_PREFIX\"\n\
+export RUSTUP_HOME=\"$PHOREUS_RUST_PREFIX/.rustup\"\n\
 export CARGO_BUILD_JOBS=1\n\
 export CARGO_INCREMENTAL=0\n\
 export CARGO_TARGET_DIR=\"$(pwd)/.cargo-target\"\n",
@@ -4293,6 +4320,7 @@ fn map_build_dependency(dep: &str) -> String {
         "boost-cpp" => "boost-devel".to_string(),
         "bzip2" => "bzip2-devel".to_string(),
         "cereal" => "cereal-devel".to_string(),
+        "clangdev" => "clang-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
         "mscorefonts" => "dejavu-sans-fonts".to_string(),
@@ -4311,6 +4339,7 @@ fn map_build_dependency(dep: &str) -> String {
         "ncurses" => "ncurses-devel".to_string(),
         "ninja" => "ninja-build".to_string(),
         "openssl" => "openssl-devel".to_string(),
+        "llvmdev" => "llvm-devel".to_string(),
         "xz" => "xz-devel".to_string(),
         "zlib" => "zlib-devel".to_string(),
         "zstd" => "libzstd-devel".to_string(),
@@ -4350,6 +4379,7 @@ fn map_runtime_dependency(dep: &str) -> String {
     match dep {
         "boost-cpp" => "boost".to_string(),
         "cereal" => "cereal-devel".to_string(),
+        "clangdev" => "clang".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
         "mscorefonts" => "dejavu-sans-fonts".to_string(),
@@ -4359,6 +4389,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "libiconv" => "glibc".to_string(),
         "liblzma-devel" => "xz".to_string(),
         "liblapack" => "lapack".to_string(),
+        "llvmdev" => "llvm".to_string(),
         "ninja" => "ninja-build".to_string(),
         other => other.to_string(),
     }
@@ -4688,6 +4719,14 @@ chmod 0755 rustup-init\n\
 \"$CARGO_HOME/bin/rustc\" --version\n\
 \"$CARGO_HOME/bin/cargo\" --version\n\
 rm -f rustup-init\n\
+\n\
+# rustup emits helper env files with absolute install paths. During rpmbuild\n\
+# these include %{{buildroot}} and must be normalized to final runtime prefix.\n\
+buildroot_prefix=\"%{{buildroot}}%{{phoreus_prefix}}\"\n\
+final_prefix=\"%{{phoreus_prefix}}\"\n\
+while IFS= read -r -d '' text_path; do\n\
+  sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true\n\
+done < <(grep -RIlZ -- \"$buildroot_prefix\" \"$PREFIX\" 2>/dev/null || true)\n\
 \n\
 mkdir -p %{{buildroot}}%{{phoreus_moddir}}\n\
 cat > %{{buildroot}}%{{phoreus_moddir}}/{rust_minor}.lua <<'LUAEOF'\n\
@@ -6798,6 +6837,7 @@ requirements:
         assert!(!spec.contains("BuildRequires:  pandas"));
         assert!(spec.contains("Requires:  snakemake-minimal"));
         assert!(spec.contains("Requires:  pandas"));
+        assert!(!spec.contains("Source0:"));
     }
 
     #[test]
@@ -6808,6 +6848,14 @@ requirements:
         assert!(hardened.contains("wget --no-verbose -O \"${BIOCONDA2RPM_FETCH_0_ARCHIVE}\""));
         assert!(hardened.contains("tar -zxf \"${BIOCONDA2RPM_FETCH_0_ARCHIVE}\""));
         assert!(!hardened.contains("wget -O- https://example.invalid/src.tar.gz | tar -zxf -"));
+    }
+
+    #[test]
+    fn harden_build_script_neutralizes_cargo_bundle_licenses() {
+        let raw = "cargo-bundle-licenses --format yaml --output THIRDPARTY.yml\n";
+        let hardened = harden_build_script_text(raw);
+        assert!(hardened.contains("Skipping cargo-bundle-licenses"));
+        assert!(!hardened.contains("cargo-bundle-licenses --format yaml --output THIRDPARTY.yml"));
     }
 
     #[test]
