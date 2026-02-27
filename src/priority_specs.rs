@@ -2781,6 +2781,10 @@ export PYTHON3=\"$PHOREUS_PYTHON_PREFIX/bin/python{phoreus_python_version}\"\n\
 export PIP=\"$PHOREUS_PYTHON_PREFIX/bin/pip{phoreus_python_version}\"\n\
 export PYTHONNOUSERSITE=1\n\
 export RECIPE_DIR=/work/SOURCES\n\
+export PKG_NAME=\"${{PKG_NAME:-{conda_pkg_name}}}\"\n\
+export PKG_VERSION=\"${{PKG_VERSION:-{conda_pkg_version}}}\"\n\
+export PKG_BUILDNUM=\"${{PKG_BUILDNUM:-0}}\"\n\
+export PKG_BUILD_STRING=\"${{PKG_BUILD_STRING:-${{PKG_BUILDNUM}}}}\"\n\
 export PERL_MM_OPT=\"${{PERL_MM_OPT:+$PERL_MM_OPT }}INSTALL_BASE=$PREFIX\"\n\
 export PERL_MB_OPT=\"${{PERL_MB_OPT:+$PERL_MB_OPT }}--install_base $PREFIX\"\n\
 \n\
@@ -2913,6 +2917,8 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         meta_path = spec_escape(&meta_path.display().to_string()),
         variant_dir = spec_escape(&variant_dir.display().to_string()),
         phoreus_python_version = PHOREUS_PYTHON_VERSION,
+        conda_pkg_name = spec_escape(&parsed.package_name),
+        conda_pkg_version = spec_escape(&parsed.version),
         r_runtime_setup = r_runtime_setup,
     )
 }
@@ -4362,6 +4368,9 @@ requirements:
         assert!(spec.contains("retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\""));
         assert!(spec.contains("export CPU_COUNT=1"));
         assert!(spec.contains("export MAKEFLAGS=-j1"));
+        assert!(spec.contains("export PKG_NAME=\"${PKG_NAME:-blast}\""));
+        assert!(spec.contains("export PKG_VERSION=\"${PKG_VERSION:-2.5.0}\""));
+        assert!(spec.contains("export PKG_BUILDNUM=\"${PKG_BUILDNUM:-0}\""));
     }
 
     #[test]
