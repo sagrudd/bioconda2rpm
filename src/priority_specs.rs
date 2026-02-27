@@ -2125,9 +2125,6 @@ fn is_python_recipe(parsed: &ParsedMeta) -> bool {
     if package.starts_with("python-") || package.starts_with("py-") {
         return true;
     }
-    if parsed.run_deps.contains(PHOREUS_PYTHON_PACKAGE) {
-        return true;
-    }
     parsed
         .build_script
         .as_deref()
@@ -2181,9 +2178,8 @@ fn is_r_project_recipe(parsed: &ParsedMeta) -> bool {
 fn build_python_requirements(parsed: &ParsedMeta) -> Vec<String> {
     let mut out = BTreeSet::new();
     for raw in parsed
-        .build_dep_specs_raw
+        .host_dep_specs_raw
         .iter()
-        .chain(parsed.host_dep_specs_raw.iter())
         .chain(parsed.run_dep_specs_raw.iter())
     {
         if let Some(req) = conda_dep_to_pip_requirement(raw) {
@@ -5375,6 +5371,64 @@ requirements:
         };
 
         assert!(!is_python_recipe(&parsed));
+    }
+
+    #[test]
+    fn runtime_python_dependency_alone_does_not_force_python_recipe() {
+        let mut run_deps = BTreeSet::new();
+        run_deps.insert(PHOREUS_PYTHON_PACKAGE.to_string());
+        run_deps.insert("htslib".to_string());
+
+        let parsed = ParsedMeta {
+            package_name: "stringtie".to_string(),
+            version: "3.0.3".to_string(),
+            source_url: "https://example.invalid/stringtie-3.0.3.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/stringtie".to_string(),
+            license: "MIT".to_string(),
+            summary: "stringtie".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("make -j${CPU_COUNT}\ninstall -m 0755 stringtie $PREFIX/bin".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["automake".to_string()],
+            host_dep_specs_raw: vec!["htslib".to_string()],
+            run_dep_specs_raw: vec!["python".to_string(), "htslib".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps,
+        };
+
+        assert!(!is_python_recipe(&parsed));
+        let reqs = build_python_requirements(&parsed);
+        assert!(!reqs.iter().any(|r| r.contains("automake")));
+        assert!(!reqs.iter().any(|r| r.starts_with("python")));
+    }
+
+    #[test]
+    fn python_requirements_ignore_build_section_tools() {
+        let parsed = ParsedMeta {
+            package_name: "python-demo".to_string(),
+            version: "1.0.0".to_string(),
+            source_url: "https://example.invalid/python-demo-1.0.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/python-demo".to_string(),
+            license: "MIT".to_string(),
+            summary: "python-demo".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            noarch_python: true,
+            build_dep_specs_raw: vec!["automake".to_string(), "make".to_string()],
+            host_dep_specs_raw: vec!["python >=3.11".to_string(), "jinja2 >=3.0.0".to_string()],
+            run_dep_specs_raw: vec!["python >=3.11".to_string(), "click >=8.0".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let reqs = build_python_requirements(&parsed);
+        assert!(reqs.contains(&"jinja2>=3.0.0".to_string()));
+        assert!(reqs.contains(&"click>=8.0".to_string()));
+        assert!(!reqs.iter().any(|r| r.contains("automake")));
     }
 
     #[test]
