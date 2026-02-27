@@ -3101,6 +3101,7 @@ fn render_payload_spec(
     let r_runtime_required = recipe_requires_r_runtime(parsed) || r_script_hint;
     let rust_runtime_required = recipe_requires_rust_runtime(parsed) || rust_script_hint;
     let nim_runtime_required = recipe_requires_nim_runtime(parsed);
+    let perl_recipe = normalize_name(&parsed.package_name).starts_with("perl-");
     let r_project_recipe = is_r_project_recipe(parsed) || r_script_hint;
     let r_cran_requirements = if r_runtime_required {
         build_r_cran_requirements(parsed)
@@ -3172,7 +3173,7 @@ fn render_payload_spec(
             .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
             .map(|d| map_build_dependency(d)),
     );
-    if !python_recipe {
+    if !python_recipe && !perl_recipe {
         build_requires.extend(
             parsed
                 .run_deps
@@ -3389,7 +3390,11 @@ while IFS= read -r -d '' perl_lib; do\n\
     *\":$perl_lib:\"*) ;;\n\
     *) export PERL5LIB=\"$perl_lib${{PERL5LIB:+:$PERL5LIB}}\" ;;\n\
     esac\n\
-done < <(find /usr/local/phoreus -maxdepth 6 -type d -path '*/lib/perl5*' -print0 2>/dev/null)\n\
+  case \" ${{PERL5OPT:-}} \" in\n\
+    *\" -I$perl_lib \"*) ;;\n\
+    *) export PERL5OPT=\"${{PERL5OPT:+$PERL5OPT }}-I$perl_lib\" ;;\n\
+  esac\n\
+done < <(find /usr/local/phoreus -maxdepth 6 -type d \\( -path '*/lib/perl5' -o -path '*/lib64/perl5' \\) -print0 2>/dev/null)\n\
 fi\n\
 \n\
 # Expose include/lib/pkg-config roots from already-installed Phoreus payloads\n\
@@ -4747,6 +4752,7 @@ fn map_perl_core_dependency(dep: &str) -> Option<String> {
         "perl-test-harness" => "perl-Test-Harness",
         "perl-test-nowarnings" => "perl-Test-NoWarnings",
         "perl-test-simple" => "perl-Test-Simple",
+        "perl-number-compare" => "perl-Number-Compare",
         "perl-module-load" => "perl-Module-Load",
         "perl-params-check" => "perl-Params-Check",
         "perl-test-more" => "perl-Test-Simple",
@@ -4756,6 +4762,8 @@ fn map_perl_core_dependency(dep: &str) -> Option<String> {
         "perl-test-leaktrace" => "perl-Test-LeakTrace",
         "perl-canary-stability" => "perl-Canary-Stability",
         "perl-types-serialiser" => "perl-Types-Serialiser",
+        "perl-data-dumper" => "perl-Data-Dumper",
+        "perl-xml-parser" => "perl-XML-Parser",
         _ => return None,
     };
     Some(mapped.to_string())
@@ -5075,6 +5083,7 @@ install_local_with_hydration() {{\n\
         if [[ \"$candidate\" == lib*.so* ]]; then\n\
           candidate=\"${{candidate%%.so*}}\"\n\
         else\n\
+          pm_install \"$req\" >>\"$dep_log\" 2>&1 || true\n\
           continue\n\
         fi\n\
       fi\n\
@@ -5094,7 +5103,14 @@ install_local_with_hydration() {{\n\
         fi\n\
         continue\n\
       fi\n\
-      pm_install \"$candidate\" >>\"$dep_log\" 2>&1 || true\n\
+      if ! pm_install \"$candidate\" >>\"$dep_log\" 2>&1; then\n\
+        if [[ \"$candidate\" == perl-* ]]; then\n\
+          perl_cap=$(printf '%s' \"${{candidate#perl-}}\" | awk -F- '{{for (i=1; i<=NF; i++) {{$i=toupper(substr($i,1,1)) substr($i,2)}}; out=$1; for (i=2; i<=NF; i++) {{out=out \"::\" $i}}; print out}}')\n\
+          if [[ -n \"$perl_cap\" ]]; then\n\
+            pm_install \"perl($perl_cap)\" >>\"$dep_log\" 2>&1 || true\n\
+          fi\n\
+        fi\n\
+      fi\n\
     done\n\
   done\n\
   return 0\n\
@@ -5133,6 +5149,14 @@ for dep in \"${{build_requires[@]}}\"; do\n\
     provider=$(rpm -q --whatprovides \"$dep\" | head -n 1 || true)\n\
     emit_depgraph \"$dep\" 'resolved' 'repo' \"$provider\" 'installed_from_repo'\n\
   else\n\
+    if [[ \"$dep\" == perl-* ]]; then\n\
+      perl_cap=$(printf '%s' \"${{dep#perl-}}\" | awk -F- '{{for (i=1; i<=NF; i++) {{$i=toupper(substr($i,1,1)) substr($i,2)}}; out=$1; for (i=2; i<=NF; i++) {{out=out \"::\" $i}}; print out}}')\n\
+      if [[ -n \"$perl_cap\" ]] && pm_install \"perl($perl_cap)\" >\"$dep_log\" 2>&1; then\n\
+        provider=$(rpm -q --whatprovides \"perl($perl_cap)\" | head -n 1 || true)\n\
+        emit_depgraph \"$dep\" 'resolved' 'repo' \"$provider\" \"installed_from_repo_via_perl($perl_cap)\"\n\
+        continue\n\
+      fi\n\
+    fi\n\
     detail=$(tail -n 3 \"$dep_log\" | tr '\\n' ';' | sed 's/;/; /g')\n\
     emit_depgraph \"$dep\" 'unresolved' 'unresolved' '-' \"$detail\"\n\
   fi\n\
@@ -6454,6 +6478,105 @@ requirements:
         assert!(!spec.contains("BuildRequires:  java-11-openjdk"));
         assert!(spec.contains("Requires:  java-21-openjdk"));
         assert!(spec.contains("export ORG_GRADLE_JAVA_HOME=\"$JAVA_HOME\""));
+    }
+
+    #[test]
+    fn perl_payload_does_not_promote_run_deps_to_buildrequires() {
+        let mut build_deps = BTreeSet::new();
+        build_deps.insert("perl".to_string());
+        let mut run_deps = BTreeSet::new();
+        run_deps.insert("perl-number-compare".to_string());
+
+        let parsed = ParsedMeta {
+            package_name: "perl-file-find-rule".to_string(),
+            version: "0.35".to_string(),
+            source_url: "https://example.invalid/perl-file-find-rule-0.35.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://metacpan.org".to_string(),
+            license: "Artistic-1.0-Perl".to_string(),
+            summary: "Perl package".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("perl Makefile.PL".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["perl".to_string()],
+            host_dep_specs_raw: vec!["perl".to_string()],
+            run_dep_specs_raw: vec!["perl-number-compare".to_string()],
+            build_deps,
+            host_deps: BTreeSet::new(),
+            run_deps,
+        };
+
+        let spec = render_payload_spec(
+            "perl-file-find-rule",
+            &parsed,
+            "bioconda-perl-file-find-rule-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(!spec.contains("BuildRequires:  perl-Number-Compare"));
+        assert!(spec.contains("Requires:  perl-Number-Compare"));
+    }
+
+    #[test]
+    fn perl_payload_keeps_perl_host_buildrequires() {
+        let mut build_deps = BTreeSet::new();
+        build_deps.insert("make".to_string());
+        let mut host_deps = BTreeSet::new();
+        host_deps.insert("perl".to_string());
+        host_deps.insert("perl-number-compare".to_string());
+        host_deps.insert("perl-text-glob".to_string());
+        host_deps.insert("perl-extutils-makemaker".to_string());
+
+        let parsed = ParsedMeta {
+            package_name: "perl-file-find-rule".to_string(),
+            version: "0.35".to_string(),
+            source_url: "https://example.invalid/perl-file-find-rule-0.35.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://metacpan.org".to_string(),
+            license: "perl_5".to_string(),
+            summary: "Perl package".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("perl Makefile.PL".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["make".to_string()],
+            host_dep_specs_raw: vec![
+                "perl".to_string(),
+                "perl-number-compare".to_string(),
+                "perl-text-glob".to_string(),
+                "perl-extutils-makemaker".to_string(),
+            ],
+            run_dep_specs_raw: vec![
+                "perl".to_string(),
+                "perl-number-compare".to_string(),
+                "perl-text-glob".to_string(),
+            ],
+            build_deps,
+            host_deps,
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "perl-file-find-rule",
+            &parsed,
+            "bioconda-perl-file-find-rule-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains("BuildRequires:  perl"));
+        assert!(spec.contains("BuildRequires:  perl-ExtUtils-MakeMaker"));
+        assert!(spec.contains("BuildRequires:  perl-Number-Compare"));
+        assert!(spec.contains("BuildRequires:  perl-text-glob"));
+        assert!(spec.contains("lib64/perl5"));
     }
 
     #[test]
