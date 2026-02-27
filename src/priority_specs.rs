@@ -62,6 +62,10 @@ struct BuildConfig {
     host_arch: String,
 }
 
+const PHOREUS_PYTHON_VERSION: &str = "3.11";
+const PHOREUS_PYTHON_PACKAGE: &str = "phoreus-python-3.11";
+const REFERENCE_PYTHON_SPECS_DIR: &str = "../software_query/rpm/python/specs";
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct DependencyResolutionEvent {
     dependency: String,
@@ -154,6 +158,7 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
     fs::create_dir_all(&bad_spec_dir)
         .with_context(|| format!("creating bad spec dir {}", bad_spec_dir.display()))?;
     ensure_container_engine_available(&args.container_engine)?;
+    sync_reference_python_specs(&specs_dir).context("syncing reference Phoreus Python specs")?;
 
     let mut tools = load_top_tools(&args.tools_csv, args.top_n)?;
     tools.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.line_no.cmp(&b.line_no)));
@@ -166,6 +171,8 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
         container_image: args.container_image.clone(),
         host_arch: std::env::consts::ARCH.to_string(),
     };
+    ensure_phoreus_python_bootstrap(&build_config, &specs_dir)
+        .context("bootstrapping Phoreus Python runtime")?;
 
     let indexed_tools: Vec<(usize, PriorityTool)> = tools.into_iter().enumerate().collect();
     let worker_count = args.workers.filter(|w| *w > 0);
@@ -237,6 +244,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         .with_context(|| format!("creating bad spec dir {}", bad_spec_dir.display()))?;
 
     ensure_container_engine_available(&args.container_engine)?;
+    sync_reference_python_specs(&specs_dir).context("syncing reference Phoreus Python specs")?;
     let recipe_dirs = discover_recipe_dirs(&args.recipe_root)?;
 
     let build_config = BuildConfig {
@@ -246,6 +254,8 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         container_image: args.container_image.clone(),
         host_arch: std::env::consts::ARCH.to_string(),
     };
+    ensure_phoreus_python_bootstrap(&build_config, &specs_dir)
+        .context("bootstrapping Phoreus Python runtime")?;
 
     let Some((root_resolved, root_parsed)) =
         resolve_and_parse_recipe(&args.package, &args.recipe_root, &recipe_dirs, true)?
@@ -903,6 +913,24 @@ fn process_tool(
             };
         }
     };
+    if let Err(err) = stage_recipe_support_files(&resolved, sources_dir) {
+        let reason = format!("failed to stage recipe support files: {err}");
+        quarantine_note(bad_spec_dir, &software_slug, &reason);
+        return ReportEntry {
+            software: tool.software.clone(),
+            priority: tool.priority,
+            status: "quarantined".to_string(),
+            reason,
+            overlap_recipe: resolved.recipe_name,
+            overlap_reason: resolved.overlap_reason,
+            variant_dir: resolved.variant_dir.display().to_string(),
+            package_name: parsed.package_name,
+            version: parsed.version,
+            payload_spec_path: String::new(),
+            meta_spec_path: String::new(),
+            staged_build_sh: staged_build_sh.display().to_string(),
+        };
+    }
 
     let payload_spec_path = specs_dir.join(format!("phoreus-{}.spec", software_slug));
     let meta_spec_path = specs_dir.join(format!("phoreus-{}-default.spec", software_slug));
@@ -1686,6 +1714,10 @@ fn normalize_dependency_name(raw: &str) -> Option<String> {
     }
 
     let normalized = token.replace('_', "-").to_lowercase();
+    if is_phoreus_python_toolchain_dependency(&normalized) {
+        return Some(PHOREUS_PYTHON_PACKAGE.to_string());
+    }
+
     let mapped = match normalized.as_str() {
         "c-compiler" | "ccompiler" => "gcc".to_string(),
         "cxx-compiler" | "cpp-compiler" => "gcc-c++".to_string(),
@@ -1863,6 +1895,20 @@ export CXXFLAGS=\"${{CXXFLAGS:-}}\"\n\
 export CPPFLAGS=\"${{CPPFLAGS:-}}\"\n\
 export LDFLAGS=\"${{LDFLAGS:-}}\"\n\
 export AR=\"${{AR:-ar}}\"\n\
+\n\
+# Canonical Python toolchain for Phoreus builds: never rely on system Python.\n\
+export PHOREUS_PYTHON_PREFIX=/usr/local/phoreus/python/{phoreus_python_version}\n\
+if [[ ! -x \"$PHOREUS_PYTHON_PREFIX/bin/python{phoreus_python_version}\" ]]; then\n\
+  echo \"missing Phoreus Python runtime at $PHOREUS_PYTHON_PREFIX\" >&2\n\
+  exit 41\n\
+fi\n\
+export PATH=\"$PHOREUS_PYTHON_PREFIX/bin:$PATH\"\n\
+export LD_LIBRARY_PATH=\"$PHOREUS_PYTHON_PREFIX/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n\
+export PYTHON=\"$PHOREUS_PYTHON_PREFIX/bin/python{phoreus_python_version}\"\n\
+export PYTHON3=\"$PHOREUS_PYTHON_PREFIX/bin/python{phoreus_python_version}\"\n\
+export PIP=\"$PHOREUS_PYTHON_PREFIX/bin/pip{phoreus_python_version}\"\n\
+export PYTHONNOUSERSITE=1\n\
+export RECIPE_DIR=/work/SOURCES\n\
 export PERL_MM_OPT=\"${{PERL_MM_OPT:+$PERL_MM_OPT }}INSTALL_BASE=$PREFIX\"\n\
 export PERL_MB_OPT=\"${{PERL_MB_OPT:+$PERL_MB_OPT }}--install_base $PREFIX\"\n\
 \n\
@@ -1896,7 +1942,22 @@ fi\n\
 sed -i 's|n_workers=8|n_workers=${{CPU_COUNT:-1}}|g' ./build.sh\n\
 fi\n\
 \n\
-bash ./build.sh\n\
+# A number of upstream scripts hardcode aggressive THREADS values on aarch64;\n\
+# cap known THREADS assignments to improve deterministic container builds.\n\
+if [[ \"$(uname -m)\" == \"aarch64\" || \"$(uname -m)\" == \"arm64\" ]]; then\n\
+  sed -i -E 's/THREADS=\"-j[0-9]+\"/THREADS=\"-j1\"/g' ./build.sh || true\n\
+fi\n\
+\n\
+# Canonical fallback for flaky parallel builds: retry once serially.\n\
+if ! bash ./build.sh; then\n\
+  if [[ \"${{BIOCONDA2RPM_RETRIED_SERIAL:-0}}\" == \"1\" ]]; then\n\
+    exit 1\n\
+  fi\n\
+  export BIOCONDA2RPM_RETRIED_SERIAL=1\n\
+  export CPU_COUNT=1\n\
+  export MAKEFLAGS=-j1\n\
+  bash ./build.sh\n\
+fi\n\
 \n\
 # Some Bioconda build scripts emit absolute symlinks into %{{buildroot}}.\n\
 # Rewrite those targets so RPM payload validation does not see buildroot leaks.\n\
@@ -1950,6 +2011,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         changelog_date = changelog_date,
         meta_path = spec_escape(&meta_path.display().to_string()),
         variant_dir = spec_escape(&variant_dir.display().to_string()),
+        phoreus_python_version = PHOREUS_PYTHON_VERSION,
     )
 }
 
@@ -2096,6 +2158,42 @@ fn stage_recipe_patches(
     Ok(staged)
 }
 
+fn stage_recipe_support_files(resolved: &ResolvedRecipe, sources_dir: &Path) -> Result<()> {
+    stage_recipe_support_files_from_dir(&resolved.recipe_dir, sources_dir)?;
+    if resolved.variant_dir != resolved.recipe_dir {
+        stage_recipe_support_files_from_dir(&resolved.variant_dir, sources_dir)?;
+    }
+    Ok(())
+}
+
+fn stage_recipe_support_files_from_dir(dir: &Path, sources_dir: &Path) -> Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("reading entry in {}", dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|v| v.to_str()) else {
+            continue;
+        };
+        if matches!(name, "meta.yaml" | "meta.yml" | "build.sh") {
+            continue;
+        }
+        let destination = sources_dir.join(name);
+        fs::copy(&path, &destination).with_context(|| {
+            format!(
+                "copying recipe support file {} -> {}",
+                path.display(),
+                destination.display()
+            )
+        })?;
+        #[cfg(unix)]
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o644))
+            .with_context(|| format!("setting permissions on {}", destination.display()))?;
+    }
+    Ok(())
+}
+
 fn spec_escape(input: &str) -> String {
     input.replace('%', "%%").trim().to_string()
 }
@@ -2139,10 +2237,11 @@ fn map_build_dependency(dep: &str) -> String {
     if let Some(mapped) = map_perl_core_dependency(dep) {
         return mapped;
     }
+    if is_phoreus_python_toolchain_dependency(dep) {
+        return PHOREUS_PYTHON_PACKAGE.to_string();
+    }
     match dep {
         "boost-cpp" => "boost-devel".to_string(),
-        "python" => "python3".to_string(),
-        "setuptools" => "python3-setuptools".to_string(),
         "go-compiler" => "golang".to_string(),
         other => other.to_string(),
     }
@@ -2152,12 +2251,95 @@ fn map_runtime_dependency(dep: &str) -> String {
     if let Some(mapped) = map_perl_core_dependency(dep) {
         return mapped;
     }
+    if is_phoreus_python_toolchain_dependency(dep) {
+        return PHOREUS_PYTHON_PACKAGE.to_string();
+    }
     match dep {
         "boost-cpp" => "boost".to_string(),
-        "python" => "python3".to_string(),
-        "setuptools" => "python3-setuptools".to_string(),
         other => other.to_string(),
     }
+}
+
+fn is_phoreus_python_toolchain_dependency(dep: &str) -> bool {
+    let normalized = dep.trim().replace('_', "-").to_lowercase();
+    matches!(
+        normalized.as_str(),
+        "python"
+            | "python3"
+            | "python2"
+            | "python-abi"
+            | "python-abi3"
+            | "pip"
+            | "setuptools"
+            | "wheel"
+            | PHOREUS_PYTHON_PACKAGE
+    )
+}
+
+fn sync_reference_python_specs(specs_dir: &Path) -> Result<()> {
+    let source_dir = Path::new(REFERENCE_PYTHON_SPECS_DIR);
+    if !source_dir.exists() {
+        anyhow::bail!(
+            "reference python specs directory not found: {}",
+            source_dir.display()
+        );
+    }
+
+    for entry in
+        fs::read_dir(source_dir).with_context(|| format!("reading {}", source_dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("reading entry in {}", source_dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|v| v.to_str()) else {
+            continue;
+        };
+        if !(name.starts_with("phoreus-python-") && name.ends_with(".spec")) {
+            continue;
+        }
+        let destination = specs_dir.join(name);
+        fs::copy(&path, &destination).with_context(|| {
+            format!(
+                "copying reference python spec {} -> {}",
+                path.display(),
+                destination.display()
+            )
+        })?;
+        #[cfg(unix)]
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o644))
+            .with_context(|| format!("setting permissions on {}", destination.display()))?;
+    }
+    Ok(())
+}
+
+fn ensure_phoreus_python_bootstrap(build_config: &BuildConfig, specs_dir: &Path) -> Result<()> {
+    if topdir_has_package_artifact(&build_config.topdir, PHOREUS_PYTHON_PACKAGE)? {
+        return Ok(());
+    }
+
+    let spec_name = format!("{}.spec", PHOREUS_PYTHON_PACKAGE);
+    let spec_path = specs_dir.join(&spec_name);
+    if !spec_path.exists() {
+        anyhow::bail!(
+            "required bootstrap spec missing: {} (sync from {})",
+            spec_path.display(),
+            REFERENCE_PYTHON_SPECS_DIR
+        );
+    }
+    build_spec_chain_in_container(build_config, &spec_path, PHOREUS_PYTHON_PACKAGE)
+        .with_context(|| format!("building bootstrap package {}", PHOREUS_PYTHON_PACKAGE))?;
+    Ok(())
+}
+
+fn topdir_has_package_artifact(topdir: &Path, package_name: &str) -> Result<bool> {
+    for file_name in artifact_filenames(topdir)? {
+        if file_name.starts_with(&format!("{package_name}-")) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn map_perl_core_dependency(dep: &str) -> Option<String> {
@@ -2791,15 +2973,25 @@ mod tests {
     fn dependency_mapping_handles_conda_aliases() {
         assert_eq!(map_build_dependency("boost-cpp"), "boost-devel".to_string());
         assert_eq!(map_runtime_dependency("boost-cpp"), "boost".to_string());
-        assert_eq!(map_build_dependency("python"), "python3".to_string());
-        assert_eq!(map_runtime_dependency("python"), "python3".to_string());
+        assert_eq!(
+            map_build_dependency("python"),
+            PHOREUS_PYTHON_PACKAGE.to_string()
+        );
+        assert_eq!(
+            map_runtime_dependency("python"),
+            PHOREUS_PYTHON_PACKAGE.to_string()
+        );
         assert_eq!(
             map_build_dependency("setuptools"),
-            "python3-setuptools".to_string()
+            PHOREUS_PYTHON_PACKAGE.to_string()
         );
         assert_eq!(
             map_runtime_dependency("setuptools"),
-            "python3-setuptools".to_string()
+            PHOREUS_PYTHON_PACKAGE.to_string()
+        );
+        assert_eq!(
+            normalize_dependency_name("python_abi 3.11.* *_cp311"),
+            Some(PHOREUS_PYTHON_PACKAGE.to_string())
         );
     }
 
