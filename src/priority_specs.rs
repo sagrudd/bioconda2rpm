@@ -48,6 +48,8 @@ struct ParsedMeta {
     license: String,
     summary: String,
     source_patches: Vec<String>,
+    build_script: Option<String>,
+    noarch_python: bool,
     build_deps: BTreeSet<String>,
     host_deps: BTreeSet<String>,
     run_deps: BTreeSet<String>,
@@ -544,7 +546,8 @@ fn visit_build_plan_node(
 }
 
 fn is_buildable_recipe(resolved: &ResolvedRecipe, parsed: &ParsedMeta) -> bool {
-    resolved.build_sh_path.is_some() && !parsed.source_url.trim().is_empty()
+    (resolved.build_sh_path.is_some() || parsed.build_script.is_some())
+        && !parsed.source_url.trim().is_empty()
 }
 
 fn selected_dependency_set(
@@ -846,11 +849,12 @@ fn process_tool(
                 staged_build_sh: String::new(),
             };
         }
-        #[cfg(unix)]
-        if let Err(err) = fs::set_permissions(&staged_build_sh, fs::Permissions::from_mode(0o755)) {
+    } else if let Some(script) = parsed.build_script.as_deref() {
+        let generated = synthesize_build_sh_from_meta_script(script);
+        if let Err(err) = fs::write(&staged_build_sh, generated) {
             let reason = format!(
-                "failed to set staged build.sh permissions {}: {err}",
-                staged_build_sh.display()
+                "failed to synthesize build.sh from meta.yaml build.script for {}: {err}",
+                resolved.meta_path.display()
             );
             quarantine_note(bad_spec_dir, &software_slug, &reason);
             return ReportEntry {
@@ -865,11 +869,13 @@ fn process_tool(
                 version: parsed.version,
                 payload_spec_path: String::new(),
                 meta_spec_path: String::new(),
-                staged_build_sh: staged_build_sh.display().to_string(),
+                staged_build_sh: String::new(),
             };
         }
     } else {
-        let reason = "recipe does not provide build.sh in selected or root variant".to_string();
+        let reason =
+            "recipe does not provide build.sh and has no supported build.script in meta.yaml"
+                .to_string();
         quarantine_note(bad_spec_dir, &software_slug, &reason);
         return ReportEntry {
             software: tool.software.clone(),
@@ -884,6 +890,28 @@ fn process_tool(
             payload_spec_path: String::new(),
             meta_spec_path: String::new(),
             staged_build_sh: String::new(),
+        };
+    }
+    #[cfg(unix)]
+    if let Err(err) = fs::set_permissions(&staged_build_sh, fs::Permissions::from_mode(0o755)) {
+        let reason = format!(
+            "failed to set staged build.sh permissions {}: {err}",
+            staged_build_sh.display()
+        );
+        quarantine_note(bad_spec_dir, &software_slug, &reason);
+        return ReportEntry {
+            software: tool.software.clone(),
+            priority: tool.priority,
+            status: "quarantined".to_string(),
+            reason,
+            overlap_recipe: resolved.recipe_name,
+            overlap_reason: resolved.overlap_reason,
+            variant_dir: resolved.variant_dir.display().to_string(),
+            package_name: parsed.package_name,
+            version: parsed.version,
+            payload_spec_path: String::new(),
+            meta_spec_path: String::new(),
+            staged_build_sh: staged_build_sh.display().to_string(),
         };
     }
 
@@ -942,6 +970,7 @@ fn process_tool(
         &staged_patch_sources,
         &resolved.meta_path,
         &resolved.variant_dir,
+        parsed.noarch_python,
     );
     let meta_version = match next_meta_package_version(&build_config.topdir, &software_slug) {
         Ok(v) => v,
@@ -1386,7 +1415,13 @@ fn render_meta_yaml(meta: &str) -> Result<String> {
         .context("creating jinja template from meta.yaml")?;
 
     template
-        .render(context! {})
+        .render(context! {
+            PYTHON => "$PYTHON",
+            PIP => "$PIP",
+            PREFIX => "$PREFIX",
+            RECIPE_DIR => "$RECIPE_DIR",
+            R => "R",
+        })
         .context("rendering meta.yaml jinja template")
 }
 
@@ -1536,6 +1571,15 @@ fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
         .and_then(value_to_string)
         .unwrap_or_else(|| format!("Generated package for {package_name}"));
     let source_patches = extract_source_patches(root.get("source"));
+    let build = root.get("build").and_then(Value::as_mapping);
+    let build_script = build
+        .and_then(|m| m.get(Value::String("script".to_string())))
+        .and_then(extract_build_script);
+    let noarch_python = build
+        .and_then(|m| m.get(Value::String("noarch".to_string())))
+        .and_then(value_to_string)
+        .map(|v| v.trim().eq_ignore_ascii_case("python"))
+        .unwrap_or(false);
 
     let requirements = root.get("requirements").and_then(Value::as_mapping);
     let build_deps = requirements
@@ -1562,10 +1606,80 @@ fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
         license,
         summary,
         source_patches,
+        build_script,
+        noarch_python,
         build_deps,
         host_deps,
         run_deps,
     })
+}
+
+fn extract_build_script(node: &Value) -> Option<String> {
+    match node {
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Value::Sequence(items) => {
+            let lines: Vec<String> = items
+                .iter()
+                .filter_map(value_to_string)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if lines.is_empty() {
+                None
+            } else {
+                Some(lines.join("\n"))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn synthesize_build_sh_from_meta_script(script: &str) -> String {
+    let canonical = canonicalize_meta_build_script(script);
+    format!("#!/usr/bin/env bash\nset -euxo pipefail\n{canonical}\n")
+}
+
+fn canonicalize_meta_build_script(script: &str) -> String {
+    let normalized = script
+        .replace("{{ PYTHON }}", "$PYTHON")
+        .replace("{{PYTHON}}", "$PYTHON")
+        .replace("{{ PIP }}", "$PIP")
+        .replace("{{PIP}}", "$PIP");
+
+    let mut lines = Vec::new();
+    for raw in normalized.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let rewritten = if line.starts_with("-m ") {
+            format!("$PYTHON {line}")
+        } else if let Some(rest) = line.strip_prefix("python3 ") {
+            format!("$PYTHON {rest}")
+        } else if let Some(rest) = line.strip_prefix("python ") {
+            format!("$PYTHON {rest}")
+        } else if let Some(rest) = line.strip_prefix("pip3 ") {
+            format!("$PIP {rest}")
+        } else if let Some(rest) = line.strip_prefix("pip ") {
+            format!("$PIP {rest}")
+        } else {
+            line.to_string()
+        };
+        lines.push(rewritten);
+    }
+
+    if lines.is_empty() {
+        "$PYTHON -m pip install . --no-deps --no-build-isolation --no-cache-dir -vvv".to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 fn extract_package_scalar(rendered: &str, key: &str) -> Option<String> {
@@ -1737,6 +1851,7 @@ fn render_payload_spec(
     staged_patch_sources: &[String],
     meta_path: &Path,
     variant_dir: &Path,
+    noarch_python: bool,
 ) -> String {
     let license = spec_escape(&parsed.license);
     let summary = spec_escape(&parsed.summary);
@@ -1779,6 +1894,11 @@ fn render_payload_spec(
     let patch_apply_lines =
         render_patch_apply_lines(staged_patch_sources, "%{bioconda_source_subdir}");
     let changelog_date = rpm_changelog_date();
+    let build_arch_line = if noarch_python {
+        "BuildArch:      noarch\n".to_string()
+    } else {
+        String::new()
+    };
 
     format!(
         "%global debug_package %{{nil}}\n\
@@ -1796,6 +1916,7 @@ Provides:       %{{tool}} = %{{version}}-%{{release}}\n\
 Summary:        {summary}\n\
 License:        {license}\n\
 URL:            {homepage}\n\
+{build_arch}\
 Source0:        {source_url}\n\
 Source1:        {build_sh}\n\
 {patch_sources}\n\
@@ -2011,6 +2132,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         patch_apply = patch_apply_lines,
         build_requires = build_requires_lines,
         requires = requires_lines,
+        build_arch = build_arch_line,
         changelog_date = changelog_date,
         meta_path = spec_escape(&meta_path.display().to_string()),
         variant_dir = spec_escape(&variant_dir.display().to_string()),
@@ -3032,6 +3154,8 @@ requirements:
             license: "Public-Domain".to_string(),
             summary: "blast".to_string(),
             source_patches: vec!["boost_106400.patch".to_string()],
+            build_script: None,
+            noarch_python: false,
             build_deps: BTreeSet::new(),
             host_deps: BTreeSet::new(),
             run_deps: BTreeSet::new(),
@@ -3043,9 +3167,40 @@ requirements:
             &["bioconda-blast-patch-1-boost_106400.patch".to_string()],
             Path::new("/tmp/meta.yaml"),
             Path::new("/tmp"),
+            false,
         );
         assert!(spec.contains("Source2:"));
         assert!(spec.contains("patch -p1 -i %{SOURCE2}"));
+    }
+
+    #[test]
+    fn parse_meta_extracts_build_script_and_noarch_python() {
+        let rendered = r#"
+package:
+  name: multiqc
+  version: "1.33"
+source:
+  url: https://example.invalid/multiqc.tar.gz
+build:
+  noarch: python
+  script: $PYTHON -m pip install . --no-deps
+about:
+  license: GPL-3.0-or-later
+"#;
+        let parsed = parse_rendered_meta(rendered).expect("parse rendered meta");
+        assert_eq!(
+            parsed.build_script.as_deref(),
+            Some("$PYTHON -m pip install . --no-deps")
+        );
+        assert!(parsed.noarch_python);
+    }
+
+    #[test]
+    fn synthesized_build_script_canonicalizes_python_invocation() {
+        let script = "-m pip install . --no-deps --no-build-isolation";
+        let generated = synthesize_build_sh_from_meta_script(script);
+        assert!(generated.contains("set -euxo pipefail"));
+        assert!(generated.contains("$PYTHON -m pip install . --no-deps --no-build-isolation"));
     }
 
     #[test]
