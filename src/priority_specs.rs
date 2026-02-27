@@ -924,6 +924,27 @@ fn process_tool(
             staged_build_sh: String::new(),
         };
     }
+    if let Err(err) = harden_staged_build_script(&staged_build_sh) {
+        let reason = format!(
+            "failed to apply staged build.sh hardening {}: {err}",
+            staged_build_sh.display()
+        );
+        quarantine_note(bad_spec_dir, &software_slug, &reason);
+        return ReportEntry {
+            software: tool.software.clone(),
+            priority: tool.priority,
+            status: "quarantined".to_string(),
+            reason,
+            overlap_recipe: resolved.recipe_name,
+            overlap_reason: resolved.overlap_reason,
+            variant_dir: resolved.variant_dir.display().to_string(),
+            package_name: parsed.package_name,
+            version: parsed.version,
+            payload_spec_path: String::new(),
+            meta_spec_path: String::new(),
+            staged_build_sh: staged_build_sh.display().to_string(),
+        };
+    }
     #[cfg(unix)]
     if let Err(err) = fs::set_permissions(&staged_build_sh, fs::Permissions::from_mode(0o755)) {
         let reason = format!(
@@ -1938,6 +1959,75 @@ fn canonicalize_meta_build_script(script: &str) -> String {
     }
 }
 
+fn harden_staged_build_script(path: &Path) -> Result<()> {
+    let original = fs::read_to_string(path)
+        .with_context(|| format!("reading staged build script {}", path.display()))?;
+    let hardened = harden_build_script_text(&original);
+    if hardened != original {
+        fs::write(path, hardened)
+            .with_context(|| format!("writing hardened build script {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn harden_build_script_text(script: &str) -> String {
+    let mut rewritten_lines = Vec::new();
+    let mut rewrite_counter = 0usize;
+
+    for line in script.lines() {
+        if let Some(expanded) = rewrite_streamed_wget_tar_line(line, rewrite_counter) {
+            rewritten_lines.extend(expanded);
+            rewrite_counter += 1;
+        } else {
+            rewritten_lines.push(line.to_string());
+        }
+    }
+
+    let mut out = rewritten_lines.join("\n");
+    if script.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+fn rewrite_streamed_wget_tar_line(line: &str, counter: usize) -> Option<Vec<String>> {
+    let trimmed = line.trim();
+    let (left, right) = trimmed.split_once("| tar -zxf -")?;
+    if !right.trim().is_empty() {
+        return None;
+    }
+
+    let tokens: Vec<&str> = left.split_whitespace().collect();
+    if tokens.first().copied() != Some("wget") {
+        return None;
+    }
+    let out_idx = tokens.iter().position(|t| *t == "-O-")?;
+    if out_idx + 1 >= tokens.len() {
+        return None;
+    }
+
+    let wget_opts = tokens[1..out_idx].join(" ");
+    let wget_url = tokens[(out_idx + 1)..].join(" ");
+    if wget_url.is_empty() {
+        return None;
+    }
+
+    let indent = &line[..line.len() - line.trim_start().len()];
+    let tmp_var = format!("BIOCONDA2RPM_FETCH_{counter}_ARCHIVE");
+    let wget_prefix = if wget_opts.is_empty() {
+        "wget --no-verbose".to_string()
+    } else {
+        format!("wget --no-verbose {wget_opts}")
+    };
+
+    Some(vec![
+        format!("{indent}{tmp_var}=\"$(mktemp -t bioconda2rpm-src.XXXXXX.tar.gz)\""),
+        format!("{indent}{wget_prefix} -O \"${{{tmp_var}}}\" {wget_url}"),
+        format!("{indent}tar -zxf \"${{{tmp_var}}}\""),
+        format!("{indent}rm -f \"${{{tmp_var}}}\""),
+    ])
+}
+
 fn staged_build_script_indicates_python(path: &Path) -> Result<bool> {
     let text = fs::read_to_string(path)
         .with_context(|| format!("reading staged build script {}", path.display()))?;
@@ -2382,14 +2472,16 @@ if [[ \"$(uname -m)\" == \"aarch64\" || \"$(uname -m)\" == \"arm64\" ]]; then\n\
 fi\n\
 \n\
 # Canonical fallback for flaky parallel builds: retry once serially.\n\
-if ! bash ./build.sh; then\n\
+# Enforce fail-fast shell behavior for staged recipe scripts so downstream\n\
+# commands do not mask the primary failure reason.\n\
+if ! bash -eo pipefail ./build.sh; then\n\
   if [[ \"${{BIOCONDA2RPM_RETRIED_SERIAL:-0}}\" == \"1\" ]]; then\n\
     exit 1\n\
   fi\n\
   export BIOCONDA2RPM_RETRIED_SERIAL=1\n\
   export CPU_COUNT=1\n\
   export MAKEFLAGS=-j1\n\
-  bash ./build.sh\n\
+  bash -eo pipefail ./build.sh\n\
 fi\n\
 \n\
 # Some Bioconda build scripts emit absolute symlinks into %{{buildroot}}.\n\
@@ -3244,9 +3336,27 @@ fn sanitize_label(input: &str) -> String {
 }
 
 fn tail_lines(text: &str, line_count: usize) -> String {
-    let lines: Vec<&str> = text.lines().collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty() && !looks_like_transfer_progress(trimmed)
+        })
+        .collect();
     let start = lines.len().saturating_sub(line_count);
     lines[start..].join(" | ")
+}
+
+fn looks_like_transfer_progress(line: &str) -> bool {
+    // Filters repetitive progress rows from wget/curl style output so BAD_SPEC
+    // tails retain the actionable error lines.
+    let starts_with_digit = line
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_digit())
+        .unwrap_or(false);
+    (line.contains("..........") && line.contains('%'))
+        || (starts_with_digit && line.contains("...") && line.contains('%'))
 }
 
 fn classify_arch_policy(build_log: &str, host_arch: &str) -> Option<&'static str> {
@@ -3552,6 +3662,7 @@ requirements:
         );
         assert!(spec.contains("Source2:"));
         assert!(spec.contains("patch -p1 -i %{SOURCE2}"));
+        assert!(spec.contains("bash -eo pipefail ./build.sh"));
     }
 
     #[test]
@@ -3696,6 +3807,28 @@ requirements:
         assert!(!script_text_indicates_python(
             "#!/bin/bash\nmake -j${CPU_COUNT}\n"
         ));
+    }
+
+    #[test]
+    fn harden_build_script_rewrites_streamed_wget_tar() {
+        let raw = "#!/usr/bin/env bash\nwget -O- https://example.invalid/src.tar.gz | tar -zxf -\n";
+        let hardened = harden_build_script_text(raw);
+        assert!(hardened.contains("BIOCONDA2RPM_FETCH_0_ARCHIVE"));
+        assert!(hardened.contains("wget --no-verbose -O \"${BIOCONDA2RPM_FETCH_0_ARCHIVE}\""));
+        assert!(hardened.contains("tar -zxf \"${BIOCONDA2RPM_FETCH_0_ARCHIVE}\""));
+        assert!(!hardened.contains("wget -O- https://example.invalid/src.tar.gz | tar -zxf -"));
+    }
+
+    #[test]
+    fn tail_lines_omits_transfer_progress_rows() {
+        let log = "100K ..........  10% 100M 0s\n\
+fatal: meaningful failure\n\
+200K ..........  20% 100M 0s\n\
+error: build stopped\n";
+        let tail = tail_lines(log, 5);
+        assert!(!tail.contains(".........."));
+        assert!(tail.contains("fatal: meaningful failure"));
+        assert!(tail.contains("error: build stopped"));
     }
 
     #[test]
