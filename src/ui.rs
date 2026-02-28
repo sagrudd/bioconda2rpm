@@ -83,6 +83,33 @@ impl UiState {
                 status, running, queued, workers
             );
         }
+        if kv.get("phase").map(|v| v.as_str()) == Some("container-build")
+            && let Some(label) = kv.get("label")
+        {
+            let status = kv
+                .get("status")
+                .cloned()
+                .unwrap_or_else(|| "running".to_string());
+            let mapped_status = match status.as_str() {
+                "running" | "started" => "running",
+                "completed" => "generated",
+                "failed" => "quarantined",
+                other => other,
+            };
+            let detail = kv
+                .get("elapsed")
+                .cloned()
+                .unwrap_or_else(|| "container-build".to_string());
+            self.seq = self.seq.saturating_add(1);
+            self.packages.insert(
+                label.clone(),
+                PackageState {
+                    status: mapped_status.to_string(),
+                    detail,
+                    seq: self.seq,
+                },
+            );
+        }
         if kv.get("phase").map(|v| v.as_str()) == Some("dependency-plan")
             && kv.get("status").map(|v| v.as_str()) == Some("completed")
         {
@@ -395,7 +422,25 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
     // Fit visible rows to current terminal height instead of a fixed cap.
     // Table has: top border + header + bottom border.
     let visible_capacity = chunks[2].height.saturating_sub(3) as usize;
-    rows.truncate(visible_capacity.max(1));
+    let visible_capacity = visible_capacity.max(1);
+    let is_completed = |status: &str| matches!(status, "generated" | "up-to-date" | "skipped");
+    let mut primary = rows
+        .iter()
+        .filter(|(_, ps)| !is_completed(&ps.status))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut secondary = rows
+        .into_iter()
+        .filter(|(_, ps)| is_completed(&ps.status))
+        .collect::<Vec<_>>();
+    if primary.len() < visible_capacity {
+        let remaining = visible_capacity - primary.len();
+        secondary.truncate(remaining);
+        primary.extend(secondary);
+    } else {
+        primary.truncate(visible_capacity);
+    }
+    let rows = primary;
     let table_rows = rows.into_iter().map(|(pkg, ps)| {
         let style = match ps.status.as_str() {
             "generated" => Style::default().fg(Color::Green),
