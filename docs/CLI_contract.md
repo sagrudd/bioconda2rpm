@@ -64,6 +64,9 @@ bioconda2rpm generate-priority-specs \
   - `auto`: use conda-build render adapter when available, otherwise fallback to native parser.
   - `conda`: require conda-build adapter success.
   - `native`: force native parser.
+- `--deployment-profile <development|production>`
+  - Default: `development`
+  - `production` enforces effective metadata adapter `conda`.
 - `--outputs <all>`
   - Default: `all`
 

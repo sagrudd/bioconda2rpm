@@ -124,3 +124,7 @@
 - Current development campaign architecture is `aarch64`.
 - Production deployment target architecture is `amd64` (`x86_64`) on dedicated hosts.
 - `build --arch` defines target architecture semantics for metadata/render and classification decisions.
+
+### Metadata adapter strictness policy
+- Development profile uses metadata adapter `auto` by default.
+- Production profile enforces metadata adapter `conda` for deterministic conda-build semantics.

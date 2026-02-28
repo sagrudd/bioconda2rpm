@@ -321,14 +321,17 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     let sources_dir = topdir.join("SOURCES");
     let reports_dir = args.effective_reports_dir();
     let bad_spec_dir = args.effective_bad_spec_dir();
+    let effective_metadata_adapter = args.effective_metadata_adapter();
     log_progress(format!(
-        "phase=build-start package={} deps_enabled={} dependency_policy={:?} recipe_root={} topdir={} target_arch={}",
+        "phase=build-start package={} deps_enabled={} dependency_policy={:?} recipe_root={} topdir={} target_arch={} deployment_profile={:?} metadata_adapter={:?}",
         args.package,
         args.with_deps(),
         args.dependency_policy,
         args.recipe_root.display(),
         topdir.display(),
-        args.effective_target_arch()
+        args.effective_target_arch(),
+        args.deployment_profile,
+        effective_metadata_adapter
     ));
 
     fs::create_dir_all(&specs_dir)
@@ -364,7 +367,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         &args.recipe_root,
         &recipe_dirs,
         true,
-        &args.metadata_adapter,
+        &effective_metadata_adapter,
         &build_config.target_arch,
     )?
     else {
@@ -465,7 +468,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         &args.dependency_policy,
         &args.recipe_root,
         &recipe_dirs,
-        &args.metadata_adapter,
+        &effective_metadata_adapter,
         &build_config.target_arch,
     )?;
     let build_order = plan_order
@@ -557,7 +560,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
             &sources_dir,
             &bad_spec_dir,
             &build_config,
-            &args.metadata_adapter,
+            &effective_metadata_adapter,
         );
         log_progress(format!(
             "phase=package status={} package={} elapsed={} reason={}",

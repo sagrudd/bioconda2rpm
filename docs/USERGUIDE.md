@@ -84,6 +84,9 @@ Common optional flags:
   - `auto` (default): try conda-build rendering first, then fallback to native parser.
   - `conda`: require conda-build adapter success.
   - `native`: use in-crate selector/Jinja parser only.
+- `--deployment-profile <development|production>`:
+  - `development` (default): honors selected `--metadata-adapter` (default `auto`).
+  - `production`: forces effective metadata adapter to `conda`.
 - `--arch <host|x86-64|aarch64>`:
   - sets target architecture semantics for metadata/render and compatibility classification.
   - recommended usage: `aarch64` for current development campaigns, `x86-64` for production validation.

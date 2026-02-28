@@ -82,6 +82,12 @@ pub enum MetadataAdapter {
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
+pub enum DeploymentProfile {
+    Development,
+    Production,
+}
+
+#[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
 pub enum OutputSelection {
     All,
 }
@@ -149,6 +155,11 @@ pub struct BuildArgs {
     /// `auto` tries conda-build rendering first, then falls back to native parser.
     #[arg(long, value_enum, default_value_t = MetadataAdapter::Auto)]
     pub metadata_adapter: MetadataAdapter,
+
+    /// Deployment profile.
+    /// Production profile enforces conda-based metadata rendering.
+    #[arg(long, value_enum, default_value_t = DeploymentProfile::Development)]
+    pub deployment_profile: DeploymentProfile,
 
     /// How to handle recipes with outputs: sections.
     #[arg(long, value_enum, default_value_t = OutputSelection::All)]
@@ -247,9 +258,16 @@ impl BuildArgs {
         }
     }
 
+    pub fn effective_metadata_adapter(&self) -> MetadataAdapter {
+        match self.deployment_profile {
+            DeploymentProfile::Development => self.metadata_adapter.clone(),
+            DeploymentProfile::Production => MetadataAdapter::Conda,
+        }
+    }
+
     pub fn execution_summary(&self) -> String {
         format!(
-            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} arch={arch:?} target_arch={target_arch} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
+            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
             pkg = self.package,
             stage = self.stage,
             deps = self.with_deps(),
@@ -263,9 +281,11 @@ impl BuildArgs {
             container_engine = self.container_engine,
             arch = self.arch,
             target_arch = self.effective_target_arch(),
+            deployment_profile = self.deployment_profile,
             naming = self.naming_profile,
             render = self.render_strategy,
             metadata_adapter = self.metadata_adapter,
+            effective_metadata_adapter = self.effective_metadata_adapter(),
             outputs = self.outputs,
             missing = self.missing_dependency,
             local_repo_count = self.phoreus_local_repo.len(),
@@ -321,6 +341,8 @@ mod tests {
         assert_eq!(args.naming_profile, NamingProfile::Phoreus);
         assert_eq!(args.render_strategy, RenderStrategy::JinjaFull);
         assert_eq!(args.metadata_adapter, MetadataAdapter::Auto);
+        assert_eq!(args.deployment_profile, DeploymentProfile::Development);
+        assert_eq!(args.effective_metadata_adapter(), MetadataAdapter::Auto);
         assert_eq!(args.outputs, OutputSelection::All);
         assert!(args.effective_topdir().ends_with("bioconda2rpm"));
         assert!(
@@ -382,6 +404,8 @@ mod tests {
             "aarch64",
             "--metadata-adapter",
             "native",
+            "--deployment-profile",
+            "production",
             "--reports-dir",
             "/reports",
         ])
@@ -398,6 +422,8 @@ mod tests {
         assert_eq!(args.arch, BuildArch::Aarch64);
         assert_eq!(args.effective_target_arch(), "aarch64".to_string());
         assert_eq!(args.metadata_adapter, MetadataAdapter::Native);
+        assert_eq!(args.deployment_profile, DeploymentProfile::Production);
+        assert_eq!(args.effective_metadata_adapter(), MetadataAdapter::Conda);
         assert_eq!(args.effective_topdir(), PathBuf::from("/rpmbuild"));
         assert_eq!(args.effective_reports_dir(), PathBuf::from("/reports"));
     }
