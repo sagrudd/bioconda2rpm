@@ -3852,6 +3852,16 @@ fn should_keep_rpm_dependency_for_r(dep: &str) -> bool {
     is_r_base_dependency_name(&normalized)
 }
 
+fn should_keep_rpm_dependency_for_perl(dep: &str) -> bool {
+    let normalized = normalize_dependency_token(dep);
+    if !normalized.starts_with("perl-") {
+        return true;
+    }
+    // Perl test-only modules frequently appear in Bioconda host/test deps but
+    // should not hard-block RPM payload builds when upstream tests are not run.
+    !(normalized == "perl-test" || normalized.starts_with("perl-test-"))
+}
+
 fn is_python_dev_test_dependency_name(dep: &str) -> bool {
     let normalized = normalize_dependency_token(dep);
     matches!(
@@ -4569,6 +4579,7 @@ mkdir -p %{bioconda_source_subdir}\n"
             .filter(|dep| !is_conda_only_dependency(dep))
             .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
             .filter(|dep| !r_project_recipe || should_keep_rpm_dependency_for_r(dep))
+            .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep))
             .map(|d| map_build_dependency(d)),
     );
     build_requires.extend(
@@ -4578,6 +4589,7 @@ mkdir -p %{bioconda_source_subdir}\n"
             .filter(|dep| !is_conda_only_dependency(dep))
             .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
             .filter(|dep| !r_project_recipe || should_keep_rpm_dependency_for_r(dep))
+            .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep))
             .map(|d| map_build_dependency(d)),
     );
     if !python_recipe && !perl_recipe && !runtime_only_metapackage {
@@ -4633,6 +4645,7 @@ mkdir -p %{bioconda_source_subdir}\n"
                 .iter()
                 .filter(|dep| !is_conda_only_dependency(dep))
                 .filter(|dep| !r_project_recipe || should_keep_rpm_dependency_for_r(dep))
+                .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep))
                 .map(|d| map_runtime_dependency(d)),
         );
     }
@@ -6674,6 +6687,8 @@ fn perl_module_name_from_conda(dep: &str) -> Option<String> {
     let overridden = match module {
         "test-leaktrace" => Some("Test::LeakTrace".to_string()),
         "json-xs" => Some("JSON::XS".to_string()),
+        "list-moreutils" => Some("List::MoreUtils".to_string()),
+        "list-moreutils-xs" => Some("List::MoreUtils::XS".to_string()),
         _ => None,
     };
     if let Some(name) = overridden {
@@ -8152,6 +8167,10 @@ mod tests {
             "perl(Test::LeakTrace)".to_string()
         );
         assert_eq!(
+            map_build_dependency("perl-list-moreutils-xs"),
+            "perl(List::MoreUtils::XS)".to_string()
+        );
+        assert_eq!(
             map_build_dependency("python"),
             PHOREUS_PYTHON_PACKAGE.to_string()
         );
@@ -9296,6 +9315,51 @@ requirements:
         assert!(spec.contains("BuildRequires:  perl(Text::Glob)"));
         assert!(spec.contains("Provides:       perl(File::Find::Rule) = %{version}-%{release}"));
         assert!(spec.contains("lib64/perl5"));
+    }
+
+    #[test]
+    fn perl_payload_filters_test_only_deps_from_hard_requires() {
+        let mut host_deps = BTreeSet::new();
+        host_deps.insert("perl-test-leaktrace".to_string());
+        host_deps.insert("perl-list-moreutils-xs".to_string());
+
+        let parsed = ParsedMeta {
+            package_name: "perl-list-moreutils".to_string(),
+            version: "0.430".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/perl-list-moreutils-0.430.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://metacpan.org".to_string(),
+            license: "perl_5".to_string(),
+            summary: "Perl package".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("perl Makefile.PL".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["make".to_string()],
+            host_dep_specs_raw: vec![
+                "perl-test-leaktrace".to_string(),
+                "perl-list-moreutils-xs".to_string(),
+            ],
+            run_dep_specs_raw: vec!["perl-list-moreutils-xs".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps,
+            run_deps: BTreeSet::from(["perl-list-moreutils-xs".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "perl-list-moreutils",
+            &parsed,
+            "bioconda-perl-list-moreutils-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(!spec.contains("perl(Test::LeakTrace)"));
+        assert!(spec.contains("BuildRequires:  perl(List::MoreUtils::XS)"));
     }
 
     #[test]
