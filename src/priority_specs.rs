@@ -4788,7 +4788,10 @@ fn is_phoreus_python_toolchain_dependency(dep: &str) -> bool {
 
 fn is_conda_only_dependency(dep: &str) -> bool {
     let normalized = normalize_dependency_token(dep);
-    matches!(normalized.as_str(), "bioconductor-data-packages")
+    matches!(
+        normalized.as_str(),
+        "bioconductor-data-packages" | "go-licenses"
+    )
 }
 
 fn is_r_ecosystem_dependency_name(dep: &str) -> bool {
@@ -6147,6 +6150,11 @@ mod tests {
             normalize_dependency_name("bioconductor-ucsc.utils >=1.2.0"),
             Some("bioconductor-ucsc-utils".to_string())
         );
+    }
+
+    #[test]
+    fn conda_only_dependencies_include_go_licenses() {
+        assert!(is_conda_only_dependency("go-licenses"));
     }
 
     #[test]
