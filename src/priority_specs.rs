@@ -2732,6 +2732,7 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "bowtie"
             | "bowtie2"
             | "minimap2"
+            | "mummer"
             | "gcc"
             | "gcc-c++"
             | "gcc-gfortran"
@@ -6822,6 +6823,39 @@ requirements:
         assert!(reqs.contains(&"jinja2>=3.0.0".to_string()));
         assert!(reqs.contains(&"click>=8.0".to_string()));
         assert!(!reqs.iter().any(|r| r.contains("automake")));
+    }
+
+    #[test]
+    fn python_requirements_exclude_system_bio_tools() {
+        let parsed = ParsedMeta {
+            package_name: "ragtag".to_string(),
+            version: "2.1.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/RagTag-2.1.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/ragtag".to_string(),
+            license: "MIT".to_string(),
+            summary: "ragtag".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install .".to_string()),
+            noarch_python: true,
+            build_dep_specs_raw: vec!["pip".to_string(), "python >3".to_string()],
+            host_dep_specs_raw: vec!["python >3".to_string(), "numpy".to_string()],
+            run_dep_specs_raw: vec![
+                "python >3".to_string(),
+                "numpy".to_string(),
+                "minimap2".to_string(),
+                "mummer".to_string(),
+            ],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let reqs = build_python_requirements(&parsed);
+        assert!(reqs.contains(&"numpy".to_string()));
+        assert!(!reqs.iter().any(|r| r == "mummer"));
+        assert!(!reqs.iter().any(|r| r == "minimap2"));
     }
 
     #[test]
