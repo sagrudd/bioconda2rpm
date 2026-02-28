@@ -3110,6 +3110,7 @@ fn render_meta_yaml(meta: &str) -> Result<String> {
     env.add_function("compiler", |lang: String| {
         format!("{}-compiler", lang.to_lowercase())
     });
+    env.add_function("cdt", |name: String| name);
     env.add_function("pin_subpackage", |name: String, _kwargs: Kwargs| name);
     env.add_function("pin_compatible", |name: String, _kwargs: Kwargs| name);
 
@@ -5124,6 +5125,17 @@ fi\n\
     # noisy failures in shell/R startup locale checks.\n\
     sed -i 's|export LC_ALL=\"en_US.UTF-8\"|export LC_ALL=C|g' ./build.sh || true\n\
     \n\
+    # Qt tooling (qmake) may be packaged under versioned bin roots on EL.\n\
+    # Surface common locations so upstream build.sh can invoke qmake directly.\n\
+    for qt_bin in /usr/lib64/qt5/bin /usr/lib/qt5/bin /usr/lib64/qt6/bin /usr/lib/qt6/bin; do\n\
+    if [[ -d \"$qt_bin\" ]]; then\n\
+      export PATH=\"$qt_bin:$PATH\"\n\
+    fi\n\
+    done\n\
+    if ! command -v qmake >/dev/null 2>&1 && command -v qmake-qt5 >/dev/null 2>&1; then\n\
+    ln -sf \"$(command -v qmake-qt5)\" /usr/local/bin/qmake || true\n\
+    fi\n\
+    \n\
     # A number of upstream scripts hardcode aggressive THREADS values.\n\
     # Normalize to canonical CPU_COUNT policy rather than fixed thread counts.\n\
     sed -i -E 's/THREADS=\"-j[0-9]+\"/THREADS=\"-j${{CPU_COUNT:-1}}\"/g' ./build.sh || true\n\
@@ -5974,6 +5986,12 @@ fn map_build_dependency(dep: &str) -> String {
         "liblapack" => "lapack-devel".to_string(),
         "libhwy" => "highway-devel".to_string(),
         "libiconv" => "glibc-devel".to_string(),
+        "libxau" => "libXau-devel".to_string(),
+        "libxdamage" => "libXdamage-devel".to_string(),
+        "libxext" => "libXext-devel".to_string(),
+        "libxfixes" => "libXfixes-devel".to_string(),
+        "libxxf86vm" => "libXxf86vm-devel".to_string(),
+        "mesa-libgl-devel" => "mesa-libGL-devel".to_string(),
         "libpng" => "libpng-devel".to_string(),
         "libuuid" => "libuuid-devel".to_string(),
         "libopenssl-static" => "openssl-devel".to_string(),
@@ -5983,7 +6001,9 @@ fn map_build_dependency(dep: &str) -> String {
         "ninja" => "ninja-build".to_string(),
         "openssl" => "openssl-devel".to_string(),
         "openmpi" => "openmpi-devel".to_string(),
+        "qt" => "qt5-qtbase-devel qt5-qtsvg-devel".to_string(),
         "llvmdev" => "llvm-devel".to_string(),
+        "xorg-libxext" => "libXext-devel".to_string(),
         "xorg-libxfixes" => "libXfixes-devel".to_string(),
         "xz" => "xz-devel".to_string(),
         "zlib" => "zlib-devel".to_string(),
@@ -6046,12 +6066,20 @@ fn map_runtime_dependency(dep: &str) -> String {
         "libblas" => "openblas".to_string(),
         "libhwy" => "highway".to_string(),
         "libiconv" => "glibc".to_string(),
+        "libxau" => "libXau".to_string(),
+        "libxdamage" => "libXdamage".to_string(),
+        "libxext" => "libXext".to_string(),
+        "libxfixes" => "libXfixes".to_string(),
+        "libxxf86vm" => "libXxf86vm".to_string(),
         "libgd" => "gd".to_string(),
         "liblzma-devel" => "xz".to_string(),
         "liblapack" => "lapack".to_string(),
+        "mesa-libgl-devel" => "mesa-libGL".to_string(),
         "mysql-connector-c" => "mariadb-connector-c".to_string(),
+        "qt" => "qt5-qtbase qt5-qtsvg".to_string(),
         "llvmdev" => "llvm".to_string(),
         "ninja" => "ninja-build".to_string(),
+        "xorg-libxext" => "libXext".to_string(),
         "xorg-libxfixes" => "libXfixes".to_string(),
         other => other.to_string(),
     }
@@ -8182,6 +8210,19 @@ mod tests {
         assert_eq!(map_build_dependency("gnuconfig"), "automake".to_string());
         assert_eq!(map_build_dependency("glib"), "glib2-devel".to_string());
         assert_eq!(map_build_dependency("libiconv"), "glibc-devel".to_string());
+        assert_eq!(map_build_dependency("libxext"), "libXext-devel".to_string());
+        assert_eq!(
+            map_build_dependency("libxfixes"),
+            "libXfixes-devel".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("mesa-libgl-devel"),
+            "mesa-libGL-devel".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("qt"),
+            "qt5-qtbase-devel qt5-qtsvg-devel".to_string()
+        );
         assert_eq!(map_build_dependency("jsoncpp"), "jsoncpp-devel".to_string());
         assert_eq!(
             map_build_dependency("font-ttf-dejavu-sans-mono"),
@@ -8211,6 +8252,12 @@ mod tests {
         assert_eq!(map_runtime_dependency("libblas"), "openblas".to_string());
         assert_eq!(map_runtime_dependency("libhwy"), "highway".to_string());
         assert_eq!(map_runtime_dependency("libiconv"), "glibc".to_string());
+        assert_eq!(map_runtime_dependency("libxext"), "libXext".to_string());
+        assert_eq!(map_runtime_dependency("libxfixes"), "libXfixes".to_string());
+        assert_eq!(
+            map_runtime_dependency("qt"),
+            "qt5-qtbase qt5-qtsvg".to_string()
+        );
         assert_eq!(map_runtime_dependency("jsoncpp"), "jsoncpp".to_string());
         assert_eq!(map_runtime_dependency("glib"), "glib2".to_string());
         assert_eq!(map_runtime_dependency("liblapack"), "lapack".to_string());
@@ -9718,12 +9765,14 @@ package:
 requirements:
   build:
     - {{ compiler('c') }}
+    - {{ cdt('libxext') }}
   run:
     - {{ pin_subpackage(name, max_pin="x.x") }}
 "#;
         let rendered = render_meta_yaml(src).expect("render jinja");
         assert!(rendered.contains("bwa"));
         assert!(rendered.contains("c-compiler"));
+        assert!(rendered.contains("libxext"));
     }
 
     #[test]
