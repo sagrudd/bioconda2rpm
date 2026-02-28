@@ -356,13 +356,15 @@ fn make_transfer_callbacks(action: &'static str) -> RemoteCallbacks<'static> {
     let mut last_emit = Instant::now()
         .checked_sub(Duration::from_secs(3))
         .unwrap_or_else(Instant::now);
+    let mut completion_reported = false;
     callbacks.transfer_progress(move |stats| {
         let now = Instant::now();
         let total = stats.total_objects();
         let received = stats.received_objects();
         let bytes = stats.received_bytes();
         let done = total > 0 && received >= total;
-        let should_emit = done || now.duration_since(last_emit) >= Duration::from_secs(2);
+        let periodic = now.duration_since(last_emit) >= Duration::from_secs(2);
+        let should_emit = (!done && periodic) || (done && !completion_reported);
         if should_emit {
             let percent = if total > 0 {
                 received.saturating_mul(100) / total
@@ -379,6 +381,9 @@ fn make_transfer_callbacks(action: &'static str) -> RemoteCallbacks<'static> {
                 format_elapsed(started.elapsed())
             ));
             last_emit = now;
+            if done {
+                completion_reported = true;
+            }
         }
         true
     });
