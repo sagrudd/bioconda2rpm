@@ -1,9 +1,12 @@
 use crate::priority_specs;
 use anyhow::{Context, Result};
+use fs2::FileExt;
 use git2::build::{CheckoutBuilder, RepoBuilder};
 use git2::{AutotagOption, FetchOptions, ObjectType, Oid, RemoteCallbacks, Repository};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::{Duration, Instant};
 
 const BIOCONDA_RECIPES_REMOTE: &str = "https://github.com/bioconda/bioconda-recipes.git";
@@ -33,6 +36,7 @@ pub fn ensure_recipe_repository(request: &RecipeRepoRequest) -> Result<RecipeRep
         request.recipe_repo_root.to_string_lossy(),
         request.recipe_root.to_string_lossy()
     ));
+    let _repo_lock = acquire_recipe_repo_lock(&request.recipe_repo_root)?;
 
     let mut cloned = false;
     if !request.recipe_repo_root.exists() {
@@ -409,4 +413,88 @@ fn sanitize_progress_value(raw: impl AsRef<str>) -> String {
             _ => c,
         })
         .collect()
+}
+
+struct RepoSyncLock {
+    lock_file: fs::File,
+}
+
+impl Drop for RepoSyncLock {
+    fn drop(&mut self) {
+        let _ = self.lock_file.unlock();
+    }
+}
+
+fn acquire_recipe_repo_lock(repo_root: &Path) -> Result<RepoSyncLock> {
+    let lock_path = repo_root.with_extension("lock");
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "creating recipe lock parent directory {}",
+                parent.to_string_lossy()
+            )
+        })?;
+    }
+    let mut lock_file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("opening recipe lock file {}", lock_path.to_string_lossy()))?;
+
+    let started = Instant::now();
+    let mut last_wait_log = Instant::now()
+        .checked_sub(Duration::from_secs(3))
+        .unwrap_or_else(Instant::now);
+    priority_specs::log_external_progress(format!(
+        "phase=recipe-sync status=running action=lock target={}",
+        lock_path.to_string_lossy()
+    ));
+
+    loop {
+        match lock_file.try_lock_exclusive() {
+            Ok(()) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                let now = Instant::now();
+                if now.duration_since(last_wait_log) >= Duration::from_secs(2) {
+                    priority_specs::log_external_progress(format!(
+                        "phase=recipe-sync status=waiting action=lock target={} elapsed={}",
+                        lock_path.to_string_lossy(),
+                        format_elapsed(started.elapsed())
+                    ));
+                    last_wait_log = now;
+                }
+                thread::sleep(Duration::from_millis(250));
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "acquiring exclusive recipe lock {}",
+                        lock_path.to_string_lossy()
+                    )
+                });
+            }
+        }
+    }
+
+    let pid = std::process::id();
+    lock_file.set_len(0).with_context(|| {
+        format!(
+            "truncating recipe lock file {}",
+            lock_path.to_string_lossy()
+        )
+    })?;
+    write!(lock_file, "pid={pid}\n")
+        .with_context(|| format!("writing recipe lock file {}", lock_path.to_string_lossy()))?;
+    lock_file
+        .flush()
+        .with_context(|| format!("flushing recipe lock file {}", lock_path.to_string_lossy()))?;
+
+    priority_specs::log_external_progress(format!(
+        "phase=recipe-sync status=acquired action=lock target={} elapsed={}",
+        lock_path.to_string_lossy(),
+        format_elapsed(started.elapsed())
+    ));
+
+    Ok(RepoSyncLock { lock_file })
 }
