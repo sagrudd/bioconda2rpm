@@ -3672,6 +3672,10 @@ fi\n\
     # lives under the same PREFIX. In Phoreus, ncbi-vdb is a separate payload.\n\
     # Retarget the generated build.sh argument to the newest installed ncbi-vdb prefix.\n\
     if [[ \"%{{tool}}\" == \"blast\" ]]; then\n\
+    # BLAST 2.5.0 source is not compatible with EL9 Boost.Test API updates.\n\
+    # Force configure cache to treat Boost.Test as unavailable so test_boost.cpp\n\
+    # is not compiled as part of the payload build graph.\n\
+    export ncbi_cv_lib_boost_test=no\n\
     vdb_prefix=$(find /usr/local/phoreus/ncbi-vdb -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1 || true)\n\
     if [[ -n \"$vdb_prefix\" ]]; then\n\
     sed -i 's|--with-vdb=$PREFIX|--with-vdb='\\\"$vdb_prefix\\\"'|g' ./build.sh\n\
@@ -6182,6 +6186,7 @@ requirements:
         assert!(spec.contains("export PKG_NAME=\"${PKG_NAME:-blast}\""));
         assert!(spec.contains("export PKG_VERSION=\"${PKG_VERSION:-2.5.0}\""));
         assert!(spec.contains("export PKG_BUILDNUM=\"${PKG_BUILDNUM:-0}\""));
+        assert!(spec.contains("export ncbi_cv_lib_boost_test=no"));
     }
 
     #[test]
