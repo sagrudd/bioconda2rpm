@@ -3522,11 +3522,19 @@ fn build_r_cran_requirements(parsed: &ParsedMeta) -> Vec<String> {
             if let Some(pkg) = normalized.strip_prefix("r-")
                 && !pkg.is_empty()
             {
-                out.insert(pkg.to_string());
+                out.insert(canonical_r_package_name(pkg));
             }
         }
     }
     out.into_iter().collect()
+}
+
+fn canonical_r_package_name(name: &str) -> String {
+    match name.trim().to_lowercase().as_str() {
+        "rcurl" => "RCurl".to_string(),
+        "xml" => "XML".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn recipe_requires_rust_runtime(parsed: &ParsedMeta) -> bool {
@@ -4524,9 +4532,13 @@ mkdir -p %{bioconda_source_subdir}\n"
         build_requires.insert("fribidi-devel".to_string());
         build_requires.insert("harfbuzz-devel".to_string());
         build_requires.insert("libjpeg-turbo-devel".to_string());
+        build_requires.insert("libcurl-devel".to_string());
+        build_requires.insert("libxml2-devel".to_string());
+        build_requires.insert("openssl-devel".to_string());
         build_requires.insert("libpng-devel".to_string());
         build_requires.insert("libtiff-devel".to_string());
         build_requires.insert("libwebp-devel".to_string());
+        build_requires.insert("zlib-devel".to_string());
     }
     if rust_runtime_required {
         build_requires.insert(PHOREUS_RUST_PACKAGE.to_string());
@@ -5440,6 +5452,13 @@ resolve_case <- function(pkg) {{\n\
   pkg\n\
 }}\n\
 resolved <- unique(vapply(req, resolve_case, character(1)))\n\
+canonicalize <- function(pkg) {{\n\
+  key <- tolower(pkg)\n\
+  if (identical(key, \"rcurl\")) return(\"RCurl\")\n\
+  if (identical(key, \"xml\")) return(\"XML\")\n\
+  pkg\n\
+}}\n\
+resolved <- unique(vapply(resolved, canonicalize, character(1)))\n\
 installed <- rownames(installed.packages(lib.loc = unique(c(.libPaths(), lib))))\n\
 missing <- setdiff(resolved, installed)\n\
 if (length(missing)) {{\n\
@@ -5477,7 +5496,8 @@ if (length(still_missing)) {{\n\
   still_missing <- setdiff(resolved, installed_after)\n\
 }}\n\
 if (length(still_missing)) {{\n\
-  message(\"bioconda2rpm unresolved R deps after restore (continuing): \", paste(still_missing, collapse = \",\"))\n\
+  message(\"bioconda2rpm unresolved R deps after restore: \", paste(still_missing, collapse = \",\"))\n\
+  quit(save = \"no\", status = 43)\n\
 }}\n\
 REOF\n\
 \"$RSCRIPT\" ./.bioconda2rpm-r-deps.R\n\
@@ -8568,6 +8588,13 @@ requirements:
             map_runtime_dependency("r-base"),
             PHOREUS_R_PACKAGE.to_string()
         );
+    }
+
+    #[test]
+    fn r_dependency_names_are_canonicalized_for_restore() {
+        assert_eq!(canonical_r_package_name("rcurl"), "RCurl".to_string());
+        assert_eq!(canonical_r_package_name("xml"), "XML".to_string());
+        assert_eq!(canonical_r_package_name("httr"), "httr".to_string());
     }
 
     #[test]
