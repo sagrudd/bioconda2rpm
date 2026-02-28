@@ -3315,6 +3315,15 @@ mkdir -p %{bioconda_source_subdir}\n"
         build_requires.insert(PHOREUS_NIM_PACKAGE.to_string());
         build_requires.insert("git".to_string());
     }
+    if software_slug == "r-monocle3" {
+        // Monocle3's R dependency chain (sf/spdep/terra/units) needs geospatial
+        // development headers from the base OS repositories on EL9.
+        build_requires.insert("gdal-devel".to_string());
+        build_requires.insert("geos-devel".to_string());
+        build_requires.insert("proj-devel".to_string());
+        build_requires.insert("sqlite-devel".to_string());
+        build_requires.insert("udunits2-devel".to_string());
+    }
     build_requires.extend(
         parsed
             .build_deps
@@ -3825,6 +3834,11 @@ fi\n\
     fi\n\
     fi\n\
     \n\
+    # Many conda build scripts set en_US.UTF-8 explicitly, but minimal EL9\n\
+    # containers may not generate that locale. Normalize to C to avoid\n\
+    # noisy failures in shell/R startup locale checks.\n\
+    sed -i 's|export LC_ALL=\"en_US.UTF-8\"|export LC_ALL=C|g' ./build.sh || true\n\
+    \n\
     # A number of upstream scripts hardcode aggressive THREADS values;\n\
     # force single-core policy for deterministic container builds.\n\
     sed -i -E 's/THREADS=\"-j[0-9]+\"/THREADS=\"-j1\"/g' ./build.sh || true\n\
@@ -4176,6 +4190,35 @@ if (length(missing)) {{\n\
 }}\n\
 installed_after <- rownames(installed.packages(lib.loc = unique(c(.libPaths(), lib))))\n\
 still_missing <- setdiff(resolved, installed_after)\n\
+install_from_cran_archive <- function(pkg, lib) {{\n\
+  archive_url <- sprintf(\"https://cran.r-project.org/src/contrib/Archive/%s/\", pkg)\n\
+  idx <- tryCatch(suppressWarnings(readLines(archive_url, warn = FALSE)), error = function(e) character())\n\
+  if (!length(idx)) return(FALSE)\n\
+  patt <- sprintf(\"%s_[^\\\"']+\\\\.tar\\\\.gz\", pkg)\n\
+  hits <- regmatches(idx, gregexpr(patt, idx, perl = TRUE))\n\
+  files <- unique(unlist(hits, use.names = FALSE))\n\
+  if (!length(files)) return(FALSE)\n\
+  tarball <- tail(sort(files), 1)\n\
+  ok <- tryCatch({{\n\
+    install.packages(paste0(archive_url, tarball), repos = NULL, type = \"source\", lib = lib)\n\
+    TRUE\n\
+  }}, error = function(e) FALSE)\n\
+  ok\n\
+}}\n\
+if (length(still_missing)) {{\n\
+  for (pkg in still_missing) {{\n\
+    try(install.packages(pkg, repos = \"https://cloud.r-project.org\", lib = lib), silent = TRUE)\n\
+  }}\n\
+  installed_after <- rownames(installed.packages(lib.loc = unique(c(.libPaths(), lib))))\n\
+  still_missing <- setdiff(resolved, installed_after)\n\
+}}\n\
+if (length(still_missing)) {{\n\
+  for (pkg in still_missing) {{\n\
+    try(install_from_cran_archive(pkg, lib), silent = TRUE)\n\
+  }}\n\
+  installed_after <- rownames(installed.packages(lib.loc = unique(c(.libPaths(), lib))))\n\
+  still_missing <- setdiff(resolved, installed_after)\n\
+}}\n\
 if (length(still_missing)) {{\n\
   message(\"bioconda2rpm unresolved R deps after restore (continuing): \", paste(still_missing, collapse = \",\"))\n\
 }}\n\
@@ -4551,6 +4594,12 @@ fn rpm_changelog_date() -> String {
 }
 
 fn map_build_dependency(dep: &str) -> String {
+    if dep == "r-bpcells" {
+        return "phoreus-r-bpcells".to_string();
+    }
+    if dep == "r-monocle3" {
+        return "phoreus-r-monocle3".to_string();
+    }
     if let Some(mapped) = map_perl_core_dependency(dep) {
         return mapped;
     }
@@ -4602,6 +4651,7 @@ fn map_build_dependency(dep: &str) -> String {
         "libdeflate" => "libdeflate-devel".to_string(),
         "liblzma-devel" => "xz-devel".to_string(),
         "liblapack" => "lapack-devel".to_string(),
+        "libhwy" => "highway-devel".to_string(),
         "libiconv" => "glibc-devel".to_string(),
         "libpng" => "libpng-devel".to_string(),
         "libuuid" => "libuuid-devel".to_string(),
@@ -4622,6 +4672,12 @@ fn map_build_dependency(dep: &str) -> String {
 }
 
 fn map_runtime_dependency(dep: &str) -> String {
+    if dep == "r-bpcells" {
+        return "phoreus-r-bpcells".to_string();
+    }
+    if dep == "r-monocle3" {
+        return "phoreus-r-monocle3".to_string();
+    }
     if let Some(mapped) = map_perl_core_dependency(dep) {
         return mapped;
     }
@@ -4663,6 +4719,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "glib" => "glib2".to_string(),
         "gnuconfig" => "automake".to_string(),
         "libblas" => "openblas".to_string(),
+        "libhwy" => "highway".to_string(),
         "libiconv" => "glibc".to_string(),
         "libgd" => "gd".to_string(),
         "liblzma-devel" => "xz".to_string(),
@@ -6089,6 +6146,7 @@ mod tests {
         assert_eq!(map_build_dependency("libcurl"), "libcurl-devel".to_string());
         assert_eq!(map_build_dependency("libpng"), "libpng-devel".to_string());
         assert_eq!(map_build_dependency("libuuid"), "libuuid-devel".to_string());
+        assert_eq!(map_build_dependency("libhwy"), "highway-devel".to_string());
         assert_eq!(
             map_build_dependency("libblas"),
             "openblas-devel".to_string()
@@ -6132,6 +6190,7 @@ mod tests {
         assert_eq!(map_runtime_dependency("k8"), "nodejs".to_string());
         assert_eq!(map_runtime_dependency("gnuconfig"), "automake".to_string());
         assert_eq!(map_runtime_dependency("libblas"), "openblas".to_string());
+        assert_eq!(map_runtime_dependency("libhwy"), "highway".to_string());
         assert_eq!(map_runtime_dependency("libiconv"), "glibc".to_string());
         assert_eq!(map_runtime_dependency("glib"), "glib2".to_string());
         assert_eq!(map_runtime_dependency("liblapack"), "lapack".to_string());
@@ -6162,8 +6221,24 @@ mod tests {
             PHOREUS_PYTHON_PACKAGE.to_string()
         );
         assert_eq!(
+            map_build_dependency("r-bpcells"),
+            "phoreus-r-bpcells".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("r-monocle3"),
+            "phoreus-r-monocle3".to_string()
+        );
+        assert_eq!(
             map_runtime_dependency("python"),
             PHOREUS_PYTHON_PACKAGE.to_string()
+        );
+        assert_eq!(
+            map_runtime_dependency("r-bpcells"),
+            "phoreus-r-bpcells".to_string()
+        );
+        assert_eq!(
+            map_runtime_dependency("r-monocle3"),
+            "phoreus-r-monocle3".to_string()
         );
         assert_eq!(
             map_build_dependency("setuptools"),
