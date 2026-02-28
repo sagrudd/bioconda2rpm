@@ -141,6 +141,10 @@ fn log_progress(message: impl AsRef<str>) {
     emit_progress_line(format!("progress {}", message.as_ref()));
 }
 
+pub fn log_external_progress(message: impl AsRef<str>) {
+    log_progress(message);
+}
+
 fn emit_progress_line(line: String) {
     let lock = PROGRESS_SINK.get_or_init(|| Mutex::new(None));
     match lock.lock() {

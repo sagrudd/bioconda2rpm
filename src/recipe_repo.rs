@@ -1,8 +1,10 @@
+use crate::priority_specs;
 use anyhow::{Context, Result};
 use git2::build::{CheckoutBuilder, RepoBuilder};
-use git2::{AutotagOption, FetchOptions, ObjectType, Oid, Repository};
+use git2::{AutotagOption, FetchOptions, ObjectType, Oid, RemoteCallbacks, Repository};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 const BIOCONDA_RECIPES_REMOTE: &str = "https://github.com/bioconda/bioconda-recipes.git";
 
@@ -26,6 +28,12 @@ pub struct RecipeRepoOutcome {
 }
 
 pub fn ensure_recipe_repository(request: &RecipeRepoRequest) -> Result<RecipeRepoOutcome> {
+    priority_specs::log_external_progress(format!(
+        "phase=recipe-sync status=started action=prepare repo={} recipes={}",
+        request.recipe_repo_root.to_string_lossy(),
+        request.recipe_root.to_string_lossy()
+    ));
+
     let mut cloned = false;
     if !request.recipe_repo_root.exists() {
         if let Some(parent) = request.recipe_repo_root.parent() {
@@ -36,16 +44,24 @@ pub fn ensure_recipe_repository(request: &RecipeRepoRequest) -> Result<RecipeRep
                 )
             })?;
         }
-        RepoBuilder::new()
-            .clone(BIOCONDA_RECIPES_REMOTE, &request.recipe_repo_root)
-            .with_context(|| {
-                format!(
-                    "cloning {} into {}",
-                    BIOCONDA_RECIPES_REMOTE,
-                    request.recipe_repo_root.to_string_lossy()
-                )
-            })?;
+        priority_specs::log_external_progress(format!(
+            "phase=recipe-sync status=started action=clone remote={} repo={}",
+            BIOCONDA_RECIPES_REMOTE,
+            request.recipe_repo_root.to_string_lossy()
+        ));
+        clone_repository(&request.recipe_repo_root).with_context(|| {
+            format!(
+                "cloning {} into {}",
+                BIOCONDA_RECIPES_REMOTE,
+                request.recipe_repo_root.to_string_lossy()
+            )
+        })?;
         cloned = true;
+    } else {
+        priority_specs::log_external_progress(format!(
+            "phase=recipe-sync status=skipped action=clone reason=repo_exists repo={}",
+            request.recipe_repo_root.to_string_lossy()
+        ));
     }
 
     let fallback_recipe_root =
@@ -54,6 +70,10 @@ pub fn ensure_recipe_repository(request: &RecipeRepoRequest) -> Result<RecipeRep
         Ok(repo) => repo,
         Err(err) => {
             if fallback_recipe_root.exists() && !request.sync && request.recipe_ref.is_none() {
+                priority_specs::log_external_progress(format!(
+                    "phase=recipe-sync status=completed action=prepare managed_git=false recipes={}",
+                    fallback_recipe_root.to_string_lossy()
+                ));
                 return Ok(RecipeRepoOutcome {
                     recipe_root: fallback_recipe_root,
                     recipe_repo_root: request.recipe_repo_root.clone(),
@@ -64,6 +84,11 @@ pub fn ensure_recipe_repository(request: &RecipeRepoRequest) -> Result<RecipeRep
                     managed_git: false,
                 });
             }
+            priority_specs::log_external_progress(format!(
+                "phase=recipe-sync status=failed action=open-repo repo={} reason={}",
+                request.recipe_repo_root.to_string_lossy(),
+                sanitize_progress_value(err.message())
+            ));
             return Err(err).with_context(|| {
                 format!(
                     "opening recipes git repository at {}",
@@ -72,19 +97,47 @@ pub fn ensure_recipe_repository(request: &RecipeRepoRequest) -> Result<RecipeRep
             });
         }
     };
+    priority_specs::log_external_progress(format!(
+        "phase=recipe-sync status=running action=open-repo repo={} managed_git=true",
+        request.recipe_repo_root.to_string_lossy()
+    ));
 
     let mut fetched = false;
     if request.sync || request.recipe_ref.is_some() {
         fetch_origin(&repo)?;
         fetched = true;
+    } else {
+        priority_specs::log_external_progress(
+            "phase=recipe-sync status=skipped action=fetch reason=not_requested".to_string(),
+        );
     }
 
     let mut checked_out = None;
     if let Some(ref_name) = request.recipe_ref.as_deref() {
+        priority_specs::log_external_progress(format!(
+            "phase=recipe-sync status=started action=checkout target={}",
+            sanitize_progress_value(ref_name)
+        ));
         checked_out = Some(checkout_named_ref(&repo, ref_name)?);
+        priority_specs::log_external_progress(format!(
+            "phase=recipe-sync status=completed action=checkout result={}",
+            sanitize_progress_value(checked_out.as_deref().unwrap_or("unknown"))
+        ));
     } else if request.sync {
         let default_branch = default_origin_branch_name(&repo)?;
+        priority_specs::log_external_progress(format!(
+            "phase=recipe-sync status=started action=checkout target={}",
+            sanitize_progress_value(&default_branch)
+        ));
         checked_out = Some(checkout_named_ref(&repo, &default_branch)?);
+        priority_specs::log_external_progress(format!(
+            "phase=recipe-sync status=completed action=checkout result={}",
+            sanitize_progress_value(checked_out.as_deref().unwrap_or("unknown"))
+        ));
+    } else {
+        priority_specs::log_external_progress(
+            "phase=recipe-sync status=skipped action=checkout reason=not_requested".to_string(),
+        );
     }
 
     let recipe_root =
@@ -96,13 +149,22 @@ pub fn ensure_recipe_repository(request: &RecipeRepoRequest) -> Result<RecipeRep
         );
     }
 
+    let head = head_summary(&repo).ok();
+    priority_specs::log_external_progress(format!(
+        "phase=recipe-sync status=completed action=prepare managed_git=true cloned={} fetched={} checkout={} head={}",
+        cloned,
+        fetched,
+        sanitize_progress_value(checked_out.as_deref().unwrap_or("none")),
+        sanitize_progress_value(head.as_deref().unwrap_or("unknown"))
+    ));
+
     Ok(RecipeRepoOutcome {
         recipe_root,
         recipe_repo_root: request.recipe_repo_root.clone(),
         cloned,
         fetched,
         checked_out,
-        head: head_summary(&repo).ok(),
+        head,
         managed_git: true,
     })
 }
@@ -126,11 +188,16 @@ fn resolve_recipe_root_after_prepare(requested_root: &Path, repo_root: &Path) ->
 }
 
 fn fetch_origin(repo: &Repository) -> Result<()> {
+    let started = Instant::now();
+    priority_specs::log_external_progress(
+        "phase=recipe-sync status=started action=fetch remote=origin".to_string(),
+    );
     let mut remote = repo
         .find_remote("origin")
         .context("finding origin remote in recipes repository")?;
     let mut fetch_options = FetchOptions::new();
     fetch_options.download_tags(AutotagOption::All);
+    fetch_options.remote_callbacks(make_transfer_callbacks("fetch"));
     remote
         .fetch(
             &[
@@ -140,7 +207,12 @@ fn fetch_origin(repo: &Repository) -> Result<()> {
             Some(&mut fetch_options),
             None,
         )
-        .context("fetching origin refs for recipes repository")
+        .context("fetching origin refs for recipes repository")?;
+    priority_specs::log_external_progress(format!(
+        "phase=recipe-sync status=completed action=fetch remote=origin elapsed={}",
+        format_elapsed(started.elapsed())
+    ));
+    Ok(())
 }
 
 fn default_origin_branch_name(repo: &Repository) -> Result<String> {
@@ -259,4 +331,77 @@ fn head_summary(repo: &Repository) -> Result<String> {
 fn short_oid(oid: Oid) -> String {
     let s = oid.to_string();
     s.chars().take(12).collect()
+}
+
+fn clone_repository(repo_root: &Path) -> Result<()> {
+    let started = Instant::now();
+    let mut fetch_options = FetchOptions::new();
+    fetch_options.download_tags(AutotagOption::All);
+    fetch_options.remote_callbacks(make_transfer_callbacks("clone"));
+    let mut builder = RepoBuilder::new();
+    builder.fetch_options(fetch_options);
+    builder
+        .clone(BIOCONDA_RECIPES_REMOTE, repo_root)
+        .context("running git clone for recipes repository")?;
+    priority_specs::log_external_progress(format!(
+        "phase=recipe-sync status=completed action=clone elapsed={}",
+        format_elapsed(started.elapsed())
+    ));
+    Ok(())
+}
+
+fn make_transfer_callbacks(action: &'static str) -> RemoteCallbacks<'static> {
+    let mut callbacks = RemoteCallbacks::new();
+    let started = Instant::now();
+    let mut last_emit = Instant::now()
+        .checked_sub(Duration::from_secs(3))
+        .unwrap_or_else(Instant::now);
+    callbacks.transfer_progress(move |stats| {
+        let now = Instant::now();
+        let total = stats.total_objects();
+        let received = stats.received_objects();
+        let bytes = stats.received_bytes();
+        let done = total > 0 && received >= total;
+        let should_emit = done || now.duration_since(last_emit) >= Duration::from_secs(2);
+        if should_emit {
+            let percent = if total > 0 {
+                received.saturating_mul(100) / total
+            } else {
+                0
+            };
+            priority_specs::log_external_progress(format!(
+                "phase=recipe-sync status=running action={} objects={}/{} percent={} bytes={} elapsed={}",
+                action,
+                received,
+                total,
+                percent,
+                bytes,
+                format_elapsed(started.elapsed())
+            ));
+            last_emit = now;
+        }
+        true
+    });
+    callbacks
+}
+
+fn format_elapsed(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    let mins = secs / 60;
+    let rem_secs = secs % 60;
+    if mins > 0 {
+        format!("{mins}m{rem_secs:02}s")
+    } else {
+        format!("{rem_secs}s")
+    }
+}
+
+fn sanitize_progress_value(raw: impl AsRef<str>) -> String {
+    raw.as_ref()
+        .chars()
+        .map(|c| match c {
+            '=' | ' ' | '\n' | '\r' | '\t' | '|' => '_',
+            _ => c,
+        })
+        .collect()
 }

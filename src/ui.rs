@@ -31,6 +31,7 @@ struct UiState {
     title: String,
     started: Instant,
     last_phase: String,
+    last_status_line: String,
     queue_line: String,
     logs: VecDeque<String>,
     packages: BTreeMap<String, PackageState>,
@@ -44,6 +45,7 @@ impl UiState {
             title,
             started: Instant::now(),
             last_phase: "starting".to_string(),
+            last_status_line: "status=starting".to_string(),
             queue_line: String::new(),
             logs: VecDeque::new(),
             packages: BTreeMap::new(),
@@ -60,6 +62,10 @@ impl UiState {
         self.logs.push_back(cleaned.clone());
         while self.logs.len() > 16 {
             let _ = self.logs.pop_front();
+        }
+
+        if !cleaned.is_empty() {
+            self.last_status_line = cleaned.clone();
         }
 
         let kv = parse_progress_kv(&cleaned);
@@ -227,9 +233,12 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
     frame.render_widget(header, chunks[0]);
 
     let status_body = if state.queue_line.is_empty() {
-        format!("phase={}", state.last_phase)
+        format!("phase={} | {}", state.last_phase, state.last_status_line)
     } else {
-        format!("phase={} | {}", state.last_phase, state.queue_line)
+        format!(
+            "phase={} | {} | {}",
+            state.last_phase, state.queue_line, state.last_status_line
+        )
     };
     let status = Paragraph::new(status_body)
         .block(Block::default().borders(Borders::ALL).title("Status"))

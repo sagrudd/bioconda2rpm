@@ -30,30 +30,6 @@ fn main() -> ExitCode {
                 eprintln!("failed to prepare workspace directories: {err}");
                 return ExitCode::FAILURE;
             }
-            let recipe_request = recipe_repo::RecipeRepoRequest {
-                recipe_root: args.effective_recipe_root(),
-                recipe_repo_root: args.effective_recipe_repo_root(),
-                recipe_ref: args.recipe_ref.clone(),
-                sync: args.effective_recipe_sync(),
-            };
-            let recipes = match recipe_repo::ensure_recipe_repository(&recipe_request) {
-                Ok(state) => state,
-                Err(err) => {
-                    eprintln!("failed to prepare bioconda recipes repository: {err:#}");
-                    return ExitCode::FAILURE;
-                }
-            };
-            args.recipe_root = Some(recipes.recipe_root.clone());
-            println!(
-                "recipes root={} repo={} managed_git={} cloned={} fetched={} checkout={} head={}",
-                recipes.recipe_root.display(),
-                recipes.recipe_repo_root.display(),
-                recipes.managed_git,
-                recipes.cloned,
-                recipes.fetched,
-                recipes.checked_out.as_deref().unwrap_or("none"),
-                recipes.head.as_deref().unwrap_or("unknown")
-            );
             let ui_mode = args.effective_ui_mode();
             let mut progress_ui = if ui_mode == cli::UiMode::Ratatui {
                 let title = format!("bioconda2rpm build ({})", args.effective_target_id());
@@ -66,6 +42,35 @@ fn main() -> ExitCode {
             if progress_ui.is_none() {
                 println!("{}", args.execution_summary());
             }
+
+            let recipe_request = recipe_repo::RecipeRepoRequest {
+                recipe_root: args.effective_recipe_root(),
+                recipe_repo_root: args.effective_recipe_repo_root(),
+                recipe_ref: args.recipe_ref.clone(),
+                sync: args.effective_recipe_sync(),
+            };
+            let recipes = match recipe_repo::ensure_recipe_repository(&recipe_request) {
+                Ok(state) => state,
+                Err(err) => {
+                    priority_specs::clear_progress_sink();
+                    if let Some(ui) = progress_ui.take() {
+                        ui.finish(format!("build failed: recipe sync error: {err}"));
+                    }
+                    eprintln!("failed to prepare bioconda recipes repository: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            args.recipe_root = Some(recipes.recipe_root.clone());
+            priority_specs::log_external_progress(format!(
+                "phase=recipe-sync status=ready action=prepared recipes={} repo={} managed_git={} cloned={} fetched={} checkout={} head={}",
+                recipes.recipe_root.display(),
+                recipes.recipe_repo_root.display(),
+                recipes.managed_git,
+                recipes.cloned,
+                recipes.fetched,
+                recipes.checked_out.as_deref().unwrap_or("none"),
+                recipes.head.as_deref().unwrap_or("unknown")
+            ));
 
             let outcome = priority_specs::run_build(&args);
             priority_specs::clear_progress_sink();
