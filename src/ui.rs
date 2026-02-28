@@ -180,6 +180,25 @@ impl UiState {
             );
         }
     }
+
+    fn scheduler_counters(&self) -> (usize, usize, usize, usize) {
+        let mut ready = 0usize;
+        let mut running = 0usize;
+        let mut completed = 0usize;
+        let mut blocked = 0usize;
+
+        for ps in self.packages.values() {
+            match ps.status.as_str() {
+                "running" | "started" => running += 1,
+                "queued" | "waiting" | "pending" | "planned" => ready += 1,
+                "generated" | "up-to-date" | "skipped" => completed += 1,
+                "blocked" | "quarantined" => blocked += 1,
+                _ => {}
+            }
+        }
+
+        (ready, running, completed, blocked)
+    }
 }
 
 pub struct ProgressUi {
@@ -328,11 +347,22 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
     frame.render_widget(header, chunks[0]);
 
     let status_body = if state.queue_line.is_empty() {
-        format!("phase={} | {}", state.last_phase, state.last_status_line)
-    } else {
+        let (ready, running, completed, blocked) = state.scheduler_counters();
         format!(
-            "phase={} | {} | {}",
-            state.last_phase, state.queue_line, state.last_status_line
+            "phase={} | counters ready={} running={} completed={} blocked={} | {}",
+            state.last_phase, ready, running, completed, blocked, state.last_status_line
+        )
+    } else {
+        let (ready, running, completed, blocked) = state.scheduler_counters();
+        format!(
+            "phase={} | counters ready={} running={} completed={} blocked={} | {} | {}",
+            state.last_phase,
+            ready,
+            running,
+            completed,
+            blocked,
+            state.queue_line,
+            state.last_status_line
         )
     };
     let status = Paragraph::new(status_body)
