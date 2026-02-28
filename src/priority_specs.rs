@@ -2707,7 +2707,22 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
 
     if matches!(
         normalized,
-        "gcc"
+        "bedtools"
+            | "samtools"
+            | "bcftools"
+            | "htslib"
+            | "bwa"
+            | "blast"
+            | "fastqc"
+            | "trimmomatic"
+            | "star"
+            | "gmap"
+            | "salmon"
+            | "kallisto"
+            | "bowtie"
+            | "bowtie2"
+            | "minimap2"
+            | "gcc"
             | "gcc-c++"
             | "gcc-gfortran"
             | "golang"
@@ -6299,6 +6314,7 @@ source:
             conda_dep_to_pip_requirement("scanpy=1.9.3"),
             Some("scanpy==1.9.3".to_string())
         );
+        assert_eq!(conda_dep_to_pip_requirement("bedtools"), None);
         assert_eq!(conda_dep_to_pip_requirement("bats"), None);
         assert_eq!(conda_dep_to_pip_requirement("python >=3.8"), None);
         assert_eq!(conda_dep_to_pip_requirement("c-compiler"), None);
