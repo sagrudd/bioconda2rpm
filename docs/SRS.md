@@ -143,6 +143,11 @@ FR-023 Nim runtime policy
 - Nim ecosystem dependencies (`nim`, `nimble`, `nim-*`) shall map to `phoreus-nim-2.2` rather than distro Nim package names.
 - Generated SPECs for Nim-dependent recipes shall export `PHOREUS_NIM_PREFIX=/usr/local/phoreus/nim/2.2` and deterministic nimble cache roots under the payload prefix.
 
+FR-024 Reliability KPI merge gate
+- The CLI shall provide a KPI gate mode that fails the run when arch-adjusted first-pass success drops below a configured threshold.
+- Default threshold shall be `99.0`.
+- Production deployment profile shall enforce KPI gate behavior by default.
+
 ## 4. Non-Functional Requirements
 
 NFR-001 Reproducibility

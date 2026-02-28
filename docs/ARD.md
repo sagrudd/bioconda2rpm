@@ -126,3 +126,4 @@ Current baseline includes:
 - Reliability KPI denominator for redesign validation is the full Bioconda `linux-aarch64` buildable subset.
 - First-pass success target on this denominator is `>=99%`.
 - Architecture-incompatible packages are excluded from denominator calculations for this KPI.
+- Merge validation is expected to apply a hard gate at `>=99%` using arch-adjusted KPI outputs from `build` reports/exit status.

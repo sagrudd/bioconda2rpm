@@ -161,6 +161,14 @@ pub struct BuildArgs {
     #[arg(long, value_enum, default_value_t = DeploymentProfile::Development)]
     pub deployment_profile: DeploymentProfile,
 
+    /// Enforce arch-adjusted first-pass KPI gate for this run.
+    #[arg(long)]
+    pub kpi_gate: bool,
+
+    /// Minimum arch-adjusted first-pass success rate required when KPI gate is active.
+    #[arg(long, default_value_t = 99.0)]
+    pub kpi_min_success_rate: f64,
+
     /// How to handle recipes with outputs: sections.
     #[arg(long, value_enum, default_value_t = OutputSelection::All)]
     pub outputs: OutputSelection,
@@ -265,9 +273,13 @@ impl BuildArgs {
         }
     }
 
+    pub fn effective_kpi_gate(&self) -> bool {
+        self.kpi_gate || self.deployment_profile == DeploymentProfile::Production
+    }
+
     pub fn execution_summary(&self) -> String {
         format!(
-            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
+            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
             pkg = self.package,
             stage = self.stage,
             deps = self.with_deps(),
@@ -286,6 +298,8 @@ impl BuildArgs {
             render = self.render_strategy,
             metadata_adapter = self.metadata_adapter,
             effective_metadata_adapter = self.effective_metadata_adapter(),
+            kpi_gate = self.effective_kpi_gate(),
+            kpi_min_success_rate = self.kpi_min_success_rate,
             outputs = self.outputs,
             missing = self.missing_dependency,
             local_repo_count = self.phoreus_local_repo.len(),
@@ -343,6 +357,8 @@ mod tests {
         assert_eq!(args.metadata_adapter, MetadataAdapter::Auto);
         assert_eq!(args.deployment_profile, DeploymentProfile::Development);
         assert_eq!(args.effective_metadata_adapter(), MetadataAdapter::Auto);
+        assert!(!args.effective_kpi_gate());
+        assert_eq!(args.kpi_min_success_rate, 99.0);
         assert_eq!(args.outputs, OutputSelection::All);
         assert!(args.effective_topdir().ends_with("bioconda2rpm"));
         assert!(
@@ -406,6 +422,8 @@ mod tests {
             "native",
             "--deployment-profile",
             "production",
+            "--kpi-min-success-rate",
+            "99.5",
             "--reports-dir",
             "/reports",
         ])
@@ -424,6 +442,8 @@ mod tests {
         assert_eq!(args.metadata_adapter, MetadataAdapter::Native);
         assert_eq!(args.deployment_profile, DeploymentProfile::Production);
         assert_eq!(args.effective_metadata_adapter(), MetadataAdapter::Conda);
+        assert!(args.effective_kpi_gate());
+        assert_eq!(args.kpi_min_success_rate, 99.5);
         assert_eq!(args.effective_topdir(), PathBuf::from("/rpmbuild"));
         assert_eq!(args.effective_reports_dir(), PathBuf::from("/reports"));
     }

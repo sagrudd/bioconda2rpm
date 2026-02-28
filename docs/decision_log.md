@@ -128,3 +128,9 @@
 ### Metadata adapter strictness policy
 - Development profile uses metadata adapter `auto` by default.
 - Production profile enforces metadata adapter `conda` for deterministic conda-build semantics.
+
+### Merge gating policy
+- Merges to `main` must be blocked when arch-adjusted first-pass success is below `99%`.
+- Tooling support is provided through KPI gate options on `build`:
+  - `--kpi-gate`
+  - `--kpi-min-success-rate` (default `99.0`)

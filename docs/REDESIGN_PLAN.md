@@ -152,5 +152,6 @@ Definition of "first-pass success":
    - external service/tool invocation
 
 4. Should we gate merge to `main` on a fixed regression corpus build pass-rate threshold?
+   - Decision (2026-02-28): yes, hard gate at 99% (arch-adjusted denominator)
 
 5. Do you want strict "no new per-package heuristic branches" from this point, except temporary shims explicitly tagged for removal?

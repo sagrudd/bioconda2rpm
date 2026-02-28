@@ -32,12 +32,17 @@ fn main() -> ExitCode {
             match priority_specs::run_build(&args) {
                 Ok(summary) => {
                     println!(
-                        "build requested={} generated={} up_to_date={} skipped={} quarantined={} order={} report_json={} report_csv={} report_md={}",
+                        "build requested={} generated={} up_to_date={} skipped={} quarantined={} kpi_scope_entries={} kpi_excluded_arch={} kpi_denominator={} kpi_successes={} kpi_success_rate={:.2}% order={} report_json={} report_csv={} report_md={}",
                         summary.requested,
                         summary.generated,
                         summary.up_to_date,
                         summary.skipped,
                         summary.quarantined,
+                        summary.kpi_scope_entries,
+                        summary.kpi_excluded_arch,
+                        summary.kpi_denominator,
+                        summary.kpi_successes,
+                        summary.kpi_success_rate,
                         summary.build_order.join("->"),
                         summary.report_json.display(),
                         summary.report_csv.display(),

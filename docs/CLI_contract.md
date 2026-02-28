@@ -67,6 +67,11 @@ bioconda2rpm generate-priority-specs \
 - `--deployment-profile <development|production>`
   - Default: `development`
   - `production` enforces effective metadata adapter `conda`.
+- `--kpi-gate`
+  - Enables hard arch-adjusted KPI gate for the run.
+- `--kpi-min-success-rate <float>`
+  - Default: `99.0`
+  - Run fails when arch-adjusted success rate is below this threshold while KPI gate is active.
 - `--outputs <all>`
   - Default: `all`
 

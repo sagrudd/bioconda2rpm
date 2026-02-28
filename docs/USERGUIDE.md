@@ -87,6 +87,10 @@ Common optional flags:
 - `--deployment-profile <development|production>`:
   - `development` (default): honors selected `--metadata-adapter` (default `auto`).
   - `production`: forces effective metadata adapter to `conda`.
+- `--kpi-gate`:
+  - enables hard arch-adjusted KPI gate for the current run.
+- `--kpi-min-success-rate <float>`:
+  - default `99.0`; run fails when KPI falls below threshold while gate is active.
 - `--arch <host|x86-64|aarch64>`:
   - sets target architecture semantics for metadata/render and compatibility classification.
   - recommended usage: `aarch64` for current development campaigns, `x86-64` for production validation.
@@ -233,3 +237,14 @@ Ensure network access is available for `spectool -g -R` to fetch `Source0`.
 2. Keep one topdir per build campaign/date.
 3. Archive JSON/CSV/MD reports with produced SRPM/RPM artifacts.
 4. Use dedicated hosts/runners per architecture while keeping one SPEC per software with `%ifarch` gating.
+
+Merge-gate invocation example:
+
+```bash
+cargo run -- build <tool> \
+  --recipe-root ../bioconda-recipes/recipes \
+  --deployment-profile production \
+  --arch x86-64 \
+  --kpi-gate \
+  --kpi-min-success-rate 99.0
+```

@@ -201,10 +201,24 @@ pub struct BuildSummary {
     pub up_to_date: usize,
     pub skipped: usize,
     pub quarantined: usize,
+    pub kpi_scope_entries: usize,
+    pub kpi_excluded_arch: usize,
+    pub kpi_denominator: usize,
+    pub kpi_successes: usize,
+    pub kpi_success_rate: f64,
     pub build_order: Vec<String>,
     pub report_json: PathBuf,
     pub report_csv: PathBuf,
     pub report_md: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct KpiSummary {
+    scope_entries: usize,
+    excluded_arch: usize,
+    denominator: usize,
+    successes: usize,
+    success_rate: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -399,12 +413,18 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         let report_csv = reports_dir.join(format!("build_{report_stem}.csv"));
         let report_md = reports_dir.join(format!("build_{report_stem}.md"));
         write_reports(&[entry], &report_json, &report_csv, &report_md)?;
+        let kpi = compute_arch_adjusted_kpi(&[]);
         return Ok(BuildSummary {
             requested: 1,
             generated: 0,
             up_to_date: 0,
             skipped: 1,
             quarantined: 0,
+            kpi_scope_entries: kpi.scope_entries,
+            kpi_excluded_arch: kpi.excluded_arch,
+            kpi_denominator: kpi.denominator,
+            kpi_successes: kpi.successes,
+            kpi_success_rate: kpi.success_rate,
             build_order: vec![root_recipe.resolved.recipe_name.clone()],
             report_json,
             report_csv,
@@ -448,6 +468,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         let report_csv = reports_dir.join(format!("build_{report_stem}.csv"));
         let report_md = reports_dir.join(format!("build_{report_stem}.md"));
         write_reports(&[entry], &report_json, &report_csv, &report_md)?;
+        let kpi = compute_arch_adjusted_kpi(&[]);
 
         return Ok(BuildSummary {
             requested: 1,
@@ -455,6 +476,11 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
             up_to_date: 1,
             skipped: 0,
             quarantined: 0,
+            kpi_scope_entries: kpi.scope_entries,
+            kpi_excluded_arch: kpi.excluded_arch,
+            kpi_denominator: kpi.denominator,
+            kpi_successes: kpi.successes,
+            kpi_success_rate: kpi.success_rate,
             build_order: vec![root_recipe.resolved.recipe_name],
             report_json,
             report_csv,
@@ -605,6 +631,23 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         );
     }
 
+    let kpi = compute_arch_adjusted_kpi(&results);
+    log_progress(format!(
+        "phase=kpi status=computed scope_entries={} excluded_arch={} denominator={} successes={} success_rate={:.2}",
+        kpi.scope_entries, kpi.excluded_arch, kpi.denominator, kpi.successes, kpi.success_rate
+    ));
+    if args.effective_kpi_gate() && kpi.success_rate + f64::EPSILON < args.kpi_min_success_rate {
+        anyhow::bail!(
+            "kpi gate failed: arch-adjusted success rate {:.2}% is below threshold {:.2}% (denominator={}, successes={}, excluded_arch={}, report_md={})",
+            kpi.success_rate,
+            args.kpi_min_success_rate,
+            kpi.denominator,
+            kpi.successes,
+            kpi.excluded_arch,
+            report_md.display()
+        );
+    }
+
     let generated = results.iter().filter(|r| r.status == "generated").count();
     let up_to_date = results.iter().filter(|r| r.status == "up-to-date").count();
     let skipped = results.iter().filter(|r| r.status == "skipped").count();
@@ -624,6 +667,11 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         up_to_date,
         skipped,
         quarantined,
+        kpi_scope_entries: kpi.scope_entries,
+        kpi_excluded_arch: kpi.excluded_arch,
+        kpi_denominator: kpi.denominator,
+        kpi_successes: kpi.successes,
+        kpi_success_rate: kpi.success_rate,
         build_order,
         report_json,
         report_csv,
@@ -6272,24 +6320,7 @@ fn write_reports(
 
     let generated = entries.iter().filter(|e| e.status == "generated").count();
     let quarantined = entries.len().saturating_sub(generated);
-    let kpi_scope_entries: Vec<&ReportEntry> = entries
-        .iter()
-        .filter(|e| e.status != "up-to-date" && e.status != "skipped")
-        .collect();
-    let kpi_excluded_arch = kpi_scope_entries
-        .iter()
-        .filter(|e| report_entry_is_arch_incompatible(e))
-        .count();
-    let kpi_denominator = kpi_scope_entries.len().saturating_sub(kpi_excluded_arch);
-    let kpi_success = kpi_scope_entries
-        .iter()
-        .filter(|e| e.status == "generated" && !report_entry_is_arch_incompatible(e))
-        .count();
-    let kpi_success_pct = if kpi_denominator == 0 {
-        100.0
-    } else {
-        (kpi_success as f64 * 100.0) / (kpi_denominator as f64)
-    };
+    let kpi = compute_arch_adjusted_kpi(entries);
 
     let mut md = String::new();
     md.push_str("# Priority SPEC Generation Summary\n\n");
@@ -6298,17 +6329,14 @@ fn write_reports(
     md.push_str(&format!("- Quarantined: {}\n\n", quarantined));
     md.push_str("## Reliability KPI (Arch-Adjusted)\n\n");
     md.push_str("- Rule: architecture-incompatible packages are excluded from denominator.\n");
-    md.push_str(&format!(
-        "- KPI scope entries: {}\n",
-        kpi_scope_entries.len()
-    ));
+    md.push_str(&format!("- KPI scope entries: {}\n", kpi.scope_entries));
     md.push_str(&format!(
         "- Excluded (arch-incompatible): {}\n",
-        kpi_excluded_arch
+        kpi.excluded_arch
     ));
-    md.push_str(&format!("- KPI denominator: {}\n", kpi_denominator));
-    md.push_str(&format!("- KPI successes: {}\n", kpi_success));
-    md.push_str(&format!("- KPI success rate: {:.2}%\n\n", kpi_success_pct));
+    md.push_str(&format!("- KPI denominator: {}\n", kpi.denominator));
+    md.push_str(&format!("- KPI successes: {}\n", kpi.successes));
+    md.push_str(&format!("- KPI success rate: {:.2}%\n\n", kpi.success_rate));
     md.push_str("| Software | Priority | Status | Overlap Recipe | Version | Reason |\n");
     md.push_str("|---|---:|---|---|---|---|\n");
     for e in entries {
@@ -6340,6 +6368,34 @@ fn report_entry_is_arch_incompatible(entry: &ReportEntry) -> bool {
     reason.contains("arch_policy=amd64_only")
         || reason.contains("arch_policy=aarch64_only")
         || reason.contains("arch_policy=arm64_only")
+}
+
+fn compute_arch_adjusted_kpi(entries: &[ReportEntry]) -> KpiSummary {
+    let scope_entries: Vec<&ReportEntry> = entries
+        .iter()
+        .filter(|e| e.status != "up-to-date" && e.status != "skipped")
+        .collect();
+    let excluded_arch = scope_entries
+        .iter()
+        .filter(|e| report_entry_is_arch_incompatible(e))
+        .count();
+    let denominator = scope_entries.len().saturating_sub(excluded_arch);
+    let successes = scope_entries
+        .iter()
+        .filter(|e| e.status == "generated" && !report_entry_is_arch_incompatible(e))
+        .count();
+    let success_rate = if denominator == 0 {
+        100.0
+    } else {
+        (successes as f64 * 100.0) / (denominator as f64)
+    };
+    KpiSummary {
+        scope_entries: scope_entries.len(),
+        excluded_arch,
+        denominator,
+        successes,
+        success_rate,
+    }
 }
 
 #[cfg(test)]
@@ -7906,5 +7962,59 @@ dep: osx-arm64-only # [arm64]\n";
         assert!(filtered.contains("dep: nim"));
         assert!(filtered.contains("dep: linux-aarch64-only"));
         assert!(!filtered.contains("dep: osx-arm64-only"));
+    }
+
+    #[test]
+    fn arch_adjusted_kpi_excludes_arch_incompatible_entries() {
+        let entries = vec![
+            ReportEntry {
+                software: "ok-tool".to_string(),
+                priority: 0,
+                status: "generated".to_string(),
+                reason: "generated".to_string(),
+                overlap_recipe: "ok-tool".to_string(),
+                overlap_reason: "test".to_string(),
+                variant_dir: String::new(),
+                package_name: "ok-tool".to_string(),
+                version: "1.0".to_string(),
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: String::new(),
+            },
+            ReportEntry {
+                software: "arch-limited".to_string(),
+                priority: 0,
+                status: "quarantined".to_string(),
+                reason: "build failed arch_policy=amd64_only".to_string(),
+                overlap_recipe: "arch-limited".to_string(),
+                overlap_reason: "test".to_string(),
+                variant_dir: String::new(),
+                package_name: "arch-limited".to_string(),
+                version: "1.0".to_string(),
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: String::new(),
+            },
+            ReportEntry {
+                software: "real-failure".to_string(),
+                priority: 0,
+                status: "quarantined".to_string(),
+                reason: "payload build failure".to_string(),
+                overlap_recipe: "real-failure".to_string(),
+                overlap_reason: "test".to_string(),
+                variant_dir: String::new(),
+                package_name: "real-failure".to_string(),
+                version: "1.0".to_string(),
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: String::new(),
+            },
+        ];
+        let kpi = compute_arch_adjusted_kpi(&entries);
+        assert_eq!(kpi.scope_entries, 3);
+        assert_eq!(kpi.excluded_arch, 1);
+        assert_eq!(kpi.denominator, 2);
+        assert_eq!(kpi.successes, 1);
+        assert!((kpi.success_rate - 50.0).abs() < 1e-9);
     }
 }
