@@ -1,0 +1,150 @@
+abyss
+alevin-fry
+any2fasta
+autocycler
+bakta
+bioconductor-bambu
+bamsurgeon
+bamtocov
+bamtools
+bandage
+bbmap
+bcftools
+bedtools
+biobambam
+blast
+blastn2dotplots
+blobtools
+bowtie2
+bracken
+busco
+bwa
+bwa-mem2
+canu
+centrifuge
+chopper
+clair3
+cnvkit
+cramino
+# crumpit
+# csvtk
+cutadapt
+cutesv
+deeptools
+delly
+bioconductor-deseq2
+bioconductor-dexseq
+diamond
+dnaapler
+bioconductor-doubletrouble
+dragonflye
+# echtvar
+python-edlib
+emu
+# falaphyl
+falco
+py_fasta_validator
+fastp
+fastplong
+fastq_utils
+fastqc
+flair
+flye
+fqtools
+fusion-report
+gatk
+genometools
+gepard
+gfastats
+gffcompare
+# ggsashimi
+goldrush
+hap.py
+# herro
+hifiasm
+hifiasm_meta
+# hipstr
+htslib
+igv
+isonclust3
+isoquant
+jaffa
+kmer-jellyfish
+# jovian
+kallisto
+kanpig
+# kmermaid
+kraken2
+krakenuniq
+libbigwig
+bioconductor-limma
+longcalld
+longcallr
+longphase
+longshot
+mash
+megahit
+r-metablastr
+methphaser
+miniasm
+minipolish
+# minisnv
+mosdepth
+mothur
+multiqc
+nanocomp
+nanofilt
+nanopack
+nanoplot
+nanoqc
+necat
+nextclade
+nextflow
+oarfish
+paraphase
+picard
+picopore
+pilon
+plassembler
+plink
+porechop
+poretools
+pychopper
+pysamstats
+qualimap
+quast
+racon
+rasusa
+rattle
+raven-assembler
+rdeval
+# rnalib
+rotate
+salmon
+sambamba
+samblaster
+samtools
+# scafari
+# scikit-bio
+# screed
+pyseq-align
+seqfu
+seqkit
+# seurat
+snpeff
+snpsift
+sourmash
+spades
+sra-tools
+# samblaster  # duplicate
+stringtie
+# strkit
+toulligqc
+trim-galore
+truvari
+trycycler
+vcfkit
+vcflib
+velvet
+wakhan
+whatshap
