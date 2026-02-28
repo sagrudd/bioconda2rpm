@@ -111,11 +111,12 @@ pub struct BuildArgs {
     pub topdir: Option<PathBuf>,
 
     /// Quarantine folder for unresolved/non-compliant packages.
-    /// Defaults to <topdir>/BAD_SPEC when omitted.
+    /// Defaults to <topdir>/targets/<target-id>/BAD_SPEC when omitted.
     #[arg(long)]
     pub bad_spec_dir: Option<PathBuf>,
 
     /// Optional explicit report output directory.
+    /// Defaults to <topdir>/targets/<target-id>/reports when omitted.
     #[arg(long)]
     pub reports_dir: Option<PathBuf>,
 
@@ -224,11 +225,12 @@ pub struct GeneratePrioritySpecsArgs {
     pub topdir: Option<PathBuf>,
 
     /// Quarantine folder for unresolved/non-compliant packages.
-    /// Defaults to <topdir>/BAD_SPEC when omitted.
+    /// Defaults to <topdir>/targets/<target-id>/BAD_SPEC when omitted.
     #[arg(long)]
     pub bad_spec_dir: Option<PathBuf>,
 
     /// Optional explicit report output directory.
+    /// Defaults to <topdir>/targets/<target-id>/reports when omitted.
     #[arg(long)]
     pub reports_dir: Option<PathBuf>,
 
@@ -266,11 +268,12 @@ pub struct RegressionArgs {
     pub topdir: Option<PathBuf>,
 
     /// Quarantine folder for unresolved/non-compliant packages.
-    /// Defaults to <topdir>/BAD_SPEC when omitted.
+    /// Defaults to <topdir>/targets/<target-id>/BAD_SPEC when omitted.
     #[arg(long)]
     pub bad_spec_dir: Option<PathBuf>,
 
     /// Optional explicit report output directory.
+    /// Defaults to <topdir>/targets/<target-id>/reports when omitted.
     #[arg(long)]
     pub reports_dir: Option<PathBuf>,
 
@@ -324,6 +327,40 @@ pub fn default_topdir() -> PathBuf {
     }
 }
 
+fn sanitize_target_component(raw: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = false;
+    for ch in raw.chars() {
+        let c = if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
+            ch.to_ascii_lowercase()
+        } else {
+            '-'
+        };
+        if c == '-' {
+            if !last_dash {
+                out.push(c);
+            }
+            last_dash = true;
+        } else {
+            out.push(c);
+            last_dash = false;
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+pub fn default_build_target_id(container_image: &str, target_arch: &str) -> String {
+    let image = sanitize_target_component(container_image);
+    let arch = sanitize_target_component(target_arch);
+    let image = if image.is_empty() {
+        "container"
+    } else {
+        &image
+    };
+    let arch = if arch.is_empty() { "x86_64" } else { &arch };
+    format!("{image}-{arch}")
+}
+
 impl BuildArgs {
     pub fn with_deps(&self) -> bool {
         !self.no_deps
@@ -333,16 +370,26 @@ impl BuildArgs {
         self.topdir.clone().unwrap_or_else(default_topdir)
     }
 
+    pub fn effective_target_id(&self) -> String {
+        default_build_target_id(&self.container_image, &self.effective_target_arch())
+    }
+
+    pub fn effective_target_root(&self) -> PathBuf {
+        self.effective_topdir()
+            .join("targets")
+            .join(self.effective_target_id())
+    }
+
     pub fn effective_bad_spec_dir(&self) -> PathBuf {
         self.bad_spec_dir
             .clone()
-            .unwrap_or_else(|| self.effective_topdir().join("BAD_SPEC"))
+            .unwrap_or_else(|| self.effective_target_root().join("BAD_SPEC"))
     }
 
     pub fn effective_reports_dir(&self) -> PathBuf {
         self.reports_dir
             .clone()
-            .unwrap_or_else(|| self.effective_topdir().join("reports"))
+            .unwrap_or_else(|| self.effective_target_root().join("reports"))
     }
 
     pub fn effective_target_arch(&self) -> String {
@@ -366,13 +413,15 @@ impl BuildArgs {
 
     pub fn execution_summary(&self) -> String {
         format!(
-            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
+            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} target_id={target_id} target_root={target_root} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
             pkg = self.package,
             stage = self.stage,
             deps = self.with_deps(),
             policy = self.dependency_policy,
             recipes = self.recipe_root.display(),
             topdir = self.effective_topdir().display(),
+            target_root = self.effective_target_root().display(),
+            target_id = self.effective_target_id(),
             bad_spec = self.effective_bad_spec_dir().display(),
             reports = self.effective_reports_dir().display(),
             container = self.container_mode,
@@ -400,16 +449,30 @@ impl GeneratePrioritySpecsArgs {
         self.topdir.clone().unwrap_or_else(default_topdir)
     }
 
+    pub fn effective_target_arch(&self) -> String {
+        canonical_arch_name(std::env::consts::ARCH).to_string()
+    }
+
+    pub fn effective_target_id(&self) -> String {
+        default_build_target_id(&self.container_image, &self.effective_target_arch())
+    }
+
+    pub fn effective_target_root(&self) -> PathBuf {
+        self.effective_topdir()
+            .join("targets")
+            .join(self.effective_target_id())
+    }
+
     pub fn effective_bad_spec_dir(&self) -> PathBuf {
         self.bad_spec_dir
             .clone()
-            .unwrap_or_else(|| self.effective_topdir().join("BAD_SPEC"))
+            .unwrap_or_else(|| self.effective_target_root().join("BAD_SPEC"))
     }
 
     pub fn effective_reports_dir(&self) -> PathBuf {
         self.reports_dir
             .clone()
-            .unwrap_or_else(|| self.effective_topdir().join("reports"))
+            .unwrap_or_else(|| self.effective_target_root().join("reports"))
     }
 }
 
@@ -418,16 +481,26 @@ impl RegressionArgs {
         self.topdir.clone().unwrap_or_else(default_topdir)
     }
 
+    pub fn effective_target_id(&self) -> String {
+        default_build_target_id(&self.container_image, &self.effective_target_arch())
+    }
+
+    pub fn effective_target_root(&self) -> PathBuf {
+        self.effective_topdir()
+            .join("targets")
+            .join(self.effective_target_id())
+    }
+
     pub fn effective_bad_spec_dir(&self) -> PathBuf {
         self.bad_spec_dir
             .clone()
-            .unwrap_or_else(|| self.effective_topdir().join("BAD_SPEC"))
+            .unwrap_or_else(|| self.effective_target_root().join("BAD_SPEC"))
     }
 
     pub fn effective_reports_dir(&self) -> PathBuf {
         self.reports_dir
             .clone()
-            .unwrap_or_else(|| self.effective_topdir().join("reports"))
+            .unwrap_or_else(|| self.effective_target_root().join("reports"))
     }
 
     pub fn effective_target_arch(&self) -> String {
@@ -486,13 +559,19 @@ mod tests {
         assert_eq!(args.outputs, OutputSelection::All);
         assert!(args.effective_topdir().ends_with("bioconda2rpm"));
         assert!(
-            args.effective_bad_spec_dir()
-                .ends_with("bioconda2rpm/BAD_SPEC")
+            args.effective_target_root()
+                .starts_with(args.effective_topdir().join("targets"))
         );
         assert!(
-            args.effective_reports_dir()
-                .ends_with("bioconda2rpm/reports")
+            args.effective_bad_spec_dir()
+                .starts_with(args.effective_target_root())
         );
+        assert!(args.effective_bad_spec_dir().ends_with("BAD_SPEC"));
+        assert!(
+            args.effective_reports_dir()
+                .starts_with(args.effective_target_root())
+        );
+        assert!(args.effective_reports_dir().ends_with("reports"));
     }
 
     #[test]
@@ -517,7 +596,7 @@ mod tests {
         assert_eq!(args.effective_bad_spec_dir(), PathBuf::from("/quarantine"));
         assert_eq!(
             args.effective_reports_dir(),
-            PathBuf::from("/rpmbuild/reports")
+            args.effective_target_root().join("reports")
         );
     }
 
@@ -603,12 +682,14 @@ mod tests {
         assert!(args.effective_topdir().ends_with("bioconda2rpm"));
         assert!(
             args.effective_bad_spec_dir()
-                .ends_with("bioconda2rpm/BAD_SPEC")
+                .starts_with(args.effective_target_root())
         );
+        assert!(args.effective_bad_spec_dir().ends_with("BAD_SPEC"));
         assert!(
             args.effective_reports_dir()
-                .ends_with("bioconda2rpm/reports")
+                .starts_with(args.effective_target_root())
         );
+        assert!(args.effective_reports_dir().ends_with("reports"));
     }
 
     #[test]
@@ -632,6 +713,16 @@ mod tests {
         assert_eq!(args.deployment_profile, DeploymentProfile::Production);
         assert_eq!(args.effective_metadata_adapter(), MetadataAdapter::Conda);
         assert_eq!(args.effective_target_arch(), "x86_64".to_string());
+        assert!(
+            args.effective_bad_spec_dir()
+                .starts_with(args.effective_target_root())
+        );
+        assert!(args.effective_bad_spec_dir().ends_with("BAD_SPEC"));
+        assert!(
+            args.effective_reports_dir()
+                .starts_with(args.effective_target_root())
+        );
+        assert!(args.effective_reports_dir().ends_with("reports"));
         assert!(args.effective_kpi_gate());
         assert_eq!(args.kpi_min_success_rate, 99.0);
     }
@@ -660,5 +751,11 @@ mod tests {
             args.software_list,
             Some(PathBuf::from("/tmp/essential_100.txt"))
         );
+    }
+
+    #[test]
+    fn default_build_target_id_is_sanitized_and_stable() {
+        let target_id = default_build_target_id("dropworm_dev_almalinux_9_5:0.1.2", "aarch64");
+        assert_eq!(target_id, "dropworm_dev_almalinux_9_5-0.1.2-aarch64");
     }
 }

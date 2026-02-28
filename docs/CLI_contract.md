@@ -63,9 +63,11 @@ bioconda2rpm regression \
 - `--topdir <path>`
   - Optional. Default: `~/bioconda2rpm` (auto-created if missing).
 - `--bad-spec-dir <path>`
-  - Optional. Default resolves to `<topdir>/BAD_SPEC` (auto-created if missing).
+  - Optional. Default resolves to `<topdir>/targets/<target-id>/BAD_SPEC` (auto-created if missing).
 - `--reports-dir <path>`
-  - Optional. Default resolves to `<topdir>/reports` (auto-created if missing).
+  - Optional. Default resolves to `<topdir>/targets/<target-id>/reports` (auto-created if missing).
+- `<target-id>`
+  - Derived as a deterministic sanitized slug from `<container-image>-<target-arch>`.
 - `--naming-profile <phoreus>`
   - Default: `phoreus`
 - `--render-strategy <jinja-full>`
@@ -102,13 +104,15 @@ Regression-only options:
 - Recipes with `outputs:` are expanded into discrete package outputs.
 - Highest versioned recipe subdirectory is selected when present.
 - Unresolved dependencies quarantine by default.
-- Default quarantine path is `<topdir>/BAD_SPEC`.
+- One canonical SPEC/SOURCE set is shared under `<topdir>/SPECS` and `<topdir>/SOURCES`.
+- SRPM/RPM/report/quarantine artifacts are isolated under `<topdir>/targets/<target-id>/...`.
+- Default quarantine path is `<topdir>/targets/<target-id>/BAD_SPEC`.
 - Console + JSON + CSV + Markdown reporting is expected per run.
 - Priority SPEC generation uses only Bioconda metadata inputs (`meta.yaml` + `build.sh`) and `tools.csv` priority rows.
 - Priority SPEC generation performs overlap resolution and SPEC creation in parallel workers.
 - For each generated SPEC, build order is always `SPEC -> SRPM -> RPM` in the selected container image.
 - RPM stage is executed as SRPM rebuild (`rpmbuild --rebuild <src.rpm>`).
-- Successful package builds clear stale `<topdir>/BAD_SPEC/<tool>.txt` quarantine notes.
+- Successful package builds clear stale `<topdir>/targets/<target-id>/BAD_SPEC/<tool>.txt` quarantine notes.
 - If local payload artifacts already match the requested Bioconda version, `build` exits with `up-to-date` status.
 - If Bioconda has a newer payload version than local artifacts, `build` rebuilds payload and bumps default/meta package version.
 - Package-specific heuristics require explicit temporary tagging with a retirement issue (`HEURISTIC-TEMP(issue=...)`) and are test-enforced.

@@ -100,6 +100,8 @@ struct ResolvedParsedRecipe {
 #[derive(Debug, Clone)]
 struct BuildConfig {
     topdir: PathBuf,
+    target_id: String,
+    target_root: PathBuf,
     reports_dir: PathBuf,
     container_engine: String,
     container_image: String,
@@ -275,6 +277,10 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
     let topdir = args.effective_topdir();
     let specs_dir = topdir.join("SPECS");
     let sources_dir = topdir.join("SOURCES");
+    let target_id = args.effective_target_id();
+    let target_root = args.effective_target_root();
+    let rpms_dir = target_root.join("RPMS");
+    let srpms_dir = target_root.join("SRPMS");
     let reports_dir = args.effective_reports_dir();
     let bad_spec_dir = args.effective_bad_spec_dir();
 
@@ -282,6 +288,10 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
         .with_context(|| format!("creating specs dir {}", specs_dir.display()))?;
     fs::create_dir_all(&sources_dir)
         .with_context(|| format!("creating sources dir {}", sources_dir.display()))?;
+    fs::create_dir_all(&rpms_dir)
+        .with_context(|| format!("creating rpms dir {}", rpms_dir.display()))?;
+    fs::create_dir_all(&srpms_dir)
+        .with_context(|| format!("creating srpms dir {}", srpms_dir.display()))?;
     fs::create_dir_all(&reports_dir)
         .with_context(|| format!("creating reports dir {}", reports_dir.display()))?;
     fs::create_dir_all(&bad_spec_dir)
@@ -295,10 +305,12 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
     let recipe_dirs = discover_recipe_dirs(&args.recipe_root)?;
     let build_config = BuildConfig {
         topdir: topdir.clone(),
+        target_id,
+        target_root: target_root.clone(),
         reports_dir: reports_dir.clone(),
         container_engine: args.container_engine.clone(),
         container_image: args.container_image.clone(),
-        target_arch: std::env::consts::ARCH.to_string(),
+        target_arch: args.effective_target_arch(),
     };
     ensure_phoreus_python_bootstrap(&build_config, &specs_dir)
         .context("bootstrapping Phoreus Python runtime")?;
@@ -362,16 +374,22 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     let topdir = args.effective_topdir();
     let specs_dir = topdir.join("SPECS");
     let sources_dir = topdir.join("SOURCES");
+    let target_id = args.effective_target_id();
+    let target_root = args.effective_target_root();
+    let rpms_dir = target_root.join("RPMS");
+    let srpms_dir = target_root.join("SRPMS");
     let reports_dir = args.effective_reports_dir();
     let bad_spec_dir = args.effective_bad_spec_dir();
     let effective_metadata_adapter = args.effective_metadata_adapter();
     log_progress(format!(
-        "phase=build-start package={} deps_enabled={} dependency_policy={:?} recipe_root={} topdir={} target_arch={} deployment_profile={:?} metadata_adapter={:?}",
+        "phase=build-start package={} deps_enabled={} dependency_policy={:?} recipe_root={} topdir={} target_id={} target_root={} target_arch={} deployment_profile={:?} metadata_adapter={:?}",
         args.package,
         args.with_deps(),
         args.dependency_policy,
         args.recipe_root.display(),
         topdir.display(),
+        target_id,
+        target_root.display(),
         args.effective_target_arch(),
         args.deployment_profile,
         effective_metadata_adapter
@@ -381,6 +399,10 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         .with_context(|| format!("creating specs dir {}", specs_dir.display()))?;
     fs::create_dir_all(&sources_dir)
         .with_context(|| format!("creating sources dir {}", sources_dir.display()))?;
+    fs::create_dir_all(&rpms_dir)
+        .with_context(|| format!("creating rpms dir {}", rpms_dir.display()))?;
+    fs::create_dir_all(&srpms_dir)
+        .with_context(|| format!("creating srpms dir {}", srpms_dir.display()))?;
     fs::create_dir_all(&reports_dir)
         .with_context(|| format!("creating reports dir {}", reports_dir.display()))?;
     fs::create_dir_all(&bad_spec_dir)
@@ -397,6 +419,8 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
 
     let build_config = BuildConfig {
         topdir: topdir.clone(),
+        target_id: target_id.clone(),
+        target_root: target_root.clone(),
         reports_dir: reports_dir.clone(),
         container_engine: args.container_engine.clone(),
         container_image: args.container_image.clone(),
@@ -462,9 +486,12 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     }
 
     let root_slug = normalize_name(&root_recipe.resolved.recipe_name);
-    if let PayloadVersionState::UpToDate { existing_version } =
-        payload_version_state(&topdir, &root_slug, &root_recipe.parsed.version)?
-    {
+    if let PayloadVersionState::UpToDate { existing_version } = payload_version_state(
+        &topdir,
+        &build_config.target_root,
+        &root_slug,
+        &root_recipe.parsed.version,
+    )? {
         log_progress(format!(
             "phase=build status=up-to-date package={} version={} local_version={} elapsed={}",
             root_recipe.resolved.recipe_name,
@@ -711,14 +738,18 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
 pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
     let campaign_started = Instant::now();
     let topdir = args.effective_topdir();
+    let target_id = args.effective_target_id();
+    let target_root = args.effective_target_root();
     let reports_dir = args.effective_reports_dir();
     let bad_spec_dir = args.effective_bad_spec_dir();
     log_progress(format!(
-        "phase=regression-start mode={:?} recipe_root={} tools_csv={} topdir={} target_arch={} deployment_profile={:?} metadata_adapter={:?}",
+        "phase=regression-start mode={:?} recipe_root={} tools_csv={} topdir={} target_id={} target_root={} target_arch={} deployment_profile={:?} metadata_adapter={:?}",
         args.mode,
         args.recipe_root.display(),
         args.tools_csv.display(),
         topdir.display(),
+        target_id,
+        target_root.display(),
         args.effective_target_arch(),
         args.deployment_profile,
         args.effective_metadata_adapter()
@@ -1625,28 +1656,32 @@ fn process_tool(
     }
     let mut parsed = parsed_result.parsed;
 
-    let version_state =
-        match payload_version_state(&build_config.topdir, &software_slug, &parsed.version) {
-            Ok(v) => v,
-            Err(err) => {
-                let reason = format!("failed to evaluate local artifact versions: {err}");
-                quarantine_note(bad_spec_dir, &software_slug, &reason);
-                return ReportEntry {
-                    software: tool.software.clone(),
-                    priority: tool.priority,
-                    status: "quarantined".to_string(),
-                    reason,
-                    overlap_recipe: resolved.recipe_name,
-                    overlap_reason: resolved.overlap_reason,
-                    variant_dir: resolved.variant_dir.display().to_string(),
-                    package_name: parsed.package_name,
-                    version: parsed.version,
-                    payload_spec_path: String::new(),
-                    meta_spec_path: String::new(),
-                    staged_build_sh: String::new(),
-                };
-            }
-        };
+    let version_state = match payload_version_state(
+        &build_config.topdir,
+        &build_config.target_root,
+        &software_slug,
+        &parsed.version,
+    ) {
+        Ok(v) => v,
+        Err(err) => {
+            let reason = format!("failed to evaluate local artifact versions: {err}");
+            quarantine_note(bad_spec_dir, &software_slug, &reason);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "quarantined".to_string(),
+                reason,
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: String::new(),
+            };
+        }
+    };
     if let PayloadVersionState::UpToDate { existing_version } = &version_state {
         clear_quarantine_note(bad_spec_dir, &software_slug);
         return ReportEntry {
@@ -2022,7 +2057,11 @@ fn process_tool(
         r_script_hint,
         rust_script_hint,
     );
-    let meta_version = match next_meta_package_version(&build_config.topdir, &software_slug) {
+    let meta_version = match next_meta_package_version(
+        &build_config.topdir,
+        &build_config.target_root,
+        &software_slug,
+    ) {
         Ok(v) => v,
         Err(err) => {
             let reason = format!("failed to determine next meta package version: {err}");
@@ -5401,7 +5440,11 @@ fn sync_reference_python_specs(specs_dir: &Path) -> Result<()> {
 }
 
 fn ensure_phoreus_python_bootstrap(build_config: &BuildConfig, specs_dir: &Path) -> Result<()> {
-    if topdir_has_package_artifact(&build_config.topdir, PHOREUS_PYTHON_PACKAGE)? {
+    if topdir_has_package_artifact(
+        &build_config.topdir,
+        &build_config.target_root,
+        PHOREUS_PYTHON_PACKAGE,
+    )? {
         return Ok(());
     }
 
@@ -5425,7 +5468,11 @@ fn ensure_phoreus_r_bootstrap(build_config: &BuildConfig, specs_dir: &Path) -> R
         .lock()
         .map_err(|_| anyhow::anyhow!("phoreus R bootstrap lock poisoned"))?;
 
-    if topdir_has_package_artifact(&build_config.topdir, PHOREUS_R_PACKAGE)? {
+    if topdir_has_package_artifact(
+        &build_config.topdir,
+        &build_config.target_root,
+        PHOREUS_R_PACKAGE,
+    )? {
         return Ok(());
     }
 
@@ -5449,7 +5496,11 @@ fn ensure_phoreus_rust_bootstrap(build_config: &BuildConfig, specs_dir: &Path) -
         .lock()
         .map_err(|_| anyhow::anyhow!("phoreus Rust bootstrap lock poisoned"))?;
 
-    if topdir_has_package_artifact(&build_config.topdir, PHOREUS_RUST_PACKAGE)? {
+    if topdir_has_package_artifact(
+        &build_config.topdir,
+        &build_config.target_root,
+        PHOREUS_RUST_PACKAGE,
+    )? {
         return Ok(());
     }
 
@@ -5473,7 +5524,11 @@ fn ensure_phoreus_nim_bootstrap(build_config: &BuildConfig, specs_dir: &Path) ->
         .lock()
         .map_err(|_| anyhow::anyhow!("phoreus Nim bootstrap lock poisoned"))?;
 
-    if topdir_has_package_artifact(&build_config.topdir, PHOREUS_NIM_PACKAGE)? {
+    if topdir_has_package_artifact(
+        &build_config.topdir,
+        &build_config.target_root,
+        PHOREUS_NIM_PACKAGE,
+    )? {
         return Ok(());
     }
 
@@ -5763,8 +5818,12 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/{nim_series}.lua\n\
     )
 }
 
-fn topdir_has_package_artifact(topdir: &Path, package_name: &str) -> Result<bool> {
-    for file_name in artifact_filenames(topdir)? {
+fn topdir_has_package_artifact(
+    topdir: &Path,
+    target_root: &Path,
+    package_name: &str,
+) -> Result<bool> {
+    for file_name in artifact_filenames(topdir, target_root)? {
         if file_name.starts_with(&format!("{package_name}-")) {
             return Ok(true);
         }
@@ -5809,10 +5868,12 @@ fn map_perl_core_dependency(dep: &str) -> Option<String> {
 
 fn payload_version_state(
     topdir: &Path,
+    target_root: &Path,
     software_slug: &str,
     target_version: &str,
 ) -> Result<PayloadVersionState> {
-    let Some(existing) = latest_existing_payload_version(topdir, software_slug)? else {
+    let Some(existing) = latest_existing_payload_version(topdir, target_root, software_slug)?
+    else {
         return Ok(PayloadVersionState::NotBuilt);
     };
     let ord = compare_version_labels(&existing, target_version);
@@ -5827,9 +5888,13 @@ fn payload_version_state(
     }
 }
 
-fn latest_existing_payload_version(topdir: &Path, software_slug: &str) -> Result<Option<String>> {
+fn latest_existing_payload_version(
+    topdir: &Path,
+    target_root: &Path,
+    software_slug: &str,
+) -> Result<Option<String>> {
     let mut versions = BTreeSet::new();
-    for name in artifact_filenames(topdir)? {
+    for name in artifact_filenames(topdir, target_root)? {
         if let Some(version) = extract_payload_version_from_name(&name, software_slug) {
             versions.insert(version);
         }
@@ -5844,9 +5909,13 @@ fn latest_existing_payload_version(topdir: &Path, software_slug: &str) -> Result
     Ok(latest)
 }
 
-fn next_meta_package_version(topdir: &Path, software_slug: &str) -> Result<u64> {
+fn next_meta_package_version(
+    topdir: &Path,
+    target_root: &Path,
+    software_slug: &str,
+) -> Result<u64> {
     let mut max_meta = 0u64;
-    for name in artifact_filenames(topdir)? {
+    for name in artifact_filenames(topdir, target_root)? {
         if let Some(v) = extract_meta_package_version_from_name(&name, software_slug)
             && v > max_meta
         {
@@ -5856,15 +5925,21 @@ fn next_meta_package_version(topdir: &Path, software_slug: &str) -> Result<u64> 
     Ok(max_meta.saturating_add(1).max(1))
 }
 
-fn artifact_filenames(topdir: &Path) -> Result<Vec<String>> {
+fn artifact_filenames(topdir: &Path, target_root: &Path) -> Result<Vec<String>> {
     let mut names = Vec::new();
+    let mut visited = HashSet::new();
     let candidates = [
+        target_root.join("RPMS"),
+        target_root.join("SRPMS"),
+        // Backward-compatible read support for legacy flat layout.
         topdir.join("RPMS"),
         topdir.join("SRPMS"),
-        topdir.join("SPECS"),
     ];
 
     for root in candidates {
+        if !visited.insert(root.clone()) {
+            continue;
+        }
         if !root.exists() {
             continue;
         }
@@ -5949,12 +6024,15 @@ fn build_spec_chain_in_container(
         .and_then(|v| v.to_str())
         .context("spec filename missing")?;
     let spec_in_container = format!("/work/SPECS/{spec_name}");
+    let target_rpms_in_container = format!("/work/targets/{}/RPMS", build_config.target_id);
+    let target_srpms_in_container = format!("/work/targets/{}/SRPMS", build_config.target_id);
+    let legacy_rpms_in_container = "/work/RPMS";
     let work_mount = format!("{}:/work", build_config.topdir.display());
     let build_label = label.replace('\'', "_");
     let stage_started = Instant::now();
     log_progress(format!(
-        "phase=container-build status=queued label={} spec={} image={}",
-        build_label, spec_name, build_config.container_image
+        "phase=container-build status=queued label={} spec={} image={} target_id={}",
+        build_label, spec_name, build_config.container_image, build_config.target_id
     ));
     let logs_dir = build_config.reports_dir.join("build_logs");
     fs::create_dir_all(&logs_dir)
@@ -5978,7 +6056,7 @@ emit_depgraph() {{\n\
 build_root=/work/.build-work/{label}\n\
 rm -rf \"$build_root\"\n\
 mkdir -p \"$build_root\"/BUILD \"$build_root\"/BUILDROOT \"$build_root\"/RPMS \"$build_root\"/SOURCES \"$build_root\"/SPECS \"$build_root\"/SRPMS\n\
-mkdir -p /work/RPMS /work/SRPMS /work/SOURCES /work/SPECS\n\
+mkdir -p '{target_rpms_dir}' '{target_srpms_dir}' /work/SOURCES /work/SPECS\n\
 if ! command -v rpmbuild >/dev/null 2>&1; then\n\
   if command -v dnf >/dev/null 2>&1; then dnf -y install rpm-build rpmdevtools >/dev/null; \\\n\
   elif command -v microdnf >/dev/null 2>&1; then microdnf -y install rpm-build rpmdevtools >/dev/null; \\\n\
@@ -6111,18 +6189,23 @@ pm_install() {{\n\
 }}\n\
 \n\
 declare -A local_candidates\n\
-while IFS= read -r -d '' rpmf; do\n\
-  name=$(rpm -qp --qf '%{{NAME}}\\n' \"$rpmf\" 2>/dev/null || true)\n\
-  if [[ -n \"$name\" && -z \"${{local_candidates[$name]:-}}\" ]]; then\n\
-    local_candidates[\"$name\"]=\"$rpmf\"\n\
+for rpm_dir in '{target_rpms_dir}' '{legacy_rpms_dir}'; do\n\
+  if [[ ! -d \"$rpm_dir\" ]]; then\n\
+    continue\n\
   fi\n\
-  while IFS= read -r provide; do\n\
-    key=$(printf '%s' \"$provide\" | awk '{{print $1}}')\n\
-    if [[ -n \"$key\" && -z \"${{local_candidates[$key]:-}}\" ]]; then\n\
-      local_candidates[\"$key\"]=\"$rpmf\"\n\
+  while IFS= read -r -d '' rpmf; do\n\
+    name=$(rpm -qp --qf '%{{NAME}}\\n' \"$rpmf\" 2>/dev/null || true)\n\
+    if [[ -n \"$name\" && -z \"${{local_candidates[$name]:-}}\" ]]; then\n\
+      local_candidates[\"$name\"]=\"$rpmf\"\n\
     fi\n\
-  done < <(rpm -qp --provides \"$rpmf\" 2>/dev/null || true)\n\
-done < <(find /work/RPMS -type f -name '*.rpm' -print0 2>/dev/null)\n\
+    while IFS= read -r provide; do\n\
+      key=$(printf '%s' \"$provide\" | awk '{{print $1}}')\n\
+      if [[ -n \"$key\" && -z \"${{local_candidates[$key]:-}}\" ]]; then\n\
+        local_candidates[\"$key\"]=\"$rpmf\"\n\
+      fi\n\
+    done < <(rpm -qp --provides \"$rpmf\" 2>/dev/null || true)\n\
+  done < <(find \"$rpm_dir\" -type f -name '*.rpm' -print0 2>/dev/null)\n\
+done\n\
 \n\
 declare -A local_installed\n\
 install_local_with_hydration() {{\n\
@@ -6234,15 +6317,18 @@ for dep in \"${{build_requires[@]}}\"; do\n\
 done\n\
 \n\
 rpmbuild --rebuild --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' \"${{rpm_single_core_flags[@]}}\" \"${{srpm_path}}\"\n\
-find \"$build_root/SRPMS\" -type f -name '*.src.rpm' -exec cp -f {{}} /work/SRPMS/ \\;\n\
+find \"$build_root/SRPMS\" -type f -name '*.src.rpm' -exec cp -f {{}} '{target_srpms_dir}'/ \\;\n\
 while IFS= read -r rpmf; do\n\
   rel=\"${{rpmf#$build_root/RPMS/}}\"\n\
-  dst=\"/work/RPMS/$(dirname \"$rel\")\"\n\
+  dst=\"{target_rpms_dir}/$(dirname \"$rel\")\"\n\
   mkdir -p \"$dst\"\n\
   cp -f \"$rpmf\" \"$dst/\"\n\
 done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         label = build_label,
         spec = sh_single_quote(&spec_in_container),
+        target_rpms_dir = target_rpms_in_container,
+        target_srpms_dir = target_srpms_in_container,
+        legacy_rpms_dir = legacy_rpms_in_container,
     );
 
     let run_once = |attempt: usize| -> Result<(std::process::ExitStatus, String)> {

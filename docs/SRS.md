@@ -61,7 +61,10 @@ FR-009 Architecture behavior
 FR-010 Artifact/output location
 - The CLI shall default build artifact output to `~/bioconda2rpm` when `--topdir` is omitted.
 - The CLI shall create default output directories when missing.
-- The default quarantine path shall be `<topdir>/BAD_SPEC`.
+- Canonical recipe-derived assets shall remain shared at `<topdir>/SPECS` and `<topdir>/SOURCES`.
+- SRPM/RPM/report/quarantine outputs shall be isolated per build target under `<topdir>/targets/<target-id>/...`.
+- `<target-id>` shall be a deterministic slug derived from container image and target architecture.
+- The default quarantine path shall be `<topdir>/targets/<target-id>/BAD_SPEC`.
 - The CLI shall allow overriding topdir and quarantine paths.
 - The crate repository shall not be used as default build artifact location.
 
@@ -103,7 +106,7 @@ FR-016 Architecture restriction capture policy
 FR-017 Build dependency tolerance and sourcing policy
 - During containerized SRPM->RPM rebuild, the system shall preflight `BuildRequires` and attempt resolution in this order:
   1. Already installed packages in the build container.
-  2. Locally produced RPM artifacts under `<topdir>/RPMS`.
+  2. Locally produced RPM artifacts under `<topdir>/targets/<target-id>/RPMS`.
   3. Enabled distribution/core repositories.
 - The workflow shall tolerate unavailable/auxiliary repositories by using package-manager settings that avoid hard failure from missing optional repos.
 - Generated payload RPMs shall provide the plain software identifier (for example `samtools`) so downstream package builds can consume locally produced RPMs.
@@ -113,7 +116,7 @@ FR-018 Version freshness and metapackage update policy
 - For `build <tool>`, if the requested Bioconda payload version is already present in local artifacts, the command shall report the package as up-to-date and skip rebuild.
 - If the requested Bioconda payload version is newer than the latest local payload artifact, the payload shall be rebuilt.
 - When a newer payload is rebuilt, the corresponding default/meta package version shall be incremented and rewired to the new payload version.
-- Successful/up-to-date outcomes shall clear stale package-specific quarantine notes in `BAD_SPEC`.
+- Successful/up-to-date outcomes shall clear stale package-specific quarantine notes in `<topdir>/targets/<target-id>/BAD_SPEC`.
 
 FR-019 Python dependency isolation policy
 - Python application recipes shall be packaged as hermetic virtual environments under `/usr/local/phoreus/<tool>/<version>/venv`.

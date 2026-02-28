@@ -28,8 +28,12 @@ Primary production workflow:
 When not overridden:
 
 - `topdir`: `~/bioconda2rpm`
-- quarantine folder: `~/bioconda2rpm/BAD_SPEC`
-- reports: `~/bioconda2rpm/reports`
+- canonical shared SPEC/SOURCE roots: `~/bioconda2rpm/SPECS`, `~/bioconda2rpm/SOURCES`
+- target-scoped quarantine folder: `~/bioconda2rpm/targets/<target-id>/BAD_SPEC`
+- target-scoped reports: `~/bioconda2rpm/targets/<target-id>/reports`
+- target-scoped binary outputs: `~/bioconda2rpm/targets/<target-id>/SRPMS`, `~/bioconda2rpm/targets/<target-id>/RPMS`
+
+`<target-id>` is derived from `<container-image>-<target-arch>` using a sanitized stable slug.
 
 The tool creates these folders automatically if missing.
 
@@ -159,7 +163,7 @@ Per `build <tool>` run:
    - Build SRPM inside container (`rpmbuild -bs`).
    - Preflight `BuildRequires` inside container:
      - already installed packages
-     - local RPM reuse from `<topdir>/RPMS`
+     - local RPM reuse from `<topdir>/targets/<target-id>/RPMS` (plus legacy `<topdir>/RPMS` compatibility read)
      - distro/core repos with unavailable-repo tolerance
    - Rebuild RPM from SRPM (`rpmbuild --rebuild <generated.src.rpm>`).
 
@@ -170,7 +174,7 @@ For each package build step:
    - `rpmbuild -bs`
 3. Preflight `BuildRequires` inside container:
    - Use installed packages when already present.
-   - Reuse matching local RPMs from `<topdir>/RPMS`.
+   - Reuse matching local RPMs from `<topdir>/targets/<target-id>/RPMS`.
    - Install remaining requirements from configured repos (with unavailable-repo tolerance).
 4. Rebuild RPM from SRPM inside container:
    - `rpmbuild --rebuild <generated.src.rpm>`
@@ -214,16 +218,18 @@ Under `<topdir>`:
 
 - `SPECS/` generated payload + meta SPEC files
 - `SOURCES/` staged `build.sh` and downloaded source archives
-- `SRPMS/` generated source RPMs
-- `RPMS/` rebuilt binary RPMs
-- `reports/build_<tool>.json`
-- `reports/build_<tool>.csv`
-- `reports/build_<tool>.md`
-- `reports/dependency_graphs/*.json` per-package dependency resolution graph
-- `reports/dependency_graphs/*.md` per-package dependency resolution graph
-- `BAD_SPEC/` quarantine notes for failed/unresolved items
+- `targets/<target-id>/SRPMS/` generated source RPMs for that build target
+- `targets/<target-id>/RPMS/` rebuilt binary RPMs for that build target
+- `targets/<target-id>/reports/build_<tool>.json`
+- `targets/<target-id>/reports/build_<tool>.csv`
+- `targets/<target-id>/reports/build_<tool>.md`
+- `targets/<target-id>/reports/dependency_graphs/*.json` per-package dependency resolution graph
+- `targets/<target-id>/reports/dependency_graphs/*.md` per-package dependency resolution graph
+- `targets/<target-id>/BAD_SPEC/` quarantine notes for failed/unresolved items
 
-When a package builds successfully (or is confirmed up-to-date), stale `<topdir>/BAD_SPEC/<tool>.txt` notes are removed for that package.
+This layout keeps one canonical SPEC set while isolating binary artifacts by build OS target. Use one SPEC with `%ifarch` / distro conditionals when needed.
+
+When a package builds successfully (or is confirmed up-to-date), stale `<topdir>/targets/<target-id>/BAD_SPEC/<tool>.txt` notes are removed for that package.
 
 ## 8. Reports and Status Interpretation
 
@@ -237,7 +243,7 @@ Each report entry includes:
 - reason/message
 
 Use the Markdown report for quick review and JSON/CSV for automation.
-For dependency analysis, inspect `reports/dependency_graphs/`:
+For dependency analysis, inspect `targets/<target-id>/reports/dependency_graphs/`:
 - `status=resolved` entries include `source` (`installed`, `local_rpm`, `repo`).
 - `status=unresolved` entries include captured package-manager detail.
 - Build Markdown reports include an arch-adjusted reliability KPI block where architecture-incompatible packages are excluded from denominator.
@@ -264,9 +270,9 @@ Set engine explicitly or install Docker:
 
 Check:
 
-- `<topdir>/reports/build_<tool>.md`
-- `<topdir>/reports/dependency_graphs/<tool>.md`
-- `<topdir>/BAD_SPEC/<tool>.txt`
+- `<topdir>/targets/<target-id>/reports/build_<tool>.md`
+- `<topdir>/targets/<target-id>/reports/dependency_graphs/<tool>.md`
+- `<topdir>/targets/<target-id>/BAD_SPEC/<tool>.txt`
 - container logs printed during run
 
 Failures typically reflect recipe/toolchain incompatibilities for the target architecture, not workflow failure.

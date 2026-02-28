@@ -29,12 +29,13 @@ The product is structured as layered components:
 - Applies configurable policy with default `build+host+run` closure.
 - Records build-time dependency preflight outcomes with source attribution:
   - `installed` (already present in container)
-  - `local_rpm` (reused from `<topdir>/RPMS`)
+  - `local_rpm` (reused from `<topdir>/targets/<target-id>/RPMS`, with legacy `<topdir>/RPMS` compatibility reads)
   - `repo` (resolved from distribution repositories)
   - `unresolved` (quarantined with reason)
 
 5. Packaging Layer
 - Maps recipes to single-SPEC Phoreus naming profile.
+- Keeps one canonical recipe-derived SPEC/SOURCE set under `<topdir>/SPECS` and `<topdir>/SOURCES` shared across OS targets.
 - Expands `outputs:` into discrete RPM packages.
 - For Python application recipes, enforces hermetic venv packaging:
   - venv rooted at `/usr/local/phoreus/<tool>/<version>/venv`
@@ -72,7 +73,7 @@ The product is structured as layered components:
 
 8. Reporting Layer
 - Emits JSON, CSV, Markdown summaries plus console logs.
-- Emits per-package dependency graph artifacts (`reports/dependency_graphs/*.json` and `*.md`) for auditability.
+- Emits per-package dependency graph artifacts under target scope (`targets/<target-id>/reports/dependency_graphs/*.json` and `*.md`) for auditability.
 
 9. Priority Selection Layer
 - Reads `tools.csv` and ranks requested tools by `RPM Priority Score`.
@@ -87,9 +88,11 @@ The product is structured as layered components:
   - Optional quarantine directory override (`--bad-spec-dir`)
 
 - Outputs:
-  - SPEC/SRPM/RPM artifacts in default topdir `~/bioconda2rpm` or user override
-  - Quarantine artifacts in default `<topdir>/BAD_SPEC` or user override
-  - Run reports in external report directory (or `<topdir>/reports`), including dependency graph artifacts
+  - `<target-id>` is a deterministic slug derived from container image and target architecture.
+  - Canonical generated SPEC/SOURCE artifacts in default topdir `~/bioconda2rpm/SPECS` and `~/bioconda2rpm/SOURCES` (or user override)
+  - Target-scoped SRPM/RPM artifacts in `<topdir>/targets/<target-id>/SRPMS` and `<topdir>/targets/<target-id>/RPMS`
+  - Target-scoped quarantine artifacts in default `<topdir>/targets/<target-id>/BAD_SPEC` or user override
+  - Target-scoped reports in external report directory (or `<topdir>/targets/<target-id>/reports`), including dependency graph artifacts
 
 - Constraint:
   - No build artifacts or recipe staging shall default into the crate workspace.
