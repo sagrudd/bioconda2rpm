@@ -127,3 +127,9 @@ Current baseline includes:
 - First-pass success target on this denominator is `>=99%`.
 - Architecture-incompatible packages are excluded from denominator calculations for this KPI.
 - Merge validation is expected to apply a hard gate at `>=99%` using arch-adjusted KPI outputs from `build` reports/exit status.
+
+## 9. Heuristic Governance
+
+- Package-specific heuristics are controlled exceptions, not a default implementation pattern.
+- Any retained package-specific heuristic must be tagged with `HEURISTIC-TEMP(issue=...)` and associated retirement tracking.
+- Build-time tests enforce that untagged package-specific heuristic blocks are rejected.

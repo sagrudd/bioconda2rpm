@@ -134,3 +134,8 @@
 - Tooling support is provided through KPI gate options on `build`:
   - `--kpi-gate`
   - `--kpi-min-success-rate` (default `99.0`)
+
+### Heuristic governance policy
+- New package-specific heuristics are disallowed unless explicitly temporary.
+- Any package-specific heuristic must carry `HEURISTIC-TEMP(issue=...)` with a retirement issue identifier.
+- Source-policy tests enforce this requirement in `src/priority_specs.rs`.

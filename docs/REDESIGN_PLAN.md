@@ -155,3 +155,4 @@ Definition of "first-pass success":
    - Decision (2026-02-28): yes, hard gate at 99% (arch-adjusted denominator)
 
 5. Do you want strict "no new per-package heuristic branches" from this point, except temporary shims explicitly tagged for removal?
+   - Decision (2026-02-28): yes, strict policy with mandatory retirement issue tags

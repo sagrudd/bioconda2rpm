@@ -248,3 +248,7 @@ cargo run -- build <tool> \
   --kpi-gate \
   --kpi-min-success-rate 99.0
 ```
+
+Contributor policy note:
+- New package-specific heuristics are not allowed unless temporary and tagged with `HEURISTIC-TEMP(issue=...)`.
+- Untagged package-specific heuristic blocks fail test checks.

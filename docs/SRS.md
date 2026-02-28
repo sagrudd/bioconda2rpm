@@ -148,6 +148,11 @@ FR-024 Reliability KPI merge gate
 - Default threshold shall be `99.0`.
 - Production deployment profile shall enforce KPI gate behavior by default.
 
+FR-025 Package heuristic governance
+- New package-specific heuristic logic shall be forbidden unless explicitly marked as temporary.
+- Temporary package heuristics shall include a retirement issue identifier.
+- Automated tests shall fail when package-specific heuristic blocks do not include required retirement tags.
+
 ## 4. Non-Functional Requirements
 
 NFR-001 Reproducibility

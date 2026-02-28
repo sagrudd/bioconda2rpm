@@ -2499,6 +2499,7 @@ fn precompiled_binary_override(
     parsed: &ParsedMeta,
 ) -> Option<PrecompiledBinaryOverride> {
     match software_slug {
+        // HEURISTIC-TEMP(issue=HEUR-0001): Prefer upstream precompiled k8 binary.
         "k8" => Some(PrecompiledBinaryOverride {
             source_url: format!(
                 "https://github.com/attractivechaos/k8/releases/download/v{version}/k8-{version}.tar.bz2",
@@ -3539,6 +3540,7 @@ mkdir -p %{bioconda_source_subdir}\n"
     // UCSC userApps source archives contain an extra top-level `userApps/`
     // directory after tar extraction. Strip two path components so patch paths
     // rooted at `kent/src/...` resolve correctly.
+    // HEURISTIC-TEMP(issue=HEUR-0002): userApps archive layout requires extra strip depth.
     if software_slug == "ucsc-bigwigsummary"
         && source_kind == SourceArchiveKind::Tar
         && parsed.source_url.contains("userApps.")
@@ -3582,6 +3584,7 @@ mkdir -p %{bioconda_source_subdir}\n"
         build_requires.insert(PHOREUS_NIM_PACKAGE.to_string());
         build_requires.insert("git".to_string());
     }
+    // HEURISTIC-TEMP(issue=HEUR-0003): monocle3 geospatial native stack mapping.
     if software_slug == "r-monocle3" {
         // Monocle3's R dependency chain (sf/spdep/terra/units) needs geospatial
         // development headers from the base OS repositories on EL9.
@@ -3619,11 +3622,13 @@ mkdir -p %{bioconda_source_subdir}\n"
                 .map(|d| map_build_dependency(d)),
         );
     }
+    // HEURISTIC-TEMP(issue=HEUR-0004): IGV currently requires Java 21 toolchain at build time.
     if software_slug == "igv" {
         // IGV's Gradle build enforces Java toolchain languageVersion=21.
         build_requires.remove("java-11-openjdk");
         build_requires.insert("java-21-openjdk-devel".to_string());
     }
+    // HEURISTIC-TEMP(issue=HEUR-0005): SPAdes ExternalProject performs git clone at configure time.
     if software_slug == "spades" {
         // SPAdes pulls ncbi_vdb_ext via ExternalProject git clone at configure time.
         build_requires.insert("git".to_string());
@@ -3656,6 +3661,7 @@ mkdir -p %{bioconda_source_subdir}\n"
                 .map(|d| map_runtime_dependency(d)),
         );
     }
+    // HEURISTIC-TEMP(issue=HEUR-0006): IGV runtime also requires Java 21.
     if software_slug == "igv" {
         runtime_requires.remove("java-11-openjdk");
         runtime_requires.insert("java-21-openjdk".to_string());
@@ -8016,5 +8022,51 @@ dep: osx-arm64-only # [arm64]\n";
         assert_eq!(kpi.denominator, 2);
         assert_eq!(kpi.successes, 1);
         assert!((kpi.success_rate - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn package_specific_heuristics_require_retirement_issue_tag() {
+        const SOURCE: &str = include_str!("priority_specs.rs");
+        let lines: Vec<&str> = SOURCE.lines().collect();
+        let mut violations = Vec::new();
+        let mut in_software_slug_match = false;
+
+        for (idx, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("match software_slug {") {
+                in_software_slug_match = true;
+                continue;
+            }
+            if in_software_slug_match && trimmed.starts_with('}') {
+                in_software_slug_match = false;
+                continue;
+            }
+
+            let is_direct_package_heuristic = trimmed.starts_with("if software_slug ==")
+                || trimmed.starts_with("if package_slug ==");
+            let is_match_arm_heuristic =
+                in_software_slug_match && trimmed.starts_with('"') && trimmed.contains("=>");
+            if !is_direct_package_heuristic && !is_match_arm_heuristic {
+                continue;
+            }
+
+            if has_heuristic_policy_marker(&lines, idx) {
+                continue;
+            }
+            violations.push(format!("line {}: {}", idx + 1, trimmed));
+        }
+
+        assert!(
+            violations.is_empty(),
+            "missing HEURISTIC-TEMP(issue=...) tags:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    fn has_heuristic_policy_marker(lines: &[&str], idx: usize) -> bool {
+        let start = idx.saturating_sub(3);
+        lines[start..=idx]
+            .iter()
+            .any(|line| line.contains("HEURISTIC-TEMP(issue="))
     }
 }

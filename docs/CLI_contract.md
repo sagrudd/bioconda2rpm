@@ -90,3 +90,4 @@ bioconda2rpm generate-priority-specs \
 - Successful package builds clear stale `<topdir>/BAD_SPEC/<tool>.txt` quarantine notes.
 - If local payload artifacts already match the requested Bioconda version, `build` exits with `up-to-date` status.
 - If Bioconda has a newer payload version than local artifacts, `build` rebuilds payload and bumps default/meta package version.
+- Package-specific heuristics require explicit temporary tagging with a retirement issue (`HEURISTIC-TEMP(issue=...)`) and are test-enforced.
