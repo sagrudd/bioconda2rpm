@@ -5005,9 +5005,11 @@ fi\n\
     if [[ -n \"$vdb_prefix\" ]]; then\n\
     sed -i 's|--with-vdb=$PREFIX|--with-vdb='\\\"$vdb_prefix\\\"'|g' ./build.sh\n\
     fi\n\
-    # BLAST's Bioconda script hard-codes n_workers=8 on aarch64. Route this through\n\
-    # canonical CPU_COUNT so orchestrator policy can tune concurrency consistently.\n\
-    sed -i 's|n_workers=8|n_workers=${{CPU_COUNT:-1}}|g' ./build.sh\n\
+    # BLAST's make graph uses internal lock orchestration that can stall under\n\
+    # parallel worker fan-out in this containerized flow. Force serial payload\n\
+    # make execution for deterministic progress.\n\
+    sed -i 's|n_workers=8|n_workers=1|g' ./build.sh\n\
+    sed -i 's|n_workers=${{CPU_COUNT:-1}}|n_workers=1|g' ./build.sh || true\n\
     # Bioconda's BLAST script removes a temporary linker path with plain `rm`,\n\
     # but in our staged prefix this path may be materialized as a directory.\n\
     # Ensure cleanup succeeds for both symlink and directory forms.\n\
