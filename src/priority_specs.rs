@@ -1978,6 +1978,7 @@ fn render_meta_yaml(meta: &str) -> Result<String> {
             SRC_DIR => "$SRC_DIR",
             RECIPE_DIR => "$RECIPE_DIR",
             R => "R",
+            cran_mirror => "https://cran.r-project.org",
             environ => context! {
                 PREFIX => "$PREFIX",
                 RECIPE_DIR => "$RECIPE_DIR",
@@ -3523,6 +3524,13 @@ mkdir -p %{bioconda_source_subdir}\n"
     \n\
     export CC=${{CC:-gcc}}\n\
     export CXX=${{CXX:-g++}}\n\
+    # Some Bioconda R recipes write FC/F77 directly into ~/.R/Makevars.\n\
+    # Keep deterministic defaults so Fortran compilation never falls back to\n\
+    # an empty command token when gcc-gfortran is present in dependencies.\n\
+    if command -v gfortran >/dev/null 2>&1; then\n\
+    export FC=\"${{FC:-gfortran}}\"\n\
+    export F77=\"${{F77:-gfortran}}\"\n\
+    fi\n\
     export CFLAGS=\"${{CFLAGS:-}}\"\n\
     export CXXFLAGS=\"${{CXXFLAGS:-}}\"\n\
     export CPPFLAGS=\"${{CPPFLAGS:-}}\"\n\
@@ -7399,6 +7407,16 @@ build:
 "#;
         let rendered = render_meta_yaml(src).expect("render jinja with SRC_DIR");
         assert!(rendered.contains("$SRC_DIR/scanpy-scripts"));
+    }
+
+    #[test]
+    fn render_meta_supports_cran_mirror_variable() {
+        let src = r#"
+source:
+  url: "{{ cran_mirror }}/src/contrib/restfulr_0.0.16.tar.gz"
+"#;
+        let rendered = render_meta_yaml(src).expect("render jinja with cran_mirror");
+        assert!(rendered.contains("https://cran.r-project.org/src/contrib/restfulr_0.0.16.tar.gz"));
     }
 
     #[test]
