@@ -58,6 +58,11 @@ bioconda2rpm generate-priority-specs \
   - Default: `phoreus`
 - `--render-strategy <jinja-full>`
   - Default: `jinja-full`
+- `--metadata-adapter <auto|conda|native>`
+  - Default: `auto`
+  - `auto`: use conda-build render adapter when available, otherwise fallback to native parser.
+  - `conda`: require conda-build adapter success.
+  - `native`: force native parser.
 - `--outputs <all>`
   - Default: `all`
 

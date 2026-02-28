@@ -1,4 +1,7 @@
-use crate::cli::{BuildArgs, DependencyPolicy, GeneratePrioritySpecsArgs, MissingDependencyPolicy};
+use crate::cli::{
+    BuildArgs, DependencyPolicy, GeneratePrioritySpecsArgs, MetadataAdapter,
+    MissingDependencyPolicy,
+};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use csv::{ReaderBuilder, Writer};
@@ -40,7 +43,7 @@ struct ResolvedRecipe {
     overlap_reason: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ParsedMeta {
     package_name: String,
     version: String,
@@ -59,6 +62,38 @@ struct ParsedMeta {
     build_deps: BTreeSet<String>,
     host_deps: BTreeSet<String>,
     run_deps: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedRecipeResult {
+    parsed: ParsedMeta,
+    build_skip: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct CondaRenderMetadata {
+    build_skip: bool,
+    package_name: String,
+    version: String,
+    build_number: String,
+    source_url: String,
+    source_folder: String,
+    homepage: String,
+    license: String,
+    summary: String,
+    source_patches: Vec<String>,
+    build_script: Option<String>,
+    noarch_python: bool,
+    build_dep_specs_raw: Vec<String>,
+    host_dep_specs_raw: Vec<String>,
+    run_dep_specs_raw: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedParsedRecipe {
+    resolved: ResolvedRecipe,
+    parsed: ParsedMeta,
+    build_skip: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +125,8 @@ static PHOREUS_RUST_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 const PHOREUS_NIM_SERIES: &str = "2.2";
 const PHOREUS_NIM_PACKAGE: &str = "phoreus-nim-2.2";
 static PHOREUS_NIM_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+const CONDA_RENDER_ADAPTER_SCRIPT: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/conda_render_ir.py");
 
 fn log_progress(message: impl AsRef<str>) {
     println!("progress {}", message.as_ref());
@@ -238,6 +275,7 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
                     &sources_dir,
                     &bad_spec_dir,
                     &build_config,
+                    &args.metadata_adapter,
                 );
                 (*idx, entry)
             })
@@ -320,40 +358,81 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     ensure_phoreus_python_bootstrap(&build_config, &specs_dir)
         .context("bootstrapping Phoreus Python runtime")?;
 
-    let Some((root_resolved, root_parsed)) =
-        resolve_and_parse_recipe(&args.package, &args.recipe_root, &recipe_dirs, true)?
+    let Some(root_recipe) = resolve_and_parse_recipe(
+        &args.package,
+        &args.recipe_root,
+        &recipe_dirs,
+        true,
+        &args.metadata_adapter,
+    )?
     else {
         anyhow::bail!(
             "no overlapping recipe found in bioconda metadata for '{}'",
             args.package
         );
     };
-    let root_slug = normalize_name(&root_resolved.recipe_name);
+    if root_recipe.build_skip {
+        let root_slug = normalize_name(&root_recipe.resolved.recipe_name);
+        clear_quarantine_note(&bad_spec_dir, &root_slug);
+        let reason = "recipe declares build.skip=true for this render context".to_string();
+        let entry = ReportEntry {
+            software: root_recipe.resolved.recipe_name.clone(),
+            priority: 0,
+            status: "skipped".to_string(),
+            reason: reason.clone(),
+            overlap_recipe: root_recipe.resolved.recipe_name.clone(),
+            overlap_reason: "requested-root".to_string(),
+            variant_dir: root_recipe.resolved.variant_dir.display().to_string(),
+            package_name: root_recipe.parsed.package_name.clone(),
+            version: root_recipe.parsed.version.clone(),
+            payload_spec_path: String::new(),
+            meta_spec_path: String::new(),
+            staged_build_sh: String::new(),
+        };
+        let report_stem = normalize_name(&args.package);
+        let report_json = reports_dir.join(format!("build_{report_stem}.json"));
+        let report_csv = reports_dir.join(format!("build_{report_stem}.csv"));
+        let report_md = reports_dir.join(format!("build_{report_stem}.md"));
+        write_reports(&[entry], &report_json, &report_csv, &report_md)?;
+        return Ok(BuildSummary {
+            requested: 1,
+            generated: 0,
+            up_to_date: 0,
+            skipped: 1,
+            quarantined: 0,
+            build_order: vec![root_recipe.resolved.recipe_name.clone()],
+            report_json,
+            report_csv,
+            report_md,
+        });
+    }
+
+    let root_slug = normalize_name(&root_recipe.resolved.recipe_name);
     if let PayloadVersionState::UpToDate { existing_version } =
-        payload_version_state(&topdir, &root_slug, &root_parsed.version)?
+        payload_version_state(&topdir, &root_slug, &root_recipe.parsed.version)?
     {
         log_progress(format!(
             "phase=build status=up-to-date package={} version={} local_version={} elapsed={}",
-            root_resolved.recipe_name,
-            root_parsed.version,
+            root_recipe.resolved.recipe_name,
+            root_recipe.parsed.version,
             existing_version,
             format_elapsed(build_started.elapsed())
         ));
         clear_quarantine_note(&bad_spec_dir, &root_slug);
         let reason = format!(
             "already up-to-date: bioconda version {} already built (latest local payload version {})",
-            root_parsed.version, existing_version
+            root_recipe.parsed.version, existing_version
         );
         let entry = ReportEntry {
-            software: root_resolved.recipe_name.clone(),
+            software: root_recipe.resolved.recipe_name.clone(),
             priority: 0,
             status: "up-to-date".to_string(),
             reason,
-            overlap_recipe: root_resolved.recipe_name.clone(),
+            overlap_recipe: root_recipe.resolved.recipe_name.clone(),
             overlap_reason: "requested-root".to_string(),
-            variant_dir: root_resolved.variant_dir.display().to_string(),
-            package_name: root_parsed.package_name.clone(),
-            version: root_parsed.version.clone(),
+            variant_dir: root_recipe.resolved.variant_dir.display().to_string(),
+            package_name: root_recipe.parsed.package_name.clone(),
+            version: root_recipe.parsed.version.clone(),
             payload_spec_path: String::new(),
             meta_spec_path: String::new(),
             staged_build_sh: String::new(),
@@ -371,7 +450,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
             up_to_date: 1,
             skipped: 0,
             quarantined: 0,
-            build_order: vec![root_resolved.recipe_name],
+            build_order: vec![root_recipe.resolved.recipe_name],
             report_json,
             report_csv,
             report_md,
@@ -384,6 +463,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         &args.dependency_policy,
         &args.recipe_root,
         &recipe_dirs,
+        &args.metadata_adapter,
     )?;
     let build_order = plan_order
         .iter()
@@ -474,6 +554,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
             &sources_dir,
             &bad_spec_dir,
             &build_config,
+            &args.metadata_adapter,
         );
         log_progress(format!(
             "phase=package status={} package={} elapsed={} reason={}",
@@ -550,6 +631,7 @@ fn collect_build_plan(
     policy: &DependencyPolicy,
     recipe_root: &Path,
     recipe_dirs: &[RecipeDir],
+    metadata_adapter: &MetadataAdapter,
 ) -> Result<(Vec<String>, BTreeMap<String, BuildPlanNode>)> {
     let mut visiting = HashSet::new();
     let mut visited = HashSet::new();
@@ -563,6 +645,7 @@ fn collect_build_plan(
         policy,
         recipe_root,
         recipe_dirs,
+        metadata_adapter,
         &mut visiting,
         &mut visited,
         &mut nodes,
@@ -586,23 +669,29 @@ fn visit_build_plan_node(
     policy: &DependencyPolicy,
     recipe_root: &Path,
     recipe_dirs: &[RecipeDir],
+    metadata_adapter: &MetadataAdapter,
     visiting: &mut HashSet<String>,
     visited: &mut HashSet<String>,
     nodes: &mut BTreeMap<String, BuildPlanNode>,
     order: &mut Vec<String>,
 ) -> Result<Option<String>> {
-    let resolved_and_parsed =
-        match resolve_and_parse_recipe(query, recipe_root, recipe_dirs, is_root) {
-            Ok(v) => v,
-            Err(err) => {
-                if is_root {
-                    return Err(err);
-                }
-                return Ok(None);
+    let resolved_and_parsed = match resolve_and_parse_recipe(
+        query,
+        recipe_root,
+        recipe_dirs,
+        is_root,
+        metadata_adapter,
+    ) {
+        Ok(v) => v,
+        Err(err) => {
+            if is_root {
+                return Err(err);
             }
-        };
+            return Ok(None);
+        }
+    };
 
-    let Some((resolved, parsed)) = resolved_and_parsed else {
+    let Some(resolved_parsed) = resolved_and_parsed else {
         if is_root {
             anyhow::bail!(
                 "no overlapping recipe found in bioconda metadata for '{}'",
@@ -611,6 +700,15 @@ fn visit_build_plan_node(
         }
         return Ok(None);
     };
+    let resolved = &resolved_parsed.resolved;
+    let parsed = &resolved_parsed.parsed;
+    if resolved_parsed.build_skip && !is_root {
+        log_progress(format!(
+            "phase=dependency action=skip package={} reason=build.skip=true",
+            resolved.recipe_name
+        ));
+        return Ok(None);
+    }
 
     let canonical = normalize_name(&resolved.recipe_name);
     if !is_root && !is_buildable_recipe(&resolved, &parsed) {
@@ -709,6 +807,7 @@ fn visit_build_plan_node(
                 policy,
                 recipe_root,
                 recipe_dirs,
+                metadata_adapter,
                 visiting,
                 visited,
                 nodes,
@@ -736,7 +835,7 @@ fn visit_build_plan_node(
     nodes.insert(
         canonical.clone(),
         BuildPlanNode {
-            name: resolved.recipe_name,
+            name: resolved.recipe_name.clone(),
             direct_bioconda_deps: bioconda_deps,
         },
     );
@@ -871,12 +970,49 @@ fn resolve_and_parse_recipe(
     recipe_root: &Path,
     recipe_dirs: &[RecipeDir],
     allow_identifier_lookup: bool,
-) -> Result<Option<(ResolvedRecipe, ParsedMeta)>> {
+    metadata_adapter: &MetadataAdapter,
+) -> Result<Option<ResolvedParsedRecipe>> {
     let Some(resolved) =
         resolve_recipe_for_tool_mode(tool_name, recipe_root, recipe_dirs, allow_identifier_lookup)?
     else {
         return Ok(None);
     };
+    let parsed_result =
+        parse_meta_for_resolved(&resolved, metadata_adapter).with_context(|| {
+            format!(
+                "failed to parse rendered metadata for {}",
+                resolved.meta_path.display()
+            )
+        })?;
+    Ok(Some(ResolvedParsedRecipe {
+        resolved,
+        parsed: parsed_result.parsed,
+        build_skip: parsed_result.build_skip,
+    }))
+}
+
+fn parse_meta_for_resolved(
+    resolved: &ResolvedRecipe,
+    metadata_adapter: &MetadataAdapter,
+) -> Result<ParsedRecipeResult> {
+    match metadata_adapter {
+        MetadataAdapter::Native => parse_meta_for_resolved_native(resolved),
+        MetadataAdapter::Conda => parse_meta_for_resolved_conda(resolved),
+        MetadataAdapter::Auto => match parse_meta_for_resolved_conda(resolved) {
+            Ok(parsed) => Ok(parsed),
+            Err(err) => {
+                log_progress(format!(
+                    "phase=metadata-adapter status=fallback recipe={} from=conda to=native reason={}",
+                    resolved.recipe_name,
+                    compact_reason(&err.to_string(), 240)
+                ));
+                parse_meta_for_resolved_native(resolved)
+            }
+        },
+    }
+}
+
+fn parse_meta_for_resolved_native(resolved: &ResolvedRecipe) -> Result<ParsedRecipeResult> {
     let meta_text = fs::read_to_string(&resolved.meta_path)
         .with_context(|| format!("failed to read metadata {}", resolved.meta_path.display()))?;
     let selector_ctx = SelectorContext::for_rpm_build();
@@ -887,13 +1023,84 @@ fn resolve_and_parse_recipe(
             resolved.meta_path.display()
         )
     })?;
+    let build_skip = rendered_meta_declares_build_skip(&rendered);
     let parsed = parse_rendered_meta(&rendered).with_context(|| {
         format!(
             "failed to parse rendered metadata for {}",
             resolved.meta_path.display()
         )
     })?;
-    Ok(Some((resolved, parsed)))
+    Ok(ParsedRecipeResult { parsed, build_skip })
+}
+
+fn parse_meta_for_resolved_conda(resolved: &ResolvedRecipe) -> Result<ParsedRecipeResult> {
+    let output = Command::new("python3")
+        .arg(CONDA_RENDER_ADAPTER_SCRIPT)
+        .arg(&resolved.variant_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| {
+            format!(
+                "running conda render adapter for {}",
+                resolved.variant_dir.display()
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!(
+            "conda render adapter failed (status: {}) stdout={} stderr={}",
+            output.status,
+            compact_reason(&stdout, 200),
+            compact_reason(&stderr, 400)
+        );
+    }
+
+    let adapter: CondaRenderMetadata =
+        serde_json::from_slice(&output.stdout).with_context(|| {
+            format!(
+                "parsing conda render adapter JSON for {}",
+                resolved.variant_dir.display()
+            )
+        })?;
+
+    let build_dep_specs_raw = adapter.build_dep_specs_raw;
+    let host_dep_specs_raw = adapter.host_dep_specs_raw;
+    let run_dep_specs_raw = adapter.run_dep_specs_raw;
+
+    let parsed = ParsedMeta {
+        package_name: adapter.package_name,
+        version: adapter.version,
+        build_number: adapter.build_number,
+        source_url: adapter.source_url,
+        source_folder: adapter.source_folder,
+        homepage: adapter.homepage,
+        license: adapter.license,
+        summary: adapter.summary,
+        source_patches: adapter.source_patches,
+        build_script: adapter.build_script,
+        noarch_python: adapter.noarch_python,
+        build_dep_specs_raw: build_dep_specs_raw.clone(),
+        host_dep_specs_raw: host_dep_specs_raw.clone(),
+        run_dep_specs_raw: run_dep_specs_raw.clone(),
+        build_deps: normalize_dep_specs_to_set(&build_dep_specs_raw),
+        host_deps: normalize_dep_specs_to_set(&host_dep_specs_raw),
+        run_deps: normalize_dep_specs_to_set(&run_dep_specs_raw),
+    };
+
+    Ok(ParsedRecipeResult {
+        parsed,
+        build_skip: adapter.build_skip,
+    })
+}
+
+fn normalize_dep_specs_to_set(raw_specs: &[String]) -> BTreeSet<String> {
+    raw_specs
+        .iter()
+        .filter_map(|raw| normalize_dependency_name(raw))
+        .collect()
 }
 
 fn load_top_tools(tools_csv: &Path, top_n: usize) -> Result<Vec<PriorityTool>> {
@@ -954,6 +1161,7 @@ fn process_tool(
     sources_dir: &Path,
     bad_spec_dir: &Path,
     build_config: &BuildConfig,
+    metadata_adapter: &MetadataAdapter,
 ) -> ReportEntry {
     let software_slug = normalize_name(&tool.software);
 
@@ -997,57 +1205,7 @@ fn process_tool(
         }
     };
 
-    let meta_text = match fs::read_to_string(&resolved.meta_path) {
-        Ok(v) => v,
-        Err(err) => {
-            let reason = format!(
-                "failed to read metadata {}: {err}",
-                resolved.meta_path.display()
-            );
-            quarantine_note(bad_spec_dir, &software_slug, &reason);
-            return ReportEntry {
-                software: tool.software.clone(),
-                priority: tool.priority,
-                status: "quarantined".to_string(),
-                reason,
-                overlap_recipe: resolved.recipe_name,
-                overlap_reason: resolved.overlap_reason,
-                variant_dir: resolved.variant_dir.display().to_string(),
-                package_name: String::new(),
-                version: String::new(),
-                payload_spec_path: String::new(),
-                meta_spec_path: String::new(),
-                staged_build_sh: String::new(),
-            };
-        }
-    };
-
-    let selector_ctx = SelectorContext::for_rpm_build();
-    let selected_meta = apply_selectors(&meta_text, &selector_ctx);
-
-    let rendered = match render_meta_yaml(&selected_meta) {
-        Ok(v) => v,
-        Err(err) => {
-            let reason = format!("failed to render Jinja in metadata: {err}");
-            quarantine_note(bad_spec_dir, &software_slug, &reason);
-            return ReportEntry {
-                software: tool.software.clone(),
-                priority: tool.priority,
-                status: "quarantined".to_string(),
-                reason,
-                overlap_recipe: resolved.recipe_name,
-                overlap_reason: resolved.overlap_reason,
-                variant_dir: resolved.variant_dir.display().to_string(),
-                package_name: String::new(),
-                version: String::new(),
-                payload_spec_path: String::new(),
-                meta_spec_path: String::new(),
-                staged_build_sh: String::new(),
-            };
-        }
-    };
-
-    let mut parsed = match parse_rendered_meta(&rendered) {
+    let parsed_result = match parse_meta_for_resolved(&resolved, metadata_adapter) {
         Ok(v) => v,
         Err(err) => {
             let reason = format!("failed to parse rendered metadata: {err}");
@@ -1068,7 +1226,7 @@ fn process_tool(
             };
         }
     };
-    if rendered_meta_declares_build_skip(&rendered) {
+    if parsed_result.build_skip {
         clear_quarantine_note(bad_spec_dir, &software_slug);
         return ReportEntry {
             software: tool.software.clone(),
@@ -1078,13 +1236,14 @@ fn process_tool(
             overlap_recipe: resolved.recipe_name,
             overlap_reason: resolved.overlap_reason,
             variant_dir: resolved.variant_dir.display().to_string(),
-            package_name: parsed.package_name,
-            version: parsed.version,
+            package_name: parsed_result.parsed.package_name,
+            version: parsed_result.parsed.version,
             payload_spec_path: String::new(),
             meta_spec_path: String::new(),
             staged_build_sh: String::new(),
         };
     }
+    let mut parsed = parsed_result.parsed;
 
     let version_state =
         match payload_version_state(&build_config.topdir, &software_slug, &parsed.version) {
@@ -1679,9 +1838,7 @@ fn resolve_recipe_for_tool_mode(
         return build_resolved(recipe, "plus-normalization-match");
     }
 
-    if allow_identifier_lookup
-        && let Some(recipe) = select_fallback_recipe(&lower, recipe_dirs)
-    {
+    if allow_identifier_lookup && let Some(recipe) = select_fallback_recipe(&lower, recipe_dirs) {
         return build_resolved(recipe, "fallback-directory-match");
     }
 
@@ -2964,9 +3121,7 @@ fn rewrite_glob_copy_to_prefix_bin_line(line: &str) -> Option<Vec<String>> {
     Some(vec![
         format!("{indent}while IFS= read -r -d '' _bioconda2rpm_src; do"),
         format!("{indent}  cp \"$_bioconda2rpm_src\" \"$PREFIX/bin/\""),
-        format!(
-            "{indent}done < <(find . -maxdepth 2 -type f -name '{pattern}' -print0)"
-        ),
+        format!("{indent}done < <(find . -maxdepth 2 -type f -name '{pattern}' -print0)"),
     ])
 }
 
@@ -3313,10 +3468,8 @@ mkdir -p %{bioconda_source_subdir}\n"
         && parsed.source_url.contains("userApps.")
         && parsed.source_url.contains(".src.tgz")
     {
-        source_unpack_prep = source_unpack_prep.replace(
-            "--strip-components=1",
-            "--strip-components=2",
-        );
+        source_unpack_prep =
+            source_unpack_prep.replace("--strip-components=1", "--strip-components=2");
     }
 
     let mut build_requires = BTreeSet::new();
@@ -6573,7 +6726,10 @@ source:
   git_rev: v0.14.0
 "#;
         let parsed = parse_rendered_meta(rendered).expect("parse rendered meta");
-        assert_eq!(parsed.source_url, "git+https://github.com/jts/nanopolish.git#v0.14.0");
+        assert_eq!(
+            parsed.source_url,
+            "git+https://github.com/jts/nanopolish.git#v0.14.0"
+        );
     }
 
     #[test]

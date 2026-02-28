@@ -120,3 +120,8 @@ Current baseline includes:
 3. Build dependency graph resolution and quarantine flow.
 4. Generate SPEC files using Phoreus profile.
 5. Integrate containerized `rpmbuild` execution and report emission.
+
+## 8. Reliability Validation Scope
+
+- Reliability KPI denominator for redesign validation is the full Bioconda `linux-aarch64` buildable subset.
+- First-pass success target on this denominator is `>=99%`.

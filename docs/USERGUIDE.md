@@ -80,6 +80,10 @@ Common optional flags:
 - `--reports-dir <path>`: report directory override.
 - `--no-deps`: disable Bioconda dependency closure.
 - `--dependency-policy <run-only|build-host-run|runtime-transitive-root-build-host>`.
+- `--metadata-adapter <auto|conda|native>`:
+  - `auto` (default): try conda-build rendering first, then fallback to native parser.
+  - `conda`: require conda-build adapter success.
+  - `native`: use in-crate selector/Jinja parser only.
 
 Up-to-date behavior:
 

@@ -109,3 +109,9 @@
 - Nim ecosystem dependencies (`nim`, `nimble`, `nim-*`) map to `phoreus-nim-2.2` rather than distro Nim package names.
 - Generated payload specs must route Nim/Nimble through `/usr/local/phoreus/nim/2.2` and isolate nimble state under payload prefix.
 - Selector handling distinguishes Linux `aarch64` from `arm64` (macOS) to avoid dropping valid Linux build dependencies.
+
+## 2026-02-28
+
+### Redesign KPI denominator decision
+- The >99% first-pass success KPI denominator is defined as the full Bioconda `linux-aarch64` buildable subset.
+- This denominator will be used for phase-1 validation reporting and gating.

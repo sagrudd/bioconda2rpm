@@ -159,3 +159,7 @@ NFR-004 Maintainability
 
 NFR-005 Enterprise-readiness
 - The architecture shall support future integration with dedicated per-architecture runners.
+
+NFR-006 Reliability target denominator
+- The primary reliability KPI denominator shall be the full Bioconda `linux-aarch64` buildable subset.
+- First-pass build success target for this denominator shall be `>=99%`.

@@ -141,6 +141,7 @@ Definition of "first-pass success":
    - top N priority tools
    - all requested tools in campaign
    - full Bioconda linux-aarch64 subset
+   - Decision (2026-02-28): full Bioconda linux-aarch64 subset
 
 2. For 99% KPI, do we exclude packages flagged as architecture-incompatible upstream?
 

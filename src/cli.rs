@@ -67,6 +67,13 @@ pub enum RenderStrategy {
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
+pub enum MetadataAdapter {
+    Auto,
+    Conda,
+    Native,
+}
+
+#[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
 pub enum OutputSelection {
     All,
 }
@@ -130,6 +137,11 @@ pub struct BuildArgs {
     #[arg(long, value_enum, default_value_t = RenderStrategy::JinjaFull)]
     pub render_strategy: RenderStrategy,
 
+    /// Metadata ingestion adapter.
+    /// `auto` tries conda-build rendering first, then falls back to native parser.
+    #[arg(long, value_enum, default_value_t = MetadataAdapter::Auto)]
+    pub metadata_adapter: MetadataAdapter,
+
     /// How to handle recipes with outputs: sections.
     #[arg(long, value_enum, default_value_t = OutputSelection::All)]
     pub outputs: OutputSelection,
@@ -184,6 +196,11 @@ pub struct GeneratePrioritySpecsArgs {
     /// Optional explicit report output directory.
     #[arg(long)]
     pub reports_dir: Option<PathBuf>,
+
+    /// Metadata ingestion adapter.
+    /// `auto` tries conda-build rendering first, then falls back to native parser.
+    #[arg(long, value_enum, default_value_t = MetadataAdapter::Auto)]
+    pub metadata_adapter: MetadataAdapter,
 }
 
 pub fn default_topdir() -> PathBuf {
@@ -216,7 +233,7 @@ impl BuildArgs {
 
     pub fn execution_summary(&self) -> String {
         format!(
-            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} arch={arch:?} naming={naming:?} render={render:?} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
+            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} arch={arch:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
             pkg = self.package,
             stage = self.stage,
             deps = self.with_deps(),
@@ -231,6 +248,7 @@ impl BuildArgs {
             arch = self.arch,
             naming = self.naming_profile,
             render = self.render_strategy,
+            metadata_adapter = self.metadata_adapter,
             outputs = self.outputs,
             missing = self.missing_dependency,
             local_repo_count = self.phoreus_local_repo.len(),
@@ -285,6 +303,7 @@ mod tests {
         assert_eq!(args.arch, BuildArch::Host);
         assert_eq!(args.naming_profile, NamingProfile::Phoreus);
         assert_eq!(args.render_strategy, RenderStrategy::JinjaFull);
+        assert_eq!(args.metadata_adapter, MetadataAdapter::Auto);
         assert_eq!(args.outputs, OutputSelection::All);
         assert!(args.effective_topdir().ends_with("bioconda2rpm"));
         assert!(
@@ -344,6 +363,8 @@ mod tests {
             "fail",
             "--arch",
             "aarch64",
+            "--metadata-adapter",
+            "native",
             "--reports-dir",
             "/reports",
         ])
@@ -358,6 +379,7 @@ mod tests {
         assert_eq!(args.container_mode, ContainerMode::Auto);
         assert_eq!(args.missing_dependency, MissingDependencyPolicy::Fail);
         assert_eq!(args.arch, BuildArch::Aarch64);
+        assert_eq!(args.metadata_adapter, MetadataAdapter::Native);
         assert_eq!(args.effective_topdir(), PathBuf::from("/rpmbuild"));
         assert_eq!(args.effective_reports_dir(), PathBuf::from("/reports"));
     }
@@ -389,6 +411,7 @@ mod tests {
         assert_eq!(args.top_n, 10);
         assert_eq!(args.container_image, "almalinux:9");
         assert_eq!(args.container_engine, "docker");
+        assert_eq!(args.metadata_adapter, MetadataAdapter::Auto);
         assert!(args.effective_topdir().ends_with("bioconda2rpm"));
         assert!(
             args.effective_bad_spec_dir()
