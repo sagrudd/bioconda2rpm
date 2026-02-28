@@ -24,6 +24,7 @@ fn main() -> ExitCode {
 
     match cli.command {
         cli::Command::Build(mut args) => {
+            priority_specs::reset_cancellation();
             let topdir = args.effective_topdir();
             let bad_spec = args.effective_bad_spec_dir();
             let reports = args.effective_reports_dir();
@@ -160,6 +161,7 @@ fn main() -> ExitCode {
             }
         }
         cli::Command::GeneratePrioritySpecs(mut args) => {
+            priority_specs::reset_cancellation();
             let topdir = args.effective_topdir();
             let bad_spec = args.effective_bad_spec_dir();
             let reports = args.effective_reports_dir();

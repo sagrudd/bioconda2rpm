@@ -1,4 +1,5 @@
 use crossterm::cursor::Show;
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -215,6 +216,25 @@ fn run_ui_loop(title: String, rx: Receiver<UiEvent>) {
             }
         }
 
+        if terminal.is_some() {
+            while event::poll(Duration::from_millis(0)).unwrap_or(false) {
+                if let Ok(Event::Key(key)) = event::read() {
+                    if key.kind == KeyEventKind::Press
+                        && key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        crate::priority_specs::request_cancellation(
+                            "cancelled by user (Ctrl-C in ratatui)",
+                        );
+                        state.summary =
+                            Some("cancelling build and clearing queued work...".to_string());
+                        done = true;
+                        break;
+                    }
+                }
+            }
+        }
+
         if let Some(term) = terminal.as_mut() {
             let _ = term.draw(|f| draw_ui(f, &state));
         }
@@ -259,7 +279,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
 
     let elapsed = state.started.elapsed().as_secs();
     let header = Paragraph::new(format!(
-        "{} | elapsed={}m{:02}s",
+        "{} | elapsed={}m{:02}s | Ctrl-C cancels",
         state.title,
         elapsed / 60,
         elapsed % 60

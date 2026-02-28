@@ -17,6 +17,7 @@ use std::fs::{self, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -137,6 +138,8 @@ static PHOREUS_NIM_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static BUILD_STABILITY_CACHE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 type ProgressSink = Arc<dyn Fn(String) + Send + Sync + 'static>;
 static PROGRESS_SINK: OnceLock<Mutex<Option<ProgressSink>>> = OnceLock::new();
+static CANCELLATION_REQUESTED: AtomicBool = AtomicBool::new(false);
+static CANCELLATION_REASON: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 const CONDA_RENDER_ADAPTER_SCRIPT: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/conda_render_ir.py");
 
@@ -176,6 +179,51 @@ pub fn clear_progress_sink() {
     if let Ok(mut guard) = lock.lock() {
         *guard = None;
     }
+}
+
+pub fn reset_cancellation() {
+    CANCELLATION_REQUESTED.store(false, AtomicOrdering::SeqCst);
+    let lock = CANCELLATION_REASON.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = lock.lock() {
+        *guard = None;
+    }
+}
+
+pub fn request_cancellation(reason: impl Into<String>) {
+    let reason = reason.into();
+    CANCELLATION_REQUESTED.store(true, AtomicOrdering::SeqCst);
+    let lock = CANCELLATION_REASON.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = lock.lock()
+        && guard.is_none()
+    {
+        *guard = Some(reason.clone());
+    }
+    log_progress(format!(
+        "phase=build status=cancel-requested reason={}",
+        compact_reason(&reason, 240)
+    ));
+}
+
+fn cancellation_requested() -> bool {
+    CANCELLATION_REQUESTED.load(AtomicOrdering::SeqCst)
+}
+
+fn cancellation_reason() -> String {
+    let lock = CANCELLATION_REASON.get_or_init(|| Mutex::new(None));
+    match lock.lock() {
+        Ok(guard) => guard
+            .clone()
+            .unwrap_or_else(|| "cancelled by user".to_string()),
+        Err(_) => "cancelled by user".to_string(),
+    }
+}
+
+fn cancellation_error(context: &str) -> anyhow::Error {
+    anyhow::anyhow!("{}: {}", context, cancellation_reason())
+}
+
+fn is_cancellation_failure(reason: &str) -> bool {
+    reason.contains("cancelled by user")
 }
 
 fn format_elapsed(elapsed: Duration) -> String {
@@ -348,6 +396,9 @@ struct ToolsCsvRow {
 }
 
 pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<GenerationSummary> {
+    if cancellation_requested() {
+        return Err(cancellation_error("generation cancelled before start"));
+    }
     let recipe_root = args.effective_recipe_root();
     let topdir = args.effective_topdir();
     let specs_dir = topdir.join("SPECS");
@@ -488,6 +539,9 @@ fn collect_requested_build_packages(args: &BuildArgs) -> Result<Vec<String>> {
 }
 
 pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
+    if cancellation_requested() {
+        return Err(cancellation_error("build cancelled before start"));
+    }
     let build_started = Instant::now();
     let recipe_root = args.effective_recipe_root();
     let requested_packages = collect_requested_build_packages(args)?;
@@ -726,6 +780,16 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     let mut fail_reason: Option<String> = None;
 
     for (idx, key) in plan_order.iter().enumerate() {
+        if cancellation_requested() {
+            let reason = cancellation_reason();
+            log_progress(format!(
+                "phase=build status=cancelled package={} reason={}",
+                root_request,
+                compact_reason(&reason, 240)
+            ));
+            fail_reason = Some(reason);
+            break;
+        }
         let Some(node) = plan_nodes.get(key) else {
             continue;
         };
@@ -1009,7 +1073,8 @@ fn run_build_batch_queue(
     let mut build_order = Vec::new();
 
     while !ready.is_empty() || running > 0 {
-        while running < queue_workers && !ready.is_empty() {
+        let cancelled = cancellation_requested();
+        while !cancelled && running < queue_workers && !ready.is_empty() {
             let key = ready.pop_front().unwrap_or_default();
             if key.is_empty() || finalized.contains(&key) {
                 continue;
@@ -1060,13 +1125,28 @@ fn run_build_batch_queue(
             });
         }
 
+        if cancelled && !ready.is_empty() {
+            let dropped = ready.len();
+            log_progress(format!(
+                "phase=batch-queue status=cancelled action=drop-queued dropped={} running={}",
+                dropped, running
+            ));
+            ready.clear();
+        }
+
         if running == 0 {
             break;
         }
 
-        let (done_key, entry, elapsed) = rx
-            .recv()
-            .context("batch queue worker channel closed unexpectedly")?;
+        let (done_key, entry, elapsed) = match rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(msg) => msg,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                continue;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                anyhow::bail!("batch queue worker channel closed unexpectedly");
+            }
+        };
         running = running.saturating_sub(1);
         if finalized.contains(&done_key) {
             continue;
@@ -1203,12 +1283,21 @@ fn run_build_batch_queue(
             if finalized.contains(key) {
                 continue;
             }
-            let reason = "scheduler ended before node became buildable".to_string();
-            quarantine_note(bad_spec_dir.as_path(), key, &reason);
+            let reason = if cancellation_requested() {
+                "cancelled by user before scheduling".to_string()
+            } else {
+                "scheduler ended before node became buildable".to_string()
+            };
+            let status = if cancellation_requested() {
+                "skipped".to_string()
+            } else {
+                quarantine_note(bad_spec_dir.as_path(), key, &reason);
+                "quarantined".to_string()
+            };
             results.push(ReportEntry {
                 software: node.name.clone(),
                 priority: 0,
-                status: "quarantined".to_string(),
+                status,
                 reason: reason.clone(),
                 overlap_recipe: node.name.clone(),
                 overlap_reason: "dependency-closure".to_string(),
@@ -1219,7 +1308,10 @@ fn run_build_batch_queue(
                 meta_spec_path: String::new(),
                 staged_build_sh: String::new(),
             });
-            if args.missing_dependency == MissingDependencyPolicy::Fail && fail_reason.is_none() {
+            if !cancellation_requested()
+                && args.missing_dependency == MissingDependencyPolicy::Fail
+                && fail_reason.is_none()
+            {
                 fail_reason = Some(reason);
             }
         }
@@ -1234,6 +1326,13 @@ fn run_build_batch_queue(
     let report_csv = reports_dir.join(format!("build_{report_stem}.csv"));
     let report_md = reports_dir.join(format!("build_{report_stem}.md"));
     write_reports(&results, &report_json, &report_csv, &report_md)?;
+
+    if cancellation_requested() {
+        anyhow::bail!(
+            "build cancelled by user (report_md={})",
+            report_md.display()
+        );
+    }
 
     if let Some(reason) = fail_reason {
         anyhow::bail!(
@@ -2747,6 +2846,23 @@ fn process_tool(
         build_spec_chain_in_container(build_config, &payload_spec_path, &software_slug)
     {
         let reason = format!("payload spec build failed in container: {err}");
+        if is_cancellation_failure(&reason) {
+            clear_quarantine_note(bad_spec_dir, &software_slug);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "skipped".to_string(),
+                reason: "cancelled by user".to_string(),
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: payload_spec_path.display().to_string(),
+                meta_spec_path: meta_spec_path.display().to_string(),
+                staged_build_sh: staged_build_sh.display().to_string(),
+            };
+        }
         quarantine_note(bad_spec_dir, &software_slug, &reason);
         return ReportEntry {
             software: tool.software.clone(),
@@ -2770,6 +2886,23 @@ fn process_tool(
         &format!("{software_slug}-default"),
     ) {
         let reason = format!("meta spec build failed in container: {err}");
+        if is_cancellation_failure(&reason) {
+            clear_quarantine_note(bad_spec_dir, &software_slug);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "skipped".to_string(),
+                reason: "cancelled by user".to_string(),
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: payload_spec_path.display().to_string(),
+                meta_spec_path: meta_spec_path.display().to_string(),
+                staged_build_sh: staged_build_sh.display().to_string(),
+            };
+        }
         quarantine_note(bad_spec_dir, &software_slug, &reason);
         return ReportEntry {
             software: tool.software.clone(),
@@ -7246,6 +7379,9 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
     );
 
     let run_once = |attempt: usize| -> Result<(std::process::ExitStatus, String)> {
+        if cancellation_requested() {
+            return Err(cancellation_error("container build cancelled before start"));
+        }
         let step_started = Instant::now();
         log_progress(format!(
             "phase=container-build status=started label={} spec={} attempt={} image={}",
@@ -7300,6 +7436,11 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
                 .is_some()
             {
                 break;
+            }
+            if cancellation_requested() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(cancellation_error("container build cancelled by user"));
             }
             std::thread::sleep(Duration::from_secs(1));
             if Instant::now() >= next_heartbeat_at {
