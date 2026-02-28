@@ -3593,6 +3593,15 @@ fi\n\
 \n\
 # Ensure common install subdirectories exist for build.sh scripts that assume them.\n\
 mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\" \"$PREFIX/include\"\n\
+export BUILD_PREFIX=\"${{BUILD_PREFIX:-$PREFIX}}\"\n\
+mkdir -p \"$BUILD_PREFIX/share/gnuconfig\"\n\
+if [[ ! -f \"$BUILD_PREFIX/share/gnuconfig/config.guess\" || ! -f \"$BUILD_PREFIX/share/gnuconfig/config.sub\" ]]; then\n\
+  cfg_dir=$(find /usr/share -maxdepth 4 -type f -name config.guess -print 2>/dev/null | head -n 1 | xargs -r dirname)\n\
+  if [[ -n \"$cfg_dir\" && -f \"$cfg_dir/config.guess\" && -f \"$cfg_dir/config.sub\" ]]; then\n\
+    cp -f \"$cfg_dir/config.guess\" \"$BUILD_PREFIX/share/gnuconfig/config.guess\" || true\n\
+    cp -f \"$cfg_dir/config.sub\" \"$BUILD_PREFIX/share/gnuconfig/config.sub\" || true\n\
+  fi\n\
+fi\n\
 \n\
 # Conda recipes often assume host/build dependencies are co-located in one PREFIX.\n\
 # Phoreus keeps dependencies in versioned prefixes, so stage compatibility symlinks.\n\
@@ -4484,6 +4493,7 @@ fn map_build_dependency(dep: &str) -> String {
         "isa-l" => "isa-l-devel".to_string(),
         "jansson" => "jansson-devel".to_string(),
         "libcurl" => "libcurl-devel".to_string(),
+        "libgd" => "gd-devel".to_string(),
         "libblas" => "openblas-devel".to_string(),
         "libdeflate" => "libdeflate-devel".to_string(),
         "liblzma-devel" => "xz-devel".to_string(),
@@ -4543,6 +4553,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "gnuconfig" => "automake".to_string(),
         "libblas" => "openblas".to_string(),
         "libiconv" => "glibc".to_string(),
+        "libgd" => "gd".to_string(),
         "liblzma-devel" => "xz".to_string(),
         "liblapack" => "lapack".to_string(),
         "llvmdev" => "llvm".to_string(),
@@ -5300,6 +5311,25 @@ else\n\
       sleep $((attempt * 2))\n\
     done\n\
   done\n\
+fi\n\
+if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
+  if [[ \"$source0_url\" == ftp://* ]]; then\n\
+    ftp_file=\"$source0_url\"\n\
+    ftp_file=\"${{ftp_file%%\\#*}}\"\n\
+    ftp_file=\"${{ftp_file%%\\?*}}\"\n\
+    ftp_file=\"${{ftp_file##*/}}\"\n\
+    if [[ -n \"$ftp_file\" ]]; then\n\
+      echo \"Attempting FTP prefetch fallback: $source0_url\"\n\
+      if command -v wget >/dev/null 2>&1; then\n\
+        wget -O \"/work/SOURCES/$ftp_file\" \"$source0_url\" || true\n\
+      elif command -v curl >/dev/null 2>&1; then\n\
+        curl -L --fail --output \"/work/SOURCES/$ftp_file\" \"$source0_url\" || true\n\
+      fi\n\
+      if [[ -s \"/work/SOURCES/$ftp_file\" ]]; then\n\
+        spectool_ok=1\n\
+      fi\n\
+    fi\n\
+  fi\n\
 fi\n\
 if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
   echo 'source download failed after retries' >&2\n\
