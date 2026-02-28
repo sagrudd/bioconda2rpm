@@ -110,6 +110,7 @@ struct BuildConfig {
     target_arch: String,
     parallel_policy: ParallelPolicy,
     build_jobs: usize,
+    force_rebuild: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -445,6 +446,7 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
         target_arch: target_arch.clone(),
         parallel_policy: args.parallel_policy.clone(),
         build_jobs: args.effective_build_jobs(),
+        force_rebuild: false,
     };
     ensure_phoreus_python_bootstrap(&build_config, &specs_dir)
         .context("bootstrapping Phoreus Python runtime")?;
@@ -557,9 +559,10 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     let bad_spec_dir = args.effective_bad_spec_dir();
     let effective_metadata_adapter = args.effective_metadata_adapter();
     log_progress(format!(
-        "phase=build-start requested_packages={} deps_enabled={} dependency_policy={:?} recipe_root={} topdir={} target_id={} target_root={} target_arch={} deployment_profile={:?} metadata_adapter={:?} parallel_policy={:?} build_jobs={} effective_build_jobs={} queue_workers={} effective_queue_workers={}",
+        "phase=build-start requested_packages={} deps_enabled={} force_rebuild={} dependency_policy={:?} recipe_root={} topdir={} target_id={} target_root={} target_arch={} deployment_profile={:?} metadata_adapter={:?} parallel_policy={:?} build_jobs={} effective_build_jobs={} queue_workers={} effective_queue_workers={}",
         requested_packages.len(),
         args.with_deps(),
+        args.force,
         args.dependency_policy,
         recipe_root.display(),
         topdir.display(),
@@ -614,6 +617,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         target_arch: target_arch.clone(),
         parallel_policy: args.parallel_policy.clone(),
         build_jobs: args.effective_build_jobs(),
+        force_rebuild: args.force,
     };
     ensure_phoreus_python_bootstrap(&build_config, &specs_dir)
         .context("bootstrapping Phoreus Python runtime")?;
@@ -697,12 +701,14 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     }
 
     let root_slug = normalize_name(&root_recipe.resolved.recipe_name);
-    if let PayloadVersionState::UpToDate { existing_version } = payload_version_state(
-        &topdir,
-        &build_config.target_root,
-        &root_slug,
-        &root_recipe.parsed.version,
-    )? {
+    if !args.force
+        && let PayloadVersionState::UpToDate { existing_version } = payload_version_state(
+            &topdir,
+            &build_config.target_root,
+            &root_slug,
+            &root_recipe.parsed.version,
+        )?
+    {
         log_progress(format!(
             "phase=build status=up-to-date package={} version={} local_version={} elapsed={}",
             root_recipe.resolved.recipe_name,
@@ -753,6 +759,12 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
             report_csv,
             report_md,
         });
+    }
+    if args.force {
+        log_progress(format!(
+            "phase=build status=force-rebuild package={} version={} reason=explicit-force-flag",
+            root_recipe.resolved.recipe_name, root_recipe.parsed.version
+        ));
     }
 
     let (plan_order, plan_nodes) = collect_build_plan(
@@ -1491,6 +1503,7 @@ pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
             stage: BuildStage::Rpm,
             dependency_policy: args.dependency_policy.clone(),
             no_deps: args.no_deps,
+            force: false,
             container_mode: ContainerMode::Ephemeral,
             container_profile: args.container_profile,
             container_engine: args.container_engine.clone(),
@@ -2372,7 +2385,9 @@ fn process_tool(
             };
         }
     };
-    if let PayloadVersionState::UpToDate { existing_version } = &version_state {
+    if !build_config.force_rebuild
+        && let PayloadVersionState::UpToDate { existing_version } = &version_state
+    {
         clear_quarantine_note(bad_spec_dir, &software_slug);
         return ReportEntry {
             software: tool.software.clone(),
@@ -2391,6 +2406,12 @@ fn process_tool(
             meta_spec_path: String::new(),
             staged_build_sh: String::new(),
         };
+    }
+    if build_config.force_rebuild {
+        log_progress(format!(
+            "phase=package status=force-rebuild package={} version={} reason=explicit-force-flag",
+            tool.software, parsed.version
+        ));
     }
 
     let staged_build_sh_name = format!("bioconda-{}-build.sh", software_slug);
