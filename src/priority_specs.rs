@@ -2626,6 +2626,7 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
     }
 
     let pip_name = match normalized.as_str() {
+        "python-annoy" => "annoy".to_string(),
         "python-kaleido" => "kaleido".to_string(),
         "matplotlib-base" => "matplotlib".to_string(),
         other => other.to_string(),
@@ -6540,6 +6541,10 @@ source:
         assert_eq!(
             conda_dep_to_pip_requirement("python-kaleido ==0.2.1"),
             Some("kaleido==0.2.1".to_string())
+        );
+        assert_eq!(
+            conda_dep_to_pip_requirement("python-annoy >=1.11.5"),
+            Some("annoy>=1.11.5".to_string())
         );
         assert_eq!(
             conda_dep_to_pip_requirement("matplotlib-base >=3.5.2"),
