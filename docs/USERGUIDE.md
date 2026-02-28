@@ -21,6 +21,7 @@ Primary production workflow:
 - Priority CSV available (example: `../software_query/tools.csv`).
 - Build container image available locally or pullable, e.g.:
   - `dropworm_dev_almalinux_9_5:0.1.2`
+  - or build one from `containers/rpm-build-images/` in this repository
 
 ## 3. Default Paths
 

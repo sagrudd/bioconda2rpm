@@ -50,3 +50,9 @@ Defaults when omitted:
 - `docs/CLI_contract.md`
 - `docs/dependency_policy.md`
 - `docs/decision_log.md`
+
+## Container Build Images
+
+Reference multi-arch (`amd64` + `arm64`) build image Dockerfiles are in:
+
+- `containers/rpm-build-images/`

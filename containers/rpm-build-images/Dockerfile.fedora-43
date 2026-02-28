@@ -1,0 +1,61 @@
+# syntax=docker/dockerfile:1.7
+ARG TARGETPLATFORM=linux/amd64
+FROM --platform=$TARGETPLATFORM fedora:43
+
+ARG TARGETPLATFORM
+ARG TARGETARCH
+
+LABEL org.opencontainers.image.title="bioconda2rpm build image (Fedora 43)" \
+      org.opencontainers.image.description="Container for SPEC -> SRPM -> RPM workflows used by bioconda2rpm" \
+      org.opencontainers.image.vendor="Phoreus" \
+      org.opencontainers.image.base.name="fedora:43"
+
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    TERM=xterm-256color
+
+RUN set -eux; \
+    dnf -y upgrade --refresh; \
+    dnf -y install --setopt=install_weak_deps=False \
+      bash \
+      ca-certificates \
+      diffutils \
+      findutils \
+      file \
+      gawk \
+      gcc \
+      gcc-c++ \
+      git \
+      glibc-langpack-en \
+      grep \
+      gzip \
+      make \
+      patch \
+      pkgconfig \
+      python3 \
+      python3-pip \
+      python3-setuptools \
+      python3-wheel \
+      redhat-rpm-config \
+      rpm-build \
+      rpmdevtools \
+      sed \
+      shadow-utils \
+      tar \
+      unzip \
+      util-linux \
+      wget \
+      which \
+      xz \
+      zip; \
+    dnf clean all; \
+    rm -rf /var/cache/dnf
+
+RUN useradd --create-home --uid 1000 builder; \
+    mkdir -p /work /rpmbuild; \
+    chown -R builder:builder /work /rpmbuild
+
+WORKDIR /work
+USER builder
+
+CMD ["/bin/bash"]
