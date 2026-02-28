@@ -95,12 +95,30 @@ impl UiState {
                     self.packages.insert(
                         pkg.to_string(),
                         PackageState {
-                            status: "planned".to_string(),
+                            status: "pending".to_string(),
                             detail: "dependency-plan".to_string(),
                             seq: self.seq,
                         },
                     );
                 }
+            }
+        }
+        if kv.get("phase").map(|v| v.as_str()) == Some("dependency") {
+            if let Some(dep) = kv.get("to") {
+                let action = kv.get("action").map(|s| s.as_str()).unwrap_or_default();
+                let dep_status = match action {
+                    "follow" => "waiting",
+                    "scan" => "queued",
+                    "unresolved" => "blocked",
+                    "skip" => "skipped",
+                    _ => "queued",
+                };
+                self.seq = self.seq.saturating_add(1);
+                self.packages.entry(dep.clone()).or_insert(PackageState {
+                    status: dep_status.to_string(),
+                    detail: "dependency-edge".to_string(),
+                    seq: self.seq,
+                });
             }
         }
         if let Some(pkg) = kv.get("package") {
@@ -332,8 +350,8 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
             "running" | "started" => 0,
             "quarantined" | "blocked" => 1,
             "generated" | "up-to-date" => 2,
-            "queued" => 3,
-            "planned" => 4,
+            "queued" | "waiting" => 3,
+            "pending" | "planned" => 4,
             "skipped" => 5,
             _ => 6,
         }
@@ -351,7 +369,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
             "up-to-date" => Style::default().fg(Color::LightGreen),
             "quarantined" => Style::default().fg(Color::Red),
             "skipped" => Style::default().fg(Color::Yellow),
-            "queued" | "planned" => Style::default().fg(Color::Blue),
+            "queued" | "waiting" | "pending" | "planned" => Style::default().fg(Color::Blue),
             "blocked" => Style::default().fg(Color::LightRed),
             "started" | "running" => Style::default().fg(Color::Cyan),
             _ => Style::default(),
