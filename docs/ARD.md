@@ -15,9 +15,12 @@ The product is structured as layered components:
 1. CLI Layer
 - CLAP-based command parsing and validated runtime configuration.
 - Primary command: `build`.
+- Includes `recipes` management command for explicit Bioconda mirror operations.
 
 2. Recipe Discovery Layer
-- Resolves package recipe location under user-provided recipe root.
+- Resolves package recipe location under managed default root or user-provided override.
+- Manages first-run repository bootstrap by cloning Bioconda recipes into `<topdir>/bioconda-recipes` when absent.
+- Supports sync and explicit ref checkout (branch/tag/commit) for managed repository state control.
 - Applies versioned-subdirectory selection rule (highest version).
 - Resolves overlap from priority input tools to Bioconda recipe directories.
 
@@ -90,7 +93,8 @@ The product is structured as layered components:
 ## 3. Runtime Boundaries
 
 - Inputs:
-  - External Bioconda recipe root (required)
+  - Optional external Bioconda recipe root override
+  - Otherwise managed default Bioconda recipe root at `<topdir>/bioconda-recipes/recipes`
   - Package name
   - Optional build output topdir override (`--topdir`)
   - Optional quarantine directory override (`--bad-spec-dir`)
@@ -106,6 +110,7 @@ The product is structured as layered components:
   - No build artifacts or recipe staging shall default into the crate workspace.
   - Container runtime must use controlled build profiles only (`almalinux-9.7`, `almalinux-10.1`, `fedora-43`), defaulting to `almalinux-9.7`.
   - Missing local container image for a selected profile is auto-built from `containers/rpm-build-images/` before package build stages run.
+  - Managed Bioconda recipe synchronization/checkout must be implemented in-process and must not require a system `git` binary.
 
 ## 4. Platform and Build Strategy
 

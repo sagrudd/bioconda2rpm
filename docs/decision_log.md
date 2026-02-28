@@ -96,6 +96,16 @@
   - `fedora-43`
 - If the selected image is missing locally, bioconda2rpm auto-builds it from the matching Dockerfile under `containers/rpm-build-images/`.
 
+### 2026-02-28 Amendment - Managed Bioconda recipes repository
+- `--recipe-root` is now optional across build/generation/regression commands.
+- Default recipe source is managed at `~/bioconda2rpm/bioconda-recipes/recipes`.
+- On first run, repository bootstrap auto-clones `https://github.com/bioconda/bioconda-recipes`.
+- New controls:
+  - `--sync-recipes` for build/regression/generation
+  - `--recipe-ref <branch|tag|commit>` for explicit checkout
+  - `bioconda2rpm recipes` command for explicit lifecycle operations
+- Implementation requirement: do not depend on system `git`; repository operations use embedded git bindings.
+
 ### 2026-02-27 Amendment - Architecture restriction policy
 - Architecture/toolchain incompatibility should be classified explicitly, not treated as a global rollout blocker.
 - Example: missing x86 SIMD headers (`emmintrin.h`) on `aarch64` is classified as `amd64_only`.

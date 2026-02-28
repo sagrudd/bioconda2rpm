@@ -1,5 +1,6 @@
 mod cli;
 mod priority_specs;
+mod recipe_repo;
 mod ui;
 
 use clap::Parser;
@@ -21,7 +22,7 @@ fn main() -> ExitCode {
     let cli = cli::Cli::parse();
 
     match cli.command {
-        cli::Command::Build(args) => {
+        cli::Command::Build(mut args) => {
             let topdir = args.effective_topdir();
             let bad_spec = args.effective_bad_spec_dir();
             let reports = args.effective_reports_dir();
@@ -29,6 +30,30 @@ fn main() -> ExitCode {
                 eprintln!("failed to prepare workspace directories: {err}");
                 return ExitCode::FAILURE;
             }
+            let recipe_request = recipe_repo::RecipeRepoRequest {
+                recipe_root: args.effective_recipe_root(),
+                recipe_repo_root: args.effective_recipe_repo_root(),
+                recipe_ref: args.recipe_ref.clone(),
+                sync: args.effective_recipe_sync(),
+            };
+            let recipes = match recipe_repo::ensure_recipe_repository(&recipe_request) {
+                Ok(state) => state,
+                Err(err) => {
+                    eprintln!("failed to prepare bioconda recipes repository: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            args.recipe_root = Some(recipes.recipe_root.clone());
+            println!(
+                "recipes root={} repo={} managed_git={} cloned={} fetched={} checkout={} head={}",
+                recipes.recipe_root.display(),
+                recipes.recipe_repo_root.display(),
+                recipes.managed_git,
+                recipes.cloned,
+                recipes.fetched,
+                recipes.checked_out.as_deref().unwrap_or("none"),
+                recipes.head.as_deref().unwrap_or("unknown")
+            );
             let ui_mode = args.effective_ui_mode();
             let mut progress_ui = if ui_mode == cli::UiMode::Ratatui {
                 let title = format!("bioconda2rpm build ({})", args.effective_target_id());
@@ -94,7 +119,7 @@ fn main() -> ExitCode {
                 }
             }
         }
-        cli::Command::GeneratePrioritySpecs(args) => {
+        cli::Command::GeneratePrioritySpecs(mut args) => {
             let topdir = args.effective_topdir();
             let bad_spec = args.effective_bad_spec_dir();
             let reports = args.effective_reports_dir();
@@ -102,6 +127,30 @@ fn main() -> ExitCode {
                 eprintln!("failed to prepare workspace directories: {err}");
                 return ExitCode::FAILURE;
             }
+            let recipe_request = recipe_repo::RecipeRepoRequest {
+                recipe_root: args.effective_recipe_root(),
+                recipe_repo_root: args.effective_recipe_repo_root(),
+                recipe_ref: args.recipe_ref.clone(),
+                sync: args.effective_recipe_sync(),
+            };
+            let recipes = match recipe_repo::ensure_recipe_repository(&recipe_request) {
+                Ok(state) => state,
+                Err(err) => {
+                    eprintln!("failed to prepare bioconda recipes repository: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            args.recipe_root = Some(recipes.recipe_root.clone());
+            println!(
+                "recipes root={} repo={} managed_git={} cloned={} fetched={} checkout={} head={}",
+                recipes.recipe_root.display(),
+                recipes.recipe_repo_root.display(),
+                recipes.managed_git,
+                recipes.cloned,
+                recipes.fetched,
+                recipes.checked_out.as_deref().unwrap_or("none"),
+                recipes.head.as_deref().unwrap_or("unknown")
+            );
 
             match priority_specs::run_generate_priority_specs(&args) {
                 Ok(summary) => {
@@ -121,7 +170,7 @@ fn main() -> ExitCode {
                 }
             }
         }
-        cli::Command::Regression(args) => {
+        cli::Command::Regression(mut args) => {
             let topdir = args.effective_topdir();
             let bad_spec = args.effective_bad_spec_dir();
             let reports = args.effective_reports_dir();
@@ -129,6 +178,30 @@ fn main() -> ExitCode {
                 eprintln!("failed to prepare workspace directories: {err}");
                 return ExitCode::FAILURE;
             }
+            let recipe_request = recipe_repo::RecipeRepoRequest {
+                recipe_root: args.effective_recipe_root(),
+                recipe_repo_root: args.effective_recipe_repo_root(),
+                recipe_ref: args.recipe_ref.clone(),
+                sync: args.effective_recipe_sync(),
+            };
+            let recipes = match recipe_repo::ensure_recipe_repository(&recipe_request) {
+                Ok(state) => state,
+                Err(err) => {
+                    eprintln!("failed to prepare bioconda recipes repository: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            args.recipe_root = Some(recipes.recipe_root.clone());
+            println!(
+                "recipes root={} repo={} managed_git={} cloned={} fetched={} checkout={} head={}",
+                recipes.recipe_root.display(),
+                recipes.recipe_repo_root.display(),
+                recipes.managed_git,
+                recipes.cloned,
+                recipes.fetched,
+                recipes.checked_out.as_deref().unwrap_or("none"),
+                recipes.head.as_deref().unwrap_or("unknown")
+            );
 
             match priority_specs::run_regression(&args) {
                 Ok(summary) => {
@@ -150,6 +223,40 @@ fn main() -> ExitCode {
                 }
                 Err(err) => {
                     eprintln!("regression failed: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        cli::Command::Recipes(args) => {
+            let topdir = args.effective_topdir();
+            if let Err(err) = fs::create_dir_all(&topdir) {
+                eprintln!(
+                    "failed to prepare workspace directory {}: {err}",
+                    topdir.display()
+                );
+                return ExitCode::FAILURE;
+            }
+            let recipe_request = recipe_repo::RecipeRepoRequest {
+                recipe_root: args.effective_recipe_root(),
+                recipe_repo_root: args.effective_recipe_repo_root(),
+                recipe_ref: args.recipe_ref.clone(),
+                sync: args.effective_recipe_sync(),
+            };
+            match recipe_repo::ensure_recipe_repository(&recipe_request) {
+                Ok(state) => {
+                    println!(
+                        "recipes root={} repo={} managed_git={} cloned={} fetched={} checkout={} head={}",
+                        state.recipe_root.display(),
+                        state.recipe_repo_root.display(),
+                        state.managed_git,
+                        state.cloned,
+                        state.fetched,
+                        state.checked_out.as_deref().unwrap_or("none"),
+                        state.head.as_deref().unwrap_or("unknown")
+                    );
+                }
+                Err(err) => {
+                    eprintln!("recipes command failed: {err:#}");
                     return ExitCode::FAILURE;
                 }
             }

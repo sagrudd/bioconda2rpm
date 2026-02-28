@@ -10,7 +10,7 @@
 ## 2) Core Command
 
 ```bash
-bioconda2rpm build <tool...> --recipe-root <path/to/bioconda-recipes/recipes>
+bioconda2rpm build <tool...>
 ```
 
 ## 3) Fast Start Examples
@@ -18,15 +18,14 @@ bioconda2rpm build <tool...> --recipe-root <path/to/bioconda-recipes/recipes>
 Single package:
 
 ```bash
-cargo run -- build samtools \
-  --recipe-root ../bioconda-recipes/recipes
+cargo run -- build samtools
 ```
 
 Batch queue build:
 
 ```bash
 cargo run -- build bbmap samtools blast fastqc \
-  --recipe-root ../bioconda-recipes/recipes \
+  --sync-recipes \
   --queue-workers 4 \
   --parallel-policy adaptive \
   --build-jobs 4
@@ -36,7 +35,6 @@ Packages file:
 
 ```bash
 cargo run -- build \
-  --recipe-root ../bioconda-recipes/recipes \
   --packages-file ./docs/verification_software.txt
 ```
 
@@ -52,7 +50,6 @@ Usage:
 
 ```bash
 cargo run -- build fastqc \
-  --recipe-root ../bioconda-recipes/recipes \
   --container-profile almalinux-10.1
 ```
 
@@ -64,9 +61,19 @@ Behavior:
   - `containers/rpm-build-images/Dockerfile.almalinux-10.1`
   - `containers/rpm-build-images/Dockerfile.fedora-43`
 
+Managed recipes behavior:
+
+- first run auto-clones `https://github.com/bioconda/bioconda-recipes`
+- default managed root: `~/bioconda2rpm/bioconda-recipes/recipes`
+- `--sync-recipes` refreshes managed refs from origin
+- `--recipe-ref <branch|tag|commit>` checks out explicit ref
+
 ## 5) Important Build Flags
 
 - `--stage spec|srpm|rpm` (default: `rpm`)
+- `--recipe-root <path>` (optional override)
+- `--sync-recipes`
+- `--recipe-ref <branch|tag|commit>`
 - `--dependency-policy run-only|build-host-run|runtime-transitive-root-build-host`
 - `--no-deps` (disable dependency closure)
 - `--missing-dependency fail|skip|quarantine` (default: `quarantine`)
@@ -114,7 +121,6 @@ Regression (PR top-N):
 
 ```bash
 cargo run -- regression \
-  --recipe-root ../bioconda-recipes/recipes \
   --tools-csv ../software_query/tools.csv \
   --mode pr --top-n 25
 ```
@@ -123,7 +129,6 @@ Regression (curated software list):
 
 ```bash
 cargo run -- regression \
-  --recipe-root ../bioconda-recipes/recipes \
   --tools-csv ../software_query/tools.csv \
   --software-list ./docs/verification_software.txt
 ```
@@ -132,9 +137,15 @@ Priority generation helper:
 
 ```bash
 cargo run -- generate-priority-specs \
-  --recipe-root ../bioconda-recipes/recipes \
   --tools-csv ../software_query/tools.csv \
   --top-n 10
+```
+
+Managed recipes command:
+
+```bash
+cargo run -- recipes --sync
+cargo run -- recipes --recipe-ref 2025.07.1
 ```
 
 ## 9) Operational Rules
@@ -152,4 +163,3 @@ cargo run -- generate-priority-specs \
   - `~/bioconda2rpm/targets/<target-id>/reports/build_logs/<tool>.log`
 - Check dependency graph:
   - `~/bioconda2rpm/targets/<target-id>/reports/dependency_graphs/<tool>.md`
-

@@ -11,7 +11,7 @@ This document defines functional and non-functional requirements for `bioconda2r
 ## 2. Scope
 
 In scope:
-- Parse Bioconda recipes from a user-provided recipe root.
+- Parse Bioconda recipes from either a managed default clone or a user-provided override root.
 - Render `meta.yaml` using full Jinja evaluation.
 - Resolve recipe dependencies per configurable policy.
 - Generate and build RPM artifacts by stage (`spec`, `srpm`, `rpm`).
@@ -27,6 +27,7 @@ Out of scope (initial baseline):
 FR-001 CLI entrypoint
 - The tool shall expose `bioconda2rpm build <package>` as the primary command.
 - The build command shall accept one or more root packages per invocation and optional package-list file input.
+- The tool shall expose `bioconda2rpm recipes` for explicit recipe repository lifecycle operations.
 
 FR-002 Build stage control
 - The tool shall support stage selection: `spec`, `srpm`, `rpm`.
@@ -65,6 +66,11 @@ FR-009 Architecture behavior
 FR-010 Artifact/output location
 - The CLI shall default build artifact output to `~/bioconda2rpm` when `--topdir` is omitted.
 - The CLI shall create default output directories when missing.
+- The CLI shall default Bioconda recipe root to `~/bioconda2rpm/bioconda-recipes/recipes` when `--recipe-root` is omitted.
+- On first run with default recipe root, the system shall clone `https://github.com/bioconda/bioconda-recipes`.
+- The build/regression/generation commands shall expose recipe repository sync (`--sync-recipes`) and explicit ref selection (`--recipe-ref`).
+- The recipes command shall expose equivalent lifecycle controls (`--sync`, `--recipe-ref`).
+- Managed recipe repository operations shall not require a system `git` executable.
 - Canonical recipe-derived assets shall remain shared at `<topdir>/SPECS` and `<topdir>/SOURCES`.
 - SRPM/RPM/report/quarantine outputs shall be isolated per build target under `<topdir>/targets/<target-id>/...`.
 - `<target-id>` shall be a deterministic slug derived from container image and target architecture.

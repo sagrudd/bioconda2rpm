@@ -317,6 +317,7 @@ struct ToolsCsvRow {
 }
 
 pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<GenerationSummary> {
+    let recipe_root = args.effective_recipe_root();
     let topdir = args.effective_topdir();
     let specs_dir = topdir.join("SPECS");
     let sources_dir = topdir.join("SOURCES");
@@ -351,7 +352,7 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
     let mut tools = load_top_tools(&args.tools_csv, args.top_n)?;
     tools.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.line_no.cmp(&b.line_no)));
 
-    let recipe_dirs = discover_recipe_dirs(&args.recipe_root)?;
+    let recipe_dirs = discover_recipe_dirs(&recipe_root)?;
     let build_config = BuildConfig {
         topdir: topdir.clone(),
         target_id,
@@ -375,7 +376,7 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
             .map(|(idx, tool)| {
                 let entry = process_tool(
                     tool,
-                    &args.recipe_root,
+                    &recipe_root,
                     &recipe_dirs,
                     &specs_dir,
                     &sources_dir,
@@ -455,6 +456,7 @@ fn collect_requested_build_packages(args: &BuildArgs) -> Result<Vec<String>> {
 
 pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     let build_started = Instant::now();
+    let recipe_root = args.effective_recipe_root();
     let requested_packages = collect_requested_build_packages(args)?;
     let topdir = args.effective_topdir();
     let specs_dir = topdir.join("SPECS");
@@ -472,7 +474,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         requested_packages.len(),
         args.with_deps(),
         args.dependency_policy,
-        args.recipe_root.display(),
+        recipe_root.display(),
         topdir.display(),
         target_id,
         target_root.display(),
@@ -508,7 +510,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         &target_arch,
     )?;
     sync_reference_python_specs(&specs_dir).context("syncing reference Phoreus Python specs")?;
-    let recipe_dirs = discover_recipe_dirs(&args.recipe_root)?;
+    let recipe_dirs = discover_recipe_dirs(&recipe_root)?;
     log_progress(format!(
         "phase=recipe-discovery status=completed recipe_count={} elapsed={}",
         recipe_dirs.len(),
@@ -551,7 +553,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
 
     let Some(root_recipe) = resolve_and_parse_recipe(
         &root_request,
-        &args.recipe_root,
+        &recipe_root,
         &recipe_dirs,
         true,
         &effective_metadata_adapter,
@@ -668,7 +670,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         &root_request,
         args.with_deps(),
         &args.dependency_policy,
-        &args.recipe_root,
+        &recipe_root,
         &recipe_dirs,
         &effective_metadata_adapter,
         &build_config.target_arch,
@@ -756,7 +758,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         };
         let entry = process_tool(
             &tool,
-            &args.recipe_root,
+            &recipe_root,
             &recipe_dirs,
             &specs_dir,
             &sources_dir,
@@ -868,6 +870,7 @@ fn run_build_batch_queue(
     metadata_adapter: &MetadataAdapter,
     build_started: Instant,
 ) -> Result<BuildSummary> {
+    let recipe_root = args.effective_recipe_root();
     let queue_workers = args.effective_queue_workers().max(1);
     log_progress(format!(
         "phase=batch-queue status=initialized roots={} queue_workers={} build_jobs_per_worker={} policy={:?}",
@@ -886,7 +889,7 @@ fn run_build_batch_queue(
             root,
             args.with_deps(),
             &args.dependency_policy,
-            &args.recipe_root,
+            &recipe_root,
             recipe_dirs,
             metadata_adapter,
             &build_config.target_arch,
@@ -956,7 +959,7 @@ fn run_build_batch_queue(
     ready.sort();
     let mut ready = VecDeque::from(ready);
 
-    let recipe_root = Arc::new(args.recipe_root.clone());
+    let recipe_root = Arc::new(recipe_root);
     let recipe_dirs = Arc::new(recipe_dirs.to_vec());
     let specs_dir = Arc::new(specs_dir.to_path_buf());
     let sources_dir = Arc::new(sources_dir.to_path_buf());
@@ -1249,6 +1252,7 @@ fn run_build_batch_queue(
 
 pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
     let campaign_started = Instant::now();
+    let recipe_root = args.effective_recipe_root();
     let topdir = args.effective_topdir();
     let target_arch = args.effective_target_arch();
     let target_id = args.effective_target_id();
@@ -1258,7 +1262,7 @@ pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
     log_progress(format!(
         "phase=regression-start mode={:?} recipe_root={} tools_csv={} topdir={} target_id={} target_root={} target_arch={} container_profile={:?} container_image={} deployment_profile={:?} metadata_adapter={:?} parallel_policy={:?} build_jobs={} effective_build_jobs={}",
         args.mode,
-        args.recipe_root.display(),
+        recipe_root.display(),
         args.tools_csv.display(),
         topdir.display(),
         target_id,
@@ -1344,7 +1348,9 @@ pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
             tool.software
         ));
         let build_args = BuildArgs {
-            recipe_root: args.recipe_root.clone(),
+            recipe_root: Some(recipe_root.clone()),
+            sync_recipes: false,
+            recipe_ref: None,
             topdir: Some(topdir.clone()),
             bad_spec_dir: Some(bad_spec_dir.clone()),
             reports_dir: Some(reports_dir.clone()),

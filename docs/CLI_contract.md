@@ -3,7 +3,7 @@
 ## Primary Command
 
 ```bash
-bioconda2rpm build <package...> --recipe-root <path>
+bioconda2rpm build <package...>
 ```
 
 Production expectation:
@@ -15,8 +15,10 @@ Production expectation:
 
 ```bash
 bioconda2rpm generate-priority-specs \
-  --recipe-root <path> \
   --tools-csv <path/to/tools.csv> \
+  [--recipe-root <path>] \
+  [--sync-recipes] \
+  [--recipe-ref <branch|tag|commit>] \
   [--container-profile <almalinux-9.7|almalinux-10.1|fedora-43>] \
   [--top-n 10] \
   [--workers <n>] \
@@ -27,17 +29,27 @@ bioconda2rpm generate-priority-specs \
 
 ```bash
 bioconda2rpm regression \
-  --recipe-root <path> \
   --tools-csv <path/to/tools.csv> \
+  [--recipe-root <path>] \
+  [--sync-recipes] \
+  [--recipe-ref <branch|tag|commit>] \
   [--software-list <path/to/software.txt>] \
   [--mode pr|nightly] \
   [--top-n 25]
 ```
 
+## Recipes Management Command
+
+```bash
+bioconda2rpm recipes [--topdir <path>] [--recipe-root <path>] [--sync] [--recipe-ref <branch|tag|commit>]
+```
+
 ## Required Inputs
 
 - `<package...>`: one or more Bioconda package names.
-- `--recipe-root <path>`: external path to Bioconda recipes clone.
+- Bioconda recipes input is optional:
+  - default managed clone path: `<topdir>/bioconda-recipes/recipes`
+  - first run auto-clones `https://github.com/bioconda/bioconda-recipes`
 
 ## Core Options
 
@@ -47,6 +59,12 @@ bioconda2rpm regression \
   - Default: `build-host-run`
 - `--no-deps`
   - Disables dependency closure for the requested package.
+- `--recipe-root <path>`
+  - Optional override for recipes root.
+- `--sync-recipes`
+  - Fetches latest refs from origin before command execution.
+- `--recipe-ref <branch|tag|commit>`
+  - Checks out explicit repository ref; implies repository fetch.
 - `--container-mode <ephemeral|running|auto>`
   - Default: `ephemeral`
 - `--container-profile <almalinux-9.7|almalinux-10.1|fedora-43>`
@@ -136,3 +154,4 @@ Regression-only options:
 - If local payload artifacts already match the requested Bioconda version, `build` exits with `up-to-date` status.
 - If Bioconda has a newer payload version than local artifacts, `build` rebuilds payload and bumps default/meta package version.
 - Package-specific heuristics require explicit temporary tagging with a retirement issue (`HEURISTIC-TEMP(issue=...)`) and are test-enforced.
+- Managed recipe repository operations do not require a system `git` binary.

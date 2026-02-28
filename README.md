@@ -5,14 +5,14 @@ Rust CLI to convert Bioconda recipes into Phoreus-style RPM artifacts.
 ## Baseline CLI
 
 ```bash
-cargo run -- build <package...> --recipe-root <path/to/bioconda-recipes/recipes>
+cargo run -- build <package...>
 ```
 
 Batch queue example:
 
 ```bash
 cargo run -- build bbmap samtools blast fastqc \
-  --recipe-root ../bioconda-recipes/recipes \
+  --sync-recipes \
   --parallel-policy adaptive \
   --build-jobs 4
 ```
@@ -23,7 +23,6 @@ Generate Phoreus payload/meta SPEC pairs for top-priority tools directly from Bi
 
 ```bash
 cargo run -- generate-priority-specs \
-  --recipe-root ../bioconda-recipes/recipes \
   --tools-csv ../software_query/tools.csv \
   --container-profile almalinux-9.7 \
   --top-n 10 \
@@ -48,6 +47,11 @@ Behavior:
 - Build chain is always: `SPEC -> SRPM -> RPM`.
 - SRPM and RPM build stages run inside the selected controlled container profile image.
 - If the selected image is missing locally, `bioconda2rpm` builds it automatically from `containers/rpm-build-images/`.
+- Bioconda recipes are managed automatically:
+  - first run clones `https://github.com/bioconda/bioconda-recipes` into `~/bioconda2rpm/bioconda-recipes`
+  - default recipe path becomes `~/bioconda2rpm/bioconda-recipes/recipes`
+  - `--sync-recipes` updates from remote
+  - `--recipe-ref <branch|tag|commit>` checks out an explicit ref
 - One canonical SPEC set is reused across OS targets; build outputs are target-scoped.
 - Build concurrency is policy-driven:
   - `--parallel-policy adaptive` (default): parallel first attempt, automatic serial retry, learned stability cache

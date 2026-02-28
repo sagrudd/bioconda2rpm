@@ -17,7 +17,7 @@ Primary production workflow:
 
 - Rust toolchain (`cargo`) available.
 - Container engine installed (default: `docker`).
-- Bioconda recipes clone available (example: `../bioconda-recipes/recipes`).
+- No external `git` binary requirement for recipe management.
 - Priority CSV available (example: `../software_query/tools.csv`).
 - Controlled build container profile selected via `--container-profile`:
   - `almalinux-9.7` (default) -> `phoreus/bioconda2rpm-build:almalinux-9.7`
@@ -30,6 +30,8 @@ Primary production workflow:
 When not overridden:
 
 - `topdir`: `~/bioconda2rpm`
+- managed Bioconda repository: `~/bioconda2rpm/bioconda-recipes`
+- managed Bioconda recipes root: `~/bioconda2rpm/bioconda-recipes/recipes`
 - canonical shared SPEC/SOURCE roots: `~/bioconda2rpm/SPECS`, `~/bioconda2rpm/SOURCES`
 - target-scoped quarantine folder: `~/bioconda2rpm/targets/<target-id>/BAD_SPEC`
 - target-scoped reports: `~/bioconda2rpm/targets/<target-id>/reports`
@@ -38,26 +40,27 @@ When not overridden:
 `<target-id>` is derived from `<container-image>-<target-arch>` using a sanitized stable slug.
 
 The tool creates these folders automatically if missing.
+On first run, if managed recipes are absent, bioconda2rpm clones `https://github.com/bioconda/bioconda-recipes` automatically.
 
 ## 4. Core Commands
 
 ### 4.1 Primary Build Command
 
 ```bash
-cargo run -- build <tool...> --recipe-root <path/to/recipes>
+cargo run -- build <tool...>
 ```
 
 Example:
 
 ```bash
-cargo run -- build bbmap --recipe-root ../bioconda-recipes/recipes
+cargo run -- build bbmap
 ```
 
 Batch example (multi-root queue):
 
 ```bash
 cargo run -- build bbmap samtools blast fastqc \
-  --recipe-root ../bioconda-recipes/recipes \
+  --sync-recipes \
   --parallel-policy adaptive \
   --build-jobs 4
 ```
@@ -66,7 +69,6 @@ Packages-file example:
 
 ```bash
 cargo run -- build \
-  --recipe-root ../bioconda-recipes/recipes \
   --packages-file ./docs/verification_software.txt
 ```
 
@@ -74,16 +76,24 @@ Optional container controls:
 
 ```bash
 cargo run -- build bbmap \
-  --recipe-root ../bioconda-recipes/recipes \
   --container-profile almalinux-10.1 \
   --container-engine docker
+```
+
+Recipe control examples:
+
+```bash
+# sync managed recipes repository before build
+cargo run -- build bbmap --sync-recipes
+
+# checkout a specific branch/tag/commit
+cargo run -- build bbmap --recipe-ref 2025.07.1
 ```
 
 ### 4.2 Development Helper Command (non-production)
 
 ```bash
 cargo run -- generate-priority-specs \
-  --recipe-root ../bioconda-recipes/recipes \
   --tools-csv ../software_query/tools.csv \
   --container-profile almalinux-9.7
 ```
@@ -94,7 +104,6 @@ PR corpus (top-N):
 
 ```bash
 cargo run -- regression \
-  --recipe-root ../bioconda-recipes/recipes \
   --tools-csv ../software_query/tools.csv \
   --mode pr \
   --top-n 25 \
@@ -106,7 +115,6 @@ Curated corpus from a text list (recommended for your essential/key 100):
 
 ```bash
 cargo run -- regression \
-  --recipe-root ../bioconda-recipes/recipes \
   --tools-csv ../software_query/tools.csv \
   --software-list /path/to/essential_100.txt \
   --deployment-profile production \
@@ -117,22 +125,41 @@ Nightly full corpus:
 
 ```bash
 cargo run -- regression \
-  --recipe-root ../bioconda-recipes/recipes \
   --tools-csv ../software_query/tools.csv \
   --mode nightly \
   --deployment-profile production \
   --arch x86-64
 ```
 
+### 4.4 Recipes Management Command
+
+```bash
+# ensure managed clone exists
+cargo run -- recipes
+
+# sync latest default branch from origin
+cargo run -- recipes --sync
+
+# checkout a specific branch/tag/commit
+cargo run -- recipes --recipe-ref 2025.07.1
+```
+
 ## 5. Required and Important Flags
 
 For `build`:
 
-- `--recipe-root <path>`: Bioconda recipe tree root.
 - `<tool...>` positional: one or more requested Bioconda package names.
 
 Common optional flags:
 
+- `--recipe-root <path>`:
+  - optional override for Bioconda recipes root.
+  - when omitted, uses managed path `<topdir>/bioconda-recipes/recipes`.
+- `--sync-recipes`:
+  - fetches latest refs from origin before run.
+- `--recipe-ref <branch|tag|commit>`:
+  - checks out explicit ref for the recipes repository.
+  - implies repository fetch behavior.
 - `--container-profile <almalinux-9.7|almalinux-10.1|fedora-43>`:
   - controls the only allowed container images for SRPM/RPM builds.
   - default: `almalinux-9.7`.
@@ -337,7 +364,6 @@ Merge-gate invocation example:
 
 ```bash
 cargo run -- build <tool> \
-  --recipe-root ../bioconda-recipes/recipes \
   --deployment-profile production \
   --arch x86-64 \
   --kpi-gate \

@@ -22,6 +22,8 @@ pub enum Command {
     Regression(RegressionArgs),
     /// Generate Phoreus payload/meta SPECs for top-priority tools from tools.csv.
     GeneratePrioritySpecs(GeneratePrioritySpecsArgs),
+    /// Manage the local Bioconda recipes mirror used by this tool.
+    Recipes(RecipesArgs),
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
@@ -148,9 +150,18 @@ pub enum UiMode {
 
 #[derive(Debug, clap::Args)]
 pub struct BuildArgs {
-    /// Root directory containing Bioconda recipes.
+    /// Optional root directory containing Bioconda recipes.
+    /// When omitted, bioconda2rpm manages a local clone at <topdir>/bioconda-recipes/recipes.
     #[arg(long)]
-    pub recipe_root: PathBuf,
+    pub recipe_root: Option<PathBuf>,
+
+    /// Sync managed recipes repository before build.
+    #[arg(long)]
+    pub sync_recipes: bool,
+
+    /// Branch/tag/commit to checkout for managed recipes repository.
+    #[arg(long)]
+    pub recipe_ref: Option<String>,
 
     /// RPM build topdir. Defaults to ~/bioconda2rpm when omitted.
     #[arg(long)]
@@ -265,9 +276,18 @@ pub struct BuildArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct GeneratePrioritySpecsArgs {
-    /// Root directory containing Bioconda recipes.
+    /// Optional root directory containing Bioconda recipes.
+    /// When omitted, bioconda2rpm manages a local clone at <topdir>/bioconda-recipes/recipes.
     #[arg(long)]
-    pub recipe_root: PathBuf,
+    pub recipe_root: Option<PathBuf>,
+
+    /// Sync managed recipes repository before generation.
+    #[arg(long)]
+    pub sync_recipes: bool,
+
+    /// Branch/tag/commit to checkout for managed recipes repository.
+    #[arg(long)]
+    pub recipe_ref: Option<String>,
 
     /// CSV file containing priority scores (RPM Priority Score column).
     #[arg(long)]
@@ -320,9 +340,18 @@ pub struct GeneratePrioritySpecsArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct RegressionArgs {
-    /// Root directory containing Bioconda recipes.
+    /// Optional root directory containing Bioconda recipes.
+    /// When omitted, bioconda2rpm manages a local clone at <topdir>/bioconda-recipes/recipes.
     #[arg(long)]
-    pub recipe_root: PathBuf,
+    pub recipe_root: Option<PathBuf>,
+
+    /// Sync managed recipes repository before campaign execution.
+    #[arg(long)]
+    pub sync_recipes: bool,
+
+    /// Branch/tag/commit to checkout for managed recipes repository.
+    #[arg(long)]
+    pub recipe_ref: Option<String>,
 
     /// CSV file containing priority scores (RPM Priority Score column).
     #[arg(long)]
@@ -407,11 +436,69 @@ pub struct RegressionArgs {
     pub kpi_min_success_rate: f64,
 }
 
+#[derive(Debug, clap::Args)]
+pub struct RecipesArgs {
+    /// Optional topdir override. Defaults to ~/bioconda2rpm.
+    #[arg(long)]
+    pub topdir: Option<PathBuf>,
+
+    /// Optional root directory containing Bioconda recipes.
+    /// When omitted, bioconda2rpm manages a local clone at <topdir>/bioconda-recipes/recipes.
+    #[arg(long)]
+    pub recipe_root: Option<PathBuf>,
+
+    /// Sync managed recipes repository with latest remote state.
+    #[arg(long)]
+    pub sync: bool,
+
+    /// Branch/tag/commit to checkout.
+    #[arg(long)]
+    pub recipe_ref: Option<String>,
+}
+
 pub fn default_topdir() -> PathBuf {
     match env::var_os("HOME") {
         Some(home) => PathBuf::from(home).join("bioconda2rpm"),
         None => PathBuf::from("bioconda2rpm"),
     }
+}
+
+pub fn default_managed_bioconda_repo_root(topdir: &std::path::Path) -> PathBuf {
+    topdir.join("bioconda-recipes")
+}
+
+pub fn default_managed_recipe_root(topdir: &std::path::Path) -> PathBuf {
+    default_managed_bioconda_repo_root(topdir).join("recipes")
+}
+
+pub fn normalize_recipe_root_input(path: &std::path::Path) -> PathBuf {
+    if path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .map(|v| v == "recipes")
+        .unwrap_or(false)
+    {
+        return path.to_path_buf();
+    }
+    if path.join("recipes").is_dir() {
+        return path.join("recipes");
+    }
+    path.to_path_buf()
+}
+
+pub fn infer_recipe_repo_root(recipe_root: &std::path::Path) -> PathBuf {
+    if recipe_root
+        .file_name()
+        .and_then(|v| v.to_str())
+        .map(|v| v == "recipes")
+        .unwrap_or(false)
+    {
+        return recipe_root
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| recipe_root.to_path_buf());
+    }
+    recipe_root.to_path_buf()
 }
 
 fn sanitize_target_component(raw: &str) -> String {
@@ -478,6 +565,21 @@ impl BuildArgs {
 
     pub fn effective_container_image(&self) -> &'static str {
         self.container_profile.image()
+    }
+
+    pub fn effective_recipe_root(&self) -> PathBuf {
+        self.recipe_root
+            .as_deref()
+            .map(normalize_recipe_root_input)
+            .unwrap_or_else(|| default_managed_recipe_root(&self.effective_topdir()))
+    }
+
+    pub fn effective_recipe_repo_root(&self) -> PathBuf {
+        infer_recipe_repo_root(&self.effective_recipe_root())
+    }
+
+    pub fn effective_recipe_sync(&self) -> bool {
+        self.sync_recipes || self.recipe_ref.is_some()
     }
 
     pub fn effective_target_id(&self) -> String {
@@ -556,12 +658,15 @@ impl BuildArgs {
 
     pub fn execution_summary(&self) -> String {
         format!(
-            "build requested_packages={requested_packages} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} target_id={target_id} target_root={target_root} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_profile={container_profile:?} container_image={container_image} container_engine={container_engine} parallel_policy={parallel_policy:?} build_jobs={build_jobs} effective_build_jobs={effective_build_jobs} queue_workers={queue_workers} effective_queue_workers={effective_queue_workers} ui={ui:?} effective_ui={effective_ui:?} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
+            "build requested_packages={requested_packages} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} recipe_repo_root={recipe_repo_root} recipe_sync={recipe_sync} recipe_ref={recipe_ref} topdir={topdir} target_id={target_id} target_root={target_root} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_profile={container_profile:?} container_image={container_image} container_engine={container_engine} parallel_policy={parallel_policy:?} build_jobs={build_jobs} effective_build_jobs={effective_build_jobs} queue_workers={queue_workers} effective_queue_workers={effective_queue_workers} ui={ui:?} effective_ui={effective_ui:?} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
             requested_packages = self.packages.len(),
             stage = self.stage,
             deps = self.with_deps(),
             policy = self.dependency_policy,
-            recipes = self.recipe_root.display(),
+            recipes = self.effective_recipe_root().display(),
+            recipe_repo_root = self.effective_recipe_repo_root().display(),
+            recipe_sync = self.effective_recipe_sync(),
+            recipe_ref = self.recipe_ref.as_deref().unwrap_or("default"),
             topdir = self.effective_topdir().display(),
             target_root = self.effective_target_root().display(),
             target_id = self.effective_target_id(),
@@ -605,6 +710,21 @@ impl GeneratePrioritySpecsArgs {
 
     pub fn effective_container_image(&self) -> &'static str {
         self.container_profile.image()
+    }
+
+    pub fn effective_recipe_root(&self) -> PathBuf {
+        self.recipe_root
+            .as_deref()
+            .map(normalize_recipe_root_input)
+            .unwrap_or_else(|| default_managed_recipe_root(&self.effective_topdir()))
+    }
+
+    pub fn effective_recipe_repo_root(&self) -> PathBuf {
+        infer_recipe_repo_root(&self.effective_recipe_root())
+    }
+
+    pub fn effective_recipe_sync(&self) -> bool {
+        self.sync_recipes || self.recipe_ref.is_some()
     }
 
     pub fn effective_target_arch(&self) -> String {
@@ -651,6 +771,21 @@ impl RegressionArgs {
 
     pub fn effective_container_image(&self) -> &'static str {
         self.container_profile.image()
+    }
+
+    pub fn effective_recipe_root(&self) -> PathBuf {
+        self.recipe_root
+            .as_deref()
+            .map(normalize_recipe_root_input)
+            .unwrap_or_else(|| default_managed_recipe_root(&self.effective_topdir()))
+    }
+
+    pub fn effective_recipe_repo_root(&self) -> PathBuf {
+        infer_recipe_repo_root(&self.effective_recipe_root())
+    }
+
+    pub fn effective_recipe_sync(&self) -> bool {
+        self.sync_recipes || self.recipe_ref.is_some()
     }
 
     pub fn effective_target_id(&self) -> String {
@@ -705,6 +840,27 @@ impl RegressionArgs {
     }
 }
 
+impl RecipesArgs {
+    pub fn effective_topdir(&self) -> PathBuf {
+        self.topdir.clone().unwrap_or_else(default_topdir)
+    }
+
+    pub fn effective_recipe_root(&self) -> PathBuf {
+        self.recipe_root
+            .as_deref()
+            .map(normalize_recipe_root_input)
+            .unwrap_or_else(|| default_managed_recipe_root(&self.effective_topdir()))
+    }
+
+    pub fn effective_recipe_repo_root(&self) -> PathBuf {
+        infer_recipe_repo_root(&self.effective_recipe_root())
+    }
+
+    pub fn effective_recipe_sync(&self) -> bool {
+        self.sync || self.recipe_ref.is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,14 +868,8 @@ mod tests {
 
     #[test]
     fn build_command_uses_expected_defaults() {
-        let cli = Cli::try_parse_from([
-            "bioconda2rpm",
-            "build",
-            "fastp",
-            "--recipe-root",
-            "/tmp/recipes",
-        ])
-        .expect("build defaults should parse");
+        let cli = Cli::try_parse_from(["bioconda2rpm", "build", "fastp"])
+            .expect("build defaults should parse");
 
         let Command::Build(args) = cli.command else {
             panic!("expected build command")
@@ -751,6 +901,10 @@ mod tests {
         assert_eq!(args.outputs, OutputSelection::All);
         assert_eq!(args.ui, UiMode::Auto);
         assert!(args.effective_topdir().ends_with("bioconda2rpm"));
+        assert!(
+            args.effective_recipe_root()
+                .ends_with(PathBuf::from("bioconda-recipes").join("recipes"))
+        );
         assert!(
             args.effective_target_root()
                 .starts_with(args.effective_topdir().join("targets"))
@@ -788,6 +942,7 @@ mod tests {
             panic!("expected build command")
         };
         assert_eq!(args.effective_topdir(), PathBuf::from("/rpmbuild"));
+        assert_eq!(args.effective_recipe_root(), PathBuf::from("/recipes"));
         assert_eq!(args.effective_bad_spec_dir(), PathBuf::from("/quarantine"));
         assert_eq!(
             args.effective_reports_dir(),
@@ -832,6 +987,9 @@ mod tests {
             "/reports",
             "--ui",
             "plain",
+            "--sync-recipes",
+            "--recipe-ref",
+            "master",
         ])
         .expect("build overrides should parse");
 
@@ -857,13 +1015,15 @@ mod tests {
         assert_eq!(args.effective_reports_dir(), PathBuf::from("/reports"));
         assert_eq!(args.ui, UiMode::Plain);
         assert_eq!(args.effective_ui_mode(), UiMode::Plain);
+        assert!(args.sync_recipes);
+        assert_eq!(args.recipe_ref.as_deref(), Some("master"));
+        assert!(args.effective_recipe_sync());
     }
 
     #[test]
-    fn build_requires_recipe_root() {
+    fn build_allows_implicit_recipe_root() {
         let parse = Cli::try_parse_from(["bioconda2rpm", "build", "fastqc"]);
-
-        assert!(parse.is_err());
+        assert!(parse.is_ok());
     }
 
     #[test]
@@ -921,8 +1081,6 @@ mod tests {
         let cli = Cli::try_parse_from([
             "bioconda2rpm",
             "generate-priority-specs",
-            "--recipe-root",
-            "/recipes",
             "--tools-csv",
             "/tmp/tools.csv",
         ])
@@ -943,6 +1101,10 @@ mod tests {
         assert_eq!(args.metadata_adapter, MetadataAdapter::Auto);
         assert!(args.effective_topdir().ends_with("bioconda2rpm"));
         assert!(
+            args.effective_recipe_root()
+                .ends_with(PathBuf::from("bioconda-recipes").join("recipes"))
+        );
+        assert!(
             args.effective_bad_spec_dir()
                 .starts_with(args.effective_target_root())
         );
@@ -959,8 +1121,6 @@ mod tests {
         let cli = Cli::try_parse_from([
             "bioconda2rpm",
             "regression",
-            "--recipe-root",
-            "/recipes",
             "--tools-csv",
             "/tmp/tools.csv",
         ])
@@ -978,6 +1138,10 @@ mod tests {
         assert_eq!(args.deployment_profile, DeploymentProfile::Production);
         assert_eq!(args.effective_metadata_adapter(), MetadataAdapter::Conda);
         assert_eq!(args.effective_target_arch(), "x86_64".to_string());
+        assert!(
+            args.effective_recipe_root()
+                .ends_with(PathBuf::from("bioconda-recipes").join("recipes"))
+        );
         assert!(
             args.effective_bad_spec_dir()
                 .starts_with(args.effective_target_root())
@@ -997,8 +1161,6 @@ mod tests {
         let cli = Cli::try_parse_from([
             "bioconda2rpm",
             "regression",
-            "--recipe-root",
-            "/recipes",
             "--tools-csv",
             "/tmp/tools.csv",
             "--container-profile",
@@ -1019,6 +1181,31 @@ mod tests {
             args.software_list,
             Some(PathBuf::from("/tmp/essential_100.txt"))
         );
+    }
+
+    #[test]
+    fn recipes_command_defaults_parse() {
+        let cli =
+            Cli::try_parse_from(["bioconda2rpm", "recipes"]).expect("recipes command should parse");
+        let Command::Recipes(args) = cli.command else {
+            panic!("expected recipes subcommand");
+        };
+        assert!(!args.sync);
+        assert!(args.recipe_ref.is_none());
+        assert!(args.effective_topdir().ends_with("bioconda2rpm"));
+        assert!(
+            args.effective_recipe_root()
+                .ends_with(PathBuf::from("bioconda-recipes").join("recipes"))
+        );
+    }
+
+    #[test]
+    fn normalize_recipe_root_input_accepts_repo_root() {
+        let root = normalize_recipe_root_input(std::path::Path::new("/tmp/bioconda-recipes"));
+        assert_eq!(root, PathBuf::from("/tmp/bioconda-recipes"));
+        let recipes =
+            normalize_recipe_root_input(std::path::Path::new("/tmp/bioconda-recipes/recipes"));
+        assert_eq!(recipes, PathBuf::from("/tmp/bioconda-recipes/recipes"));
     }
 
     #[test]
