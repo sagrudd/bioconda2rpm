@@ -3685,6 +3685,16 @@ fi\n\
     fi\n\
     fi\n\
     \n\
+    # STAR can hit container OOM/SIGKILL during final link on constrained hosts.\n\
+    # Keep canonical single-core policy but also reduce memory pressure.\n\
+    if [[ \"%{{tool}}\" == \"star\" ]]; then\n\
+    sed -i 's/-O3/-O1/g' ./build.sh || true\n\
+    sed -i 's/-march=armv8-a//g' ./build.sh || true\n\
+    sed -i 's/-march=armv8.4-a//g' ./build.sh || true\n\
+    sed -i 's/-march=x86-64-v3//g' ./build.sh || true\n\
+    export LDFLAGS=\"-Wl,--no-keep-memory ${{LDFLAGS:-}}\"\n\
+    fi\n\
+    \n\
     # Bcftools recipes often pass GSL_LIBS=-lgsl only, but EL9's GSL\n\
     # requires explicit CBLAS linkage at link time.\n\
     if [[ \"%{{tool}}\" == \"bcftools\" ]]; then\n\
