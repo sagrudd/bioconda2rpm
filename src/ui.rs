@@ -114,11 +114,11 @@ impl UiState {
                 ("dependency-plan", _) => "planned",
                 _ => "queued",
             };
-            let status = kv
+            let mut status = kv
                 .get("status")
                 .cloned()
                 .unwrap_or_else(|| inferred_status.to_string());
-            let detail = kv
+            let mut detail = kv
                 .get("reason")
                 .or_else(|| kv.get("elapsed"))
                 .cloned()
@@ -130,6 +130,28 @@ impl UiState {
                     ("dependency-plan", _) => "dependency-plan".to_string(),
                     _ => phase.to_string(),
                 });
+
+            // Normalize scheduler events into user-facing package lifecycle states.
+            if phase == "batch-queue" {
+                status = match status.as_str() {
+                    "dispatch" => "running".to_string(),
+                    "completed" => kv
+                        .get("result")
+                        .cloned()
+                        .unwrap_or_else(|| "completed".to_string()),
+                    "cancelled" => "skipped".to_string(),
+                    other => other.to_string(),
+                };
+                if status == "running" {
+                    detail = format!(
+                        "worker-dispatch running={} queued={}",
+                        kv.get("running").cloned().unwrap_or_default(),
+                        kv.get("queued").cloned().unwrap_or_default()
+                    );
+                } else if let Some(elapsed) = kv.get("elapsed") {
+                    detail = elapsed.clone();
+                }
+            }
             self.packages.insert(
                 pkg.clone(),
                 PackageState {
@@ -305,7 +327,23 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
         .iter()
         .map(|(pkg, ps)| (pkg.clone(), ps.clone()))
         .collect::<Vec<_>>();
-    rows.sort_by(|a, b| b.1.seq.cmp(&a.1.seq).then_with(|| a.0.cmp(&b.0)));
+    let rank = |status: &str| -> usize {
+        match status {
+            "running" | "started" => 0,
+            "quarantined" | "blocked" => 1,
+            "generated" | "up-to-date" => 2,
+            "queued" => 3,
+            "planned" => 4,
+            "skipped" => 5,
+            _ => 6,
+        }
+    };
+    rows.sort_by(|a, b| {
+        rank(&a.1.status)
+            .cmp(&rank(&b.1.status))
+            .then_with(|| b.1.seq.cmp(&a.1.seq))
+            .then_with(|| a.0.cmp(&b.0))
+    });
     rows.truncate(12);
     let table_rows = rows.into_iter().map(|(pkg, ps)| {
         let style = match ps.status.as_str() {
