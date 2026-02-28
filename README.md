@@ -52,6 +52,7 @@ Behavior:
   - default recipe path becomes `~/bioconda2rpm/bioconda-recipes/recipes`
   - `--sync-recipes` updates from remote
   - `--recipe-ref <branch|tag|commit>` checks out an explicit ref
+- Phoreus bootstrap runtime specs are bundled in `bioconda2rpm` generation logic; no external `../software_query/...` python spec path is required.
 - One canonical SPEC set is reused across OS targets; build outputs are target-scoped.
 - Build concurrency is policy-driven:
   - `--parallel-policy adaptive` (default): parallel first attempt, automatic serial retry, learned stability cache

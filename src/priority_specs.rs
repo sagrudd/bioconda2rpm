@@ -118,8 +118,8 @@ struct PrecompiledBinaryOverride {
 }
 
 const PHOREUS_PYTHON_VERSION: &str = "3.11";
+const PHOREUS_PYTHON_FULL_VERSION: &str = "3.11.14";
 const PHOREUS_PYTHON_PACKAGE: &str = "phoreus-python-3.11";
-const REFERENCE_PYTHON_SPECS_DIR: &str = "../software_query/rpm/python/specs";
 const PHOREUS_R_VERSION: &str = "4.5.2";
 const PHOREUS_R_MINOR: &str = "4.5";
 const PHOREUS_R_PACKAGE: &str = "phoreus-r-4.5.2";
@@ -5974,40 +5974,18 @@ fn is_nim_ecosystem_dependency_name(dep: &str) -> bool {
 }
 
 fn sync_reference_python_specs(specs_dir: &Path) -> Result<()> {
-    let source_dir = Path::new(REFERENCE_PYTHON_SPECS_DIR);
-    if !source_dir.exists() {
-        anyhow::bail!(
-            "reference python specs directory not found: {}",
-            source_dir.display()
-        );
-    }
-
-    for entry in
-        fs::read_dir(source_dir).with_context(|| format!("reading {}", source_dir.display()))?
-    {
-        let entry = entry.with_context(|| format!("reading entry in {}", source_dir.display()))?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|v| v.to_str()) else {
-            continue;
-        };
-        if !(name.starts_with("phoreus-python-") && name.ends_with(".spec")) {
-            continue;
-        }
-        let destination = specs_dir.join(name);
-        fs::copy(&path, &destination).with_context(|| {
-            format!(
-                "copying reference python spec {} -> {}",
-                path.display(),
-                destination.display()
-            )
-        })?;
-        #[cfg(unix)]
-        fs::set_permissions(&destination, fs::Permissions::from_mode(0o644))
-            .with_context(|| format!("setting permissions on {}", destination.display()))?;
-    }
+    let spec_name = format!("{PHOREUS_PYTHON_PACKAGE}.spec");
+    let destination = specs_dir.join(spec_name);
+    let spec_body = render_phoreus_python_bootstrap_spec();
+    fs::write(&destination, spec_body).with_context(|| {
+        format!(
+            "writing bundled python bootstrap spec {}",
+            destination.display()
+        )
+    })?;
+    #[cfg(unix)]
+    fs::set_permissions(&destination, fs::Permissions::from_mode(0o644))
+        .with_context(|| format!("setting permissions on {}", destination.display()))?;
     Ok(())
 }
 
@@ -6024,9 +6002,8 @@ fn ensure_phoreus_python_bootstrap(build_config: &BuildConfig, specs_dir: &Path)
     let spec_path = specs_dir.join(&spec_name);
     if !spec_path.exists() {
         anyhow::bail!(
-            "required bootstrap spec missing: {} (sync from {})",
-            spec_path.display(),
-            REFERENCE_PYTHON_SPECS_DIR
+            "required bundled bootstrap spec missing: {}",
+            spec_path.display()
         );
     }
     build_spec_chain_in_container(build_config, &spec_path, PHOREUS_PYTHON_PACKAGE)
@@ -6116,6 +6093,84 @@ fn ensure_phoreus_nim_bootstrap(build_config: &BuildConfig, specs_dir: &Path) ->
     build_spec_chain_in_container(build_config, &spec_path, PHOREUS_NIM_PACKAGE)
         .with_context(|| format!("building bootstrap package {}", PHOREUS_NIM_PACKAGE))?;
     Ok(())
+}
+
+fn render_phoreus_python_bootstrap_spec() -> String {
+    format!(
+        "%global py_minor {py_minor}\n\
+%global debug_package %{{nil}}\n\
+%global __brp_mangle_shebangs %{{nil}}\n\
+\n\
+Name:           {package}\n\
+Version:        {version}\n\
+Release:        1%{{?dist}}\n\
+Summary:        Phoreus Python %{{py_minor}} runtime built from CPython source\n\
+License:        Python-2.0\n\
+URL:            https://www.python.org/\n\
+Source0:        https://www.python.org/ftp/python/%{{version}}/Python-%{{version}}.tar.xz\n\
+\n\
+Requires:       phoreus\n\
+\n\
+%global phoreus_tool python\n\
+%global phoreus_prefix /usr/local/phoreus/%{{phoreus_tool}}/%{{py_minor}}\n\
+%global phoreus_moddir /usr/local/phoreus/modules/%{{phoreus_tool}}\n\
+\n\
+BuildRequires:  gcc\n\
+BuildRequires:  make\n\
+BuildRequires:  openssl-devel\n\
+BuildRequires:  bzip2-devel\n\
+BuildRequires:  libffi-devel\n\
+BuildRequires:  zlib-devel\n\
+BuildRequires:  sqlite-devel\n\
+BuildRequires:  xz-devel\n\
+BuildRequires:  ncurses-devel\n\
+\n\
+%description\n\
+Phoreus CPython %{{version}} runtime package for Python %{{py_minor}}.\n\
+Builds CPython from upstream source into a dedicated Phoreus prefix.\n\
+\n\
+%prep\n\
+%autosetup -n Python-%{{version}}\n\
+\n\
+%build\n\
+./configure \\\n\
+  --prefix=%{{phoreus_prefix}} \\\n\
+  --enable-shared \\\n\
+  --with-system-ffi \\\n\
+  --with-ensurepip=install\n\
+make %{{?_smp_mflags}}\n\
+\n\
+%install\n\
+rm -rf %{{buildroot}}\n\
+make install DESTDIR=%{{buildroot}}\n\
+ln -sfn python%{{py_minor}} %{{buildroot}}%{{phoreus_prefix}}/bin/python\n\
+ln -sfn pip%{{py_minor}} %{{buildroot}}%{{phoreus_prefix}}/bin/pip\n\
+# Ensure library/test payload files are not executable; avoids shebang mangling failures.\n\
+find %{{buildroot}}%{{phoreus_prefix}}/lib/python%{{py_minor}} -type f -perm /111 -exec chmod a-x {{}} +\n\
+\n\
+mkdir -p %{{buildroot}}%{{phoreus_moddir}}\n\
+cat > %{{buildroot}}%{{phoreus_moddir}}/%{{py_minor}}.lua <<'LUAEOF'\n\
+help([[ Phoreus Python {py_minor} runtime module ]])\n\
+whatis(\"Name: python\")\n\
+whatis(\"Version: {py_minor}\")\n\
+local prefix = \"/usr/local/phoreus/python/{py_minor}\"\n\
+setenv(\"PHOREUS_PYTHON_VERSION\", \"{py_minor}\")\n\
+prepend_path(\"PATH\", pathJoin(prefix, \"bin\"))\n\
+prepend_path(\"LD_LIBRARY_PATH\", pathJoin(prefix, \"lib\"))\n\
+LUAEOF\n\
+chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{py_minor}}.lua\n\
+\n\
+%files\n\
+%{{phoreus_prefix}}/\n\
+%{{phoreus_moddir}}/%{{py_minor}}.lua\n\
+\n\
+%changelog\n\
+* Thu Feb 26 2026 Phoreus Builder <packaging@phoreus.local> - {version}-1\n\
+- Build CPython {version} from upstream source under Phoreus prefix\n",
+        py_minor = PHOREUS_PYTHON_VERSION,
+        package = PHOREUS_PYTHON_PACKAGE,
+        version = PHOREUS_PYTHON_FULL_VERSION,
+    )
 }
 
 fn render_phoreus_r_bootstrap_spec() -> String {
@@ -8322,6 +8377,18 @@ requirements:
             "Source0:        https://cran.r-project.org/src/base/R-4/R-%{version}.tar.gz"
         ));
         assert!(spec.contains("--with-x=no"));
+    }
+
+    #[test]
+    fn phoreus_python_bootstrap_spec_is_rendered_with_expected_name() {
+        let spec = render_phoreus_python_bootstrap_spec();
+        assert!(spec.contains("Name:           phoreus-python-3.11"));
+        assert!(spec.contains("Version:        3.11.14"));
+        assert!(spec.contains(
+            "Source0:        https://www.python.org/ftp/python/%{version}/Python-%{version}.tar.xz"
+        ));
+        assert!(spec.contains("BuildRequires:  openssl-devel"));
+        assert!(spec.contains("BuildRequires:  sqlite-devel"));
     }
 
     #[test]

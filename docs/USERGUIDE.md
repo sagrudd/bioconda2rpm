@@ -255,6 +255,7 @@ Python charter behavior:
 - For all Python software installs (detected from recipe metadata and staged `build.sh` patterns such as `pip install` / `python -m pip` / `setup.py install`), `bioconda2rpm` builds a hermetic virtual environment under `/usr/local/phoreus/<tool>/<version>/venv`.
 - Python dependency trees are solved inside that venv using `pip-compile --generate-hashes` and `pip install --require-hashes`.
 - Python library dependencies are not emitted as shared RPM `Requires`; payload runtime requires are limited to `phoreus` and `phoreus-python-3.11`.
+- The `phoreus-python-3.11` bootstrap SPEC is generated from bundled Rust templates; no external `../software_query/rpm/python/specs` directory is required.
 - This avoids unresolved distro RPM names such as `jinja2`/`rich` and follows the Python RPM charter isolation model.
 
 R charter behavior:
