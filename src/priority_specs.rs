@@ -3256,7 +3256,7 @@ fn render_payload_spec(
     let source_kind = source_archive_kind(&parsed.source_url);
     let git_source = parse_git_source_descriptor(&parsed.source_url);
     let include_source0 = !runtime_only_metapackage && source_kind != SourceArchiveKind::Git;
-    let source_unpack_prep = if include_source0 {
+    let mut source_unpack_prep = if include_source0 {
         render_source_unpack_prep_block(source_kind)
     } else {
         if source_kind == SourceArchiveKind::Git {
@@ -3267,6 +3267,19 @@ mkdir -p %{bioconda_source_subdir}\n"
                 .to_string()
         }
     };
+    // UCSC userApps source archives contain an extra top-level `userApps/`
+    // directory after tar extraction. Strip two path components so patch paths
+    // rooted at `kent/src/...` resolve correctly.
+    if software_slug == "ucsc-bigwigsummary"
+        && source_kind == SourceArchiveKind::Tar
+        && parsed.source_url.contains("userApps.")
+        && parsed.source_url.contains(".src.tgz")
+    {
+        source_unpack_prep = source_unpack_prep.replace(
+            "--strip-components=1",
+            "--strip-components=2",
+        );
+    }
 
     let mut build_requires = BTreeSet::new();
     build_requires.insert("bash".to_string());
@@ -3711,6 +3724,15 @@ fi\n\
     sed -i 's|export LC_ALL=\"en_US.UTF-8\"|export LC_ALL=C|g' ./build.sh || true\n\
     fi\n\
     \n\
+    # UCSC userApps build system can force -liconv, but EL9/glibc toolchains do\n\
+    # not ship a standalone libiconv and provide iconv via libc. Drop -liconv\n\
+    # from generated make fragments for deterministic Linux builds.\n\
+    if [[ \"%{{tool}}\" == \"ucsc-bigwigsummary\" ]]; then\n\
+    find kent/src -type f \\( -name '*.mk' -o -name makefile \\) | while read -r mk; do\n\
+      sed -i 's/[[:space:]]-liconv//g' \"$mk\" || true\n\
+    done\n\
+    fi\n\
+    \n\
     # Samtools recipes often request --with-htslib=system, but in this workflow\n\
     # HTSlib is provided by the versioned Phoreus prefix rather than /usr.\n\
     # Rewrite the configure target and inject matching include/lib/pkg-config flags.\n\
@@ -3754,6 +3776,23 @@ fi\n\
     # requires explicit CBLAS linkage at link time.\n\
     if [[ \"%{{tool}}\" == \"bcftools\" ]]; then\n\
     sed -i 's|GSL_LIBS=-lgsl|GSL_LIBS=\"-lgsl -lopenblas\"|g' ./build.sh || true\n\
+    fi\n\
+    \n\
+    # EBSeq currently pulls modern BH headers that require at least C++14.\n\
+    # Some recipe scripts only wire CXX/CXX11 without an explicit std level,\n\
+    # which can fall back to older defaults on EL9 and fail in Boost headers.\n\
+    if [[ \"%{{tool}}\" == \"bioconductor-ebseq\" ]]; then\n\
+    export CXX=\"${{CXX:-g++}} -std=gnu++14\"\n\
+    export CXXFLAGS=\"-std=gnu++14 ${{CXXFLAGS:-}}\"\n\
+    export CXX11=\"${{CXX11:-${{CXX:-g++}} -std=gnu++14}}\"\n\
+    export CXX14=\"${{CXX14:-${{CXX:-g++}} -std=gnu++14}}\"\n\
+    sed -i 's|^CXX11=\\$CXX$|CXX11=$CXX -std=gnu++14|g' ./build.sh || true\n\
+    sed -i 's|^CXX14=\\$CXX$|CXX14=$CXX -std=gnu++14|g' ./build.sh || true\n\
+    if [[ -f src/Makevars ]]; then\n\
+    if ! grep -q '^CXX_STD[[:space:]]*=' src/Makevars; then\n\
+    printf '\\nCXX_STD = CXX14\\n' >> src/Makevars\n\
+    fi\n\
+    fi\n\
     fi\n\
     \n\
     # Salmon's Bioconda recipe forces Boost lookup to $PREFIX only.\n\
@@ -4362,7 +4401,7 @@ fn render_patch_apply_lines(staged_patch_sources: &[String], source_dir: &str) -
         out.push_str(&format!("cd {source_dir}\n"));
         for (idx, _) in staged_patch_sources.iter().enumerate() {
             out.push_str(&format!(
-                "(patch -p1 -i %{{SOURCE{}}} || patch -p0 -i %{{SOURCE{}}})\n",
+                "(patch --batch -p1 -i %{{SOURCE{}}} || patch --batch -p0 -i %{{SOURCE{}}})\n",
                 idx + 2,
                 idx + 2
             ));
@@ -4564,7 +4603,11 @@ fn map_build_dependency(dep: &str) -> String {
         "liblzma-devel" => "xz-devel".to_string(),
         "liblapack" => "lapack-devel".to_string(),
         "libiconv" => "glibc-devel".to_string(),
+        "libpng" => "libpng-devel".to_string(),
+        "libuuid" => "libuuid-devel".to_string(),
+        "libopenssl-static" => "openssl-devel".to_string(),
         "lz4-c" => "lz4-devel".to_string(),
+        "mysql-connector-c" => "mariadb-connector-c-devel".to_string(),
         "ncurses" => "ncurses-devel".to_string(),
         "ninja" => "ninja-build".to_string(),
         "openssl" => "openssl-devel".to_string(),
@@ -4624,6 +4667,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "libgd" => "gd".to_string(),
         "liblzma-devel" => "xz".to_string(),
         "liblapack" => "lapack".to_string(),
+        "mysql-connector-c" => "mariadb-connector-c".to_string(),
         "llvmdev" => "llvm".to_string(),
         "ninja" => "ninja-build".to_string(),
         "xorg-libxfixes" => "libXfixes".to_string(),
@@ -6025,6 +6069,14 @@ mod tests {
             map_build_dependency("libdeflate"),
             "libdeflate-devel".to_string()
         );
+        assert_eq!(
+            map_build_dependency("libopenssl-static"),
+            "openssl-devel".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("mysql-connector-c"),
+            "mariadb-connector-c-devel".to_string()
+        );
         assert_eq!(map_build_dependency("zlib"), "zlib-devel".to_string());
         assert_eq!(map_build_dependency("openssl"), "openssl-devel".to_string());
         assert_eq!(map_build_dependency("bzip2"), "bzip2-devel".to_string());
@@ -6035,6 +6087,8 @@ mod tests {
         assert_eq!(map_build_dependency("isa-l"), "isa-l-devel".to_string());
         assert_eq!(map_build_dependency("xz"), "xz-devel".to_string());
         assert_eq!(map_build_dependency("libcurl"), "libcurl-devel".to_string());
+        assert_eq!(map_build_dependency("libpng"), "libpng-devel".to_string());
+        assert_eq!(map_build_dependency("libuuid"), "libuuid-devel".to_string());
         assert_eq!(
             map_build_dependency("libblas"),
             "openblas-devel".to_string()
@@ -6187,7 +6241,7 @@ requirements:
             false,
         );
         assert!(spec.contains("Source2:"));
-        assert!(spec.contains("patch -p1 -i %{SOURCE2}"));
+        assert!(spec.contains("patch --batch -p1 -i %{SOURCE2}"));
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(spec.contains("retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\""));
         assert!(spec.contains("export CPU_COUNT=1"));
