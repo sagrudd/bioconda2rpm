@@ -144,3 +144,4 @@
 - PR merge gate runs against a top-N priority corpus.
 - Nightly regression runs against the full corpus.
 - Implemented via `bioconda2rpm regression --mode pr --top-n <N>` and `--mode nightly`.
+- Optional curated corpus file support added via `--software-list <path>` (newline-delimited), overriding mode/top-N selection.

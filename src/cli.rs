@@ -248,6 +248,11 @@ pub struct RegressionArgs {
     #[arg(long)]
     pub tools_csv: PathBuf,
 
+    /// Optional newline-delimited software list.
+    /// When set, this list defines the corpus and overrides mode/top-n selection.
+    #[arg(long)]
+    pub software_list: Option<PathBuf>,
+
     /// Regression campaign mode.
     #[arg(long, value_enum, default_value_t = RegressionMode::Pr)]
     pub mode: RegressionMode,
@@ -623,10 +628,37 @@ mod tests {
         };
         assert_eq!(args.mode, RegressionMode::Pr);
         assert_eq!(args.top_n, 25);
+        assert!(args.software_list.is_none());
         assert_eq!(args.deployment_profile, DeploymentProfile::Production);
         assert_eq!(args.effective_metadata_adapter(), MetadataAdapter::Conda);
         assert_eq!(args.effective_target_arch(), "x86_64".to_string());
         assert!(args.effective_kpi_gate());
         assert_eq!(args.kpi_min_success_rate, 99.0);
+    }
+
+    #[test]
+    fn regression_accepts_software_list_override() {
+        let cli = Cli::try_parse_from([
+            "bioconda2rpm",
+            "regression",
+            "--recipe-root",
+            "/recipes",
+            "--tools-csv",
+            "/tmp/tools.csv",
+            "--software-list",
+            "/tmp/essential_100.txt",
+            "--mode",
+            "nightly",
+        ])
+        .expect("regression software list should parse");
+
+        let Command::Regression(args) = cli.command else {
+            panic!("expected regression subcommand");
+        };
+        assert_eq!(args.mode, RegressionMode::Nightly);
+        assert_eq!(
+            args.software_list,
+            Some(PathBuf::from("/tmp/essential_100.txt"))
+        );
     }
 }

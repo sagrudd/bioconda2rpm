@@ -78,6 +78,17 @@ cargo run -- regression \
   --arch x86-64
 ```
 
+Curated corpus from a text list (recommended for your essential/key 100):
+
+```bash
+cargo run -- regression \
+  --recipe-root ../bioconda-recipes/recipes \
+  --tools-csv ../software_query/tools.csv \
+  --software-list /path/to/essential_100.txt \
+  --deployment-profile production \
+  --arch x86-64
+```
+
 Nightly full corpus:
 
 ```bash
@@ -121,6 +132,10 @@ Common optional flags:
   - `nightly`: full corpus from `tools.csv`
 - `--top-n <N>` (regression command):
   - top-N size for PR mode (default `25`).
+- `--software-list <path>` (regression command):
+  - newline-delimited software list that overrides `--mode`/`--top-n`.
+  - comments using `#` and blank lines are allowed.
+  - list order is preserved for campaign execution.
 - `--arch <host|x86-64|aarch64>`:
   - sets target architecture semantics for metadata/render and compatibility classification.
   - recommended usage: `aarch64` for current development campaigns, `x86-64` for production validation.

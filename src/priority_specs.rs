@@ -11,7 +11,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -732,14 +732,46 @@ pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
     ensure_container_engine_available(&args.container_engine)?;
 
     let all_tools = load_tools_csv_rows(&args.tools_csv)?;
-    let selected_tools = match args.mode {
-        RegressionMode::Pr => all_tools.into_iter().take(args.top_n).collect::<Vec<_>>(),
-        RegressionMode::Nightly => all_tools,
+    let selected_tools = if let Some(software_list_path) = args.software_list.as_ref() {
+        let names = load_software_list(software_list_path)?;
+        let mut priority_by_name: HashMap<String, i64> = HashMap::new();
+        for tool in &all_tools {
+            priority_by_name.insert(normalize_name(&tool.software), tool.priority);
+        }
+        let selected = names
+            .into_iter()
+            .enumerate()
+            .map(|(idx, name)| {
+                let key = normalize_name(&name);
+                PriorityTool {
+                    line_no: idx + 1,
+                    software: name,
+                    priority: priority_by_name.get(&key).copied().unwrap_or(0),
+                }
+            })
+            .collect::<Vec<_>>();
+        if selected.len() != 100 {
+            log_progress(format!(
+                "phase=regression-corpus status=notice source=software-list count={} expected=100 note=non-fatal",
+                selected.len()
+            ));
+        }
+        selected
+    } else {
+        match args.mode {
+            RegressionMode::Pr => all_tools.into_iter().take(args.top_n).collect::<Vec<_>>(),
+            RegressionMode::Nightly => all_tools,
+        }
     };
     log_progress(format!(
-        "phase=regression-corpus status=selected mode={:?} requested={} elapsed={}",
+        "phase=regression-corpus status=selected mode={:?} requested={} source={} elapsed={}",
         args.mode,
         selected_tools.len(),
+        if args.software_list.is_some() {
+            "software-list"
+        } else {
+            "tools-csv"
+        },
         format_elapsed(campaign_started.elapsed())
     ));
 
@@ -1442,6 +1474,42 @@ fn load_tools_csv_rows(tools_csv: &Path) -> Result<Vec<PriorityTool>> {
 
     rows.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.line_no.cmp(&b.line_no)));
     Ok(rows)
+}
+
+fn load_software_list(software_list: &Path) -> Result<Vec<String>> {
+    let text = fs::read_to_string(software_list)
+        .with_context(|| format!("reading software list {}", software_list.display()))?;
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for (idx, line) in text.lines().enumerate() {
+        let cleaned = line
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if cleaned.is_empty() {
+            continue;
+        }
+        let key = normalize_name(&cleaned);
+        if key.is_empty() {
+            continue;
+        }
+        if seen.insert(key) {
+            out.push(cleaned);
+        }
+        if out.len() > 10_000 {
+            anyhow::bail!(
+                "software list {} appears too large or malformed (line {})",
+                software_list.display(),
+                idx + 1
+            );
+        }
+    }
+    if out.is_empty() {
+        anyhow::bail!("software list {} is empty", software_list.display());
+    }
+    Ok(out)
 }
 
 fn discover_recipe_dirs(recipe_root: &Path) -> Result<Vec<RecipeDir>> {

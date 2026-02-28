@@ -29,6 +29,7 @@ bioconda2rpm generate-priority-specs \
 bioconda2rpm regression \
   --recipe-root <path> \
   --tools-csv <path/to/tools.csv> \
+  [--software-list <path/to/software.txt>] \
   [--mode pr|nightly] \
   [--top-n 25]
 ```
@@ -86,6 +87,9 @@ bioconda2rpm regression \
   - Default: `all`
 
 Regression-only options:
+- `--software-list <path>`
+  - Optional newline-delimited software corpus.
+  - Overrides `--mode`/`--top-n` selection when provided.
 - `--mode <pr|nightly>`
   - `pr`: top-N priority corpus
   - `nightly`: full corpus
