@@ -766,206 +766,18 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
             root_recipe.resolved.recipe_name, root_recipe.parsed.version
         ));
     }
-
-    let (plan_order, plan_nodes) = collect_build_plan(
-        &root_request,
-        args.with_deps(),
-        &args.dependency_policy,
-        &recipe_root,
+    run_build_batch_queue(
+        args,
+        std::slice::from_ref(&root_request),
         &recipe_dirs,
+        &specs_dir,
+        &sources_dir,
+        &bad_spec_dir,
+        &reports_dir,
+        &build_config,
         &effective_metadata_adapter,
-        &build_config.target_arch,
-    )?;
-    let build_order = plan_order
-        .iter()
-        .filter_map(|key| plan_nodes.get(key).map(|node| node.name.clone()))
-        .collect::<Vec<_>>();
-    log_progress(format!(
-        "phase=dependency-plan status=completed package={} planned_nodes={} order={}",
-        root_request,
-        build_order.len(),
-        build_order.join("->")
-    ));
-
-    let mut built = HashSet::new();
-    let mut results = Vec::new();
-    let mut fail_reason: Option<String> = None;
-
-    for (idx, key) in plan_order.iter().enumerate() {
-        if cancellation_requested() {
-            let reason = cancellation_reason();
-            log_progress(format!(
-                "phase=build status=cancelled package={} reason={}",
-                root_request,
-                compact_reason(&reason, 240)
-            ));
-            fail_reason = Some(reason);
-            break;
-        }
-        let Some(node) = plan_nodes.get(key) else {
-            continue;
-        };
-        let package_started = Instant::now();
-        log_progress(format!(
-            "phase=package status=started index={}/{} package={}",
-            idx + 1,
-            plan_order.len(),
-            node.name
-        ));
-
-        let blocked_by = node
-            .direct_bioconda_deps
-            .iter()
-            .filter(|dep| !built.contains(*dep))
-            .cloned()
-            .collect::<Vec<_>>();
-
-        if !blocked_by.is_empty() {
-            let reason = format!(
-                "blocked by unresolved bioconda dependencies: {}",
-                blocked_by.join(", ")
-            );
-            let status = match args.missing_dependency {
-                MissingDependencyPolicy::Skip => "skipped",
-                _ => "quarantined",
-            }
-            .to_string();
-
-            if status == "quarantined" {
-                quarantine_note(&bad_spec_dir, key, &reason);
-            }
-            log_progress(format!(
-                "phase=package status={} package={} blocked_by={} reason={}",
-                status,
-                node.name,
-                blocked_by.join(","),
-                compact_reason(&reason, 240)
-            ));
-            results.push(ReportEntry {
-                software: node.name.clone(),
-                priority: 0,
-                status,
-                reason: reason.clone(),
-                overlap_recipe: node.name.clone(),
-                overlap_reason: "dependency-closure".to_string(),
-                variant_dir: String::new(),
-                package_name: String::new(),
-                version: String::new(),
-                payload_spec_path: String::new(),
-                meta_spec_path: String::new(),
-                staged_build_sh: String::new(),
-            });
-            if args.missing_dependency == MissingDependencyPolicy::Fail {
-                fail_reason = Some(reason);
-                break;
-            }
-            continue;
-        }
-
-        let tool = PriorityTool {
-            line_no: 0,
-            software: node.name.clone(),
-            priority: 0,
-        };
-        let entry = process_tool(
-            &tool,
-            &recipe_root,
-            &recipe_dirs,
-            &specs_dir,
-            &sources_dir,
-            &bad_spec_dir,
-            &build_config,
-            &effective_metadata_adapter,
-        );
-        log_progress(format!(
-            "phase=package status={} package={} elapsed={} reason={}",
-            entry.status,
-            node.name,
-            format_elapsed(package_started.elapsed()),
-            compact_reason(&entry.reason, 240)
-        ));
-        if entry.status == "generated" || entry.status == "up-to-date" {
-            built.insert(key.clone());
-        } else if args.missing_dependency == MissingDependencyPolicy::Fail {
-            fail_reason = Some(entry.reason.clone());
-            results.push(entry);
-            break;
-        }
-        results.push(entry);
-    }
-
-    let report_stem = normalize_name(&root_request);
-    let report_json = reports_dir.join(format!("build_{report_stem}.json"));
-    let report_csv = reports_dir.join(format!("build_{report_stem}.csv"));
-    let report_md = reports_dir.join(format!("build_{report_stem}.md"));
-    write_reports(&results, &report_json, &report_csv, &report_md)?;
-    log_progress(format!(
-        "phase=report status=written report_json={} report_csv={} report_md={}",
-        report_json.display(),
-        report_csv.display(),
-        report_md.display()
-    ));
-
-    if let Some(reason) = fail_reason {
-        log_progress(format!(
-            "phase=build status=failed policy={:?} reason={} elapsed={}",
-            args.missing_dependency,
-            compact_reason(&reason, 320),
-            format_elapsed(build_started.elapsed())
-        ));
-        anyhow::bail!(
-            "build failed under missing-dependency policy fail: {} (report_md={})",
-            reason,
-            report_md.display()
-        );
-    }
-
-    let kpi = compute_arch_adjusted_kpi(&results);
-    log_progress(format!(
-        "phase=kpi status=computed scope_entries={} excluded_arch={} denominator={} successes={} success_rate={:.2}",
-        kpi.scope_entries, kpi.excluded_arch, kpi.denominator, kpi.successes, kpi.success_rate
-    ));
-    if args.effective_kpi_gate() && kpi.success_rate + f64::EPSILON < args.kpi_min_success_rate {
-        anyhow::bail!(
-            "kpi gate failed: arch-adjusted success rate {:.2}% is below threshold {:.2}% (denominator={}, successes={}, excluded_arch={}, report_md={})",
-            kpi.success_rate,
-            args.kpi_min_success_rate,
-            kpi.denominator,
-            kpi.successes,
-            kpi.excluded_arch,
-            report_md.display()
-        );
-    }
-
-    let generated = results.iter().filter(|r| r.status == "generated").count();
-    let up_to_date = results.iter().filter(|r| r.status == "up-to-date").count();
-    let skipped = results.iter().filter(|r| r.status == "skipped").count();
-    let quarantined = results.iter().filter(|r| r.status == "quarantined").count();
-    log_progress(format!(
-        "phase=build status=completed requested={} generated={} up_to_date={} skipped={} quarantined={} elapsed={}",
-        results.len(),
-        generated,
-        up_to_date,
-        skipped,
-        quarantined,
-        format_elapsed(build_started.elapsed())
-    ));
-    Ok(BuildSummary {
-        requested: results.len(),
-        generated,
-        up_to_date,
-        skipped,
-        quarantined,
-        kpi_scope_entries: kpi.scope_entries,
-        kpi_excluded_arch: kpi.excluded_arch,
-        kpi_denominator: kpi.denominator,
-        kpi_successes: kpi.successes,
-        kpi_success_rate: kpi.success_rate,
-        build_order,
-        report_json,
-        report_csv,
-        report_md,
-    })
+        build_started,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1005,7 +817,17 @@ fn run_build_batch_queue(
             metadata_adapter,
             &build_config.target_arch,
         ) {
-            Ok((_order, nodes)) => {
+            Ok((order, nodes)) => {
+                let root_order = order
+                    .iter()
+                    .filter_map(|key| nodes.get(key).map(|node| node.name.clone()))
+                    .collect::<Vec<_>>();
+                log_progress(format!(
+                    "phase=dependency-plan status=completed package={} planned_nodes={} order={}",
+                    root,
+                    root_order.len(),
+                    root_order.join("->")
+                ));
                 for (key, node) in nodes {
                     global_nodes
                         .entry(key)
@@ -1329,11 +1151,15 @@ fn run_build_batch_queue(
         }
     }
 
-    let report_stem = format!(
-        "batch_{}_{}",
-        requested_packages.len(),
-        Utc::now().format("%Y%m%d%H%M%S")
-    );
+    let report_stem = if requested_packages.len() == 1 {
+        normalize_name(&requested_packages[0])
+    } else {
+        format!(
+            "batch_{}_{}",
+            requested_packages.len(),
+            Utc::now().format("%Y%m%d%H%M%S")
+        )
+    };
     let report_json = reports_dir.join(format!("build_{report_stem}.json"));
     let report_csv = reports_dir.join(format!("build_{report_stem}.csv"));
     let report_md = reports_dir.join(format!("build_{report_stem}.md"));
