@@ -144,6 +144,8 @@ Definition of "first-pass success":
    - Decision (2026-02-28): full Bioconda linux-aarch64 subset
 
 2. For 99% KPI, do we exclude packages flagged as architecture-incompatible upstream?
+   - Decision (2026-02-28): yes, exclude architecture-incompatible packages from denominator
+   - Deployment clarification (2026-02-28): development campaign currently runs on `aarch64`; production target is `amd64` (`x86_64`).
 
 3. Should the conda-faithful render adapter be implemented as:
    - embedded Python helper shipped with this repo

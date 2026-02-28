@@ -115,3 +115,12 @@
 ### Redesign KPI denominator decision
 - The >99% first-pass success KPI denominator is defined as the full Bioconda `linux-aarch64` buildable subset.
 - This denominator will be used for phase-1 validation reporting and gating.
+
+### Redesign KPI architecture exclusion decision
+- The >99% KPI excludes architecture-incompatible packages from the denominator.
+- Architecture incompatibility is determined from classified build outcomes (for example `arch_policy=amd64_only` on `aarch64` campaigns).
+
+### Architecture deployment clarification
+- Current development campaign architecture is `aarch64`.
+- Production deployment target architecture is `amd64` (`x86_64`) on dedicated hosts.
+- `build --arch` defines target architecture semantics for metadata/render and classification decisions.

@@ -163,3 +163,4 @@ NFR-005 Enterprise-readiness
 NFR-006 Reliability target denominator
 - The primary reliability KPI denominator shall be the full Bioconda `linux-aarch64` buildable subset.
 - First-pass build success target for this denominator shall be `>=99%`.
+- Packages classified as architecture-incompatible for the campaign architecture shall be excluded from this denominator.

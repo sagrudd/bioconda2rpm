@@ -102,7 +102,7 @@ struct BuildConfig {
     reports_dir: PathBuf,
     container_engine: String,
     container_image: String,
-    host_arch: String,
+    target_arch: String,
 }
 
 #[derive(Debug, Clone)]
@@ -255,7 +255,7 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
         reports_dir: reports_dir.clone(),
         container_engine: args.container_engine.clone(),
         container_image: args.container_image.clone(),
-        host_arch: std::env::consts::ARCH.to_string(),
+        target_arch: std::env::consts::ARCH.to_string(),
     };
     ensure_phoreus_python_bootstrap(&build_config, &specs_dir)
         .context("bootstrapping Phoreus Python runtime")?;
@@ -322,12 +322,13 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     let reports_dir = args.effective_reports_dir();
     let bad_spec_dir = args.effective_bad_spec_dir();
     log_progress(format!(
-        "phase=build-start package={} deps_enabled={} dependency_policy={:?} recipe_root={} topdir={}",
+        "phase=build-start package={} deps_enabled={} dependency_policy={:?} recipe_root={} topdir={} target_arch={}",
         args.package,
         args.with_deps(),
         args.dependency_policy,
         args.recipe_root.display(),
-        topdir.display()
+        topdir.display(),
+        args.effective_target_arch()
     ));
 
     fs::create_dir_all(&specs_dir)
@@ -353,7 +354,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         reports_dir: reports_dir.clone(),
         container_engine: args.container_engine.clone(),
         container_image: args.container_image.clone(),
-        host_arch: std::env::consts::ARCH.to_string(),
+        target_arch: args.effective_target_arch(),
     };
     ensure_phoreus_python_bootstrap(&build_config, &specs_dir)
         .context("bootstrapping Phoreus Python runtime")?;
@@ -364,6 +365,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         &recipe_dirs,
         true,
         &args.metadata_adapter,
+        &build_config.target_arch,
     )?
     else {
         anyhow::bail!(
@@ -464,6 +466,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         &args.recipe_root,
         &recipe_dirs,
         &args.metadata_adapter,
+        &build_config.target_arch,
     )?;
     let build_order = plan_order
         .iter()
@@ -632,6 +635,7 @@ fn collect_build_plan(
     recipe_root: &Path,
     recipe_dirs: &[RecipeDir],
     metadata_adapter: &MetadataAdapter,
+    target_arch: &str,
 ) -> Result<(Vec<String>, BTreeMap<String, BuildPlanNode>)> {
     let mut visiting = HashSet::new();
     let mut visited = HashSet::new();
@@ -646,6 +650,7 @@ fn collect_build_plan(
         recipe_root,
         recipe_dirs,
         metadata_adapter,
+        target_arch,
         &mut visiting,
         &mut visited,
         &mut nodes,
@@ -670,6 +675,7 @@ fn visit_build_plan_node(
     recipe_root: &Path,
     recipe_dirs: &[RecipeDir],
     metadata_adapter: &MetadataAdapter,
+    target_arch: &str,
     visiting: &mut HashSet<String>,
     visited: &mut HashSet<String>,
     nodes: &mut BTreeMap<String, BuildPlanNode>,
@@ -681,6 +687,7 @@ fn visit_build_plan_node(
         recipe_dirs,
         is_root,
         metadata_adapter,
+        target_arch,
     ) {
         Ok(v) => v,
         Err(err) => {
@@ -808,6 +815,7 @@ fn visit_build_plan_node(
                 recipe_root,
                 recipe_dirs,
                 metadata_adapter,
+                target_arch,
                 visiting,
                 visited,
                 nodes,
@@ -971,14 +979,15 @@ fn resolve_and_parse_recipe(
     recipe_dirs: &[RecipeDir],
     allow_identifier_lookup: bool,
     metadata_adapter: &MetadataAdapter,
+    target_arch: &str,
 ) -> Result<Option<ResolvedParsedRecipe>> {
     let Some(resolved) =
         resolve_recipe_for_tool_mode(tool_name, recipe_root, recipe_dirs, allow_identifier_lookup)?
     else {
         return Ok(None);
     };
-    let parsed_result =
-        parse_meta_for_resolved(&resolved, metadata_adapter).with_context(|| {
+    let parsed_result = parse_meta_for_resolved(&resolved, metadata_adapter, target_arch)
+        .with_context(|| {
             format!(
                 "failed to parse rendered metadata for {}",
                 resolved.meta_path.display()
@@ -994,11 +1003,12 @@ fn resolve_and_parse_recipe(
 fn parse_meta_for_resolved(
     resolved: &ResolvedRecipe,
     metadata_adapter: &MetadataAdapter,
+    target_arch: &str,
 ) -> Result<ParsedRecipeResult> {
     match metadata_adapter {
-        MetadataAdapter::Native => parse_meta_for_resolved_native(resolved),
-        MetadataAdapter::Conda => parse_meta_for_resolved_conda(resolved),
-        MetadataAdapter::Auto => match parse_meta_for_resolved_conda(resolved) {
+        MetadataAdapter::Native => parse_meta_for_resolved_native(resolved, target_arch),
+        MetadataAdapter::Conda => parse_meta_for_resolved_conda(resolved, target_arch),
+        MetadataAdapter::Auto => match parse_meta_for_resolved_conda(resolved, target_arch) {
             Ok(parsed) => Ok(parsed),
             Err(err) => {
                 log_progress(format!(
@@ -1006,16 +1016,19 @@ fn parse_meta_for_resolved(
                     resolved.recipe_name,
                     compact_reason(&err.to_string(), 240)
                 ));
-                parse_meta_for_resolved_native(resolved)
+                parse_meta_for_resolved_native(resolved, target_arch)
             }
         },
     }
 }
 
-fn parse_meta_for_resolved_native(resolved: &ResolvedRecipe) -> Result<ParsedRecipeResult> {
+fn parse_meta_for_resolved_native(
+    resolved: &ResolvedRecipe,
+    target_arch: &str,
+) -> Result<ParsedRecipeResult> {
     let meta_text = fs::read_to_string(&resolved.meta_path)
         .with_context(|| format!("failed to read metadata {}", resolved.meta_path.display()))?;
-    let selector_ctx = SelectorContext::for_rpm_build();
+    let selector_ctx = SelectorContext::for_rpm_build(target_arch);
     let selected_meta = apply_selectors(&meta_text, &selector_ctx);
     let rendered = render_meta_yaml(&selected_meta).with_context(|| {
         format!(
@@ -1033,8 +1046,12 @@ fn parse_meta_for_resolved_native(resolved: &ResolvedRecipe) -> Result<ParsedRec
     Ok(ParsedRecipeResult { parsed, build_skip })
 }
 
-fn parse_meta_for_resolved_conda(resolved: &ResolvedRecipe) -> Result<ParsedRecipeResult> {
+fn parse_meta_for_resolved_conda(
+    resolved: &ResolvedRecipe,
+    target_arch: &str,
+) -> Result<ParsedRecipeResult> {
     let output = Command::new("python3")
+        .env("CONDA_SUBDIR", conda_subdir_for_target_arch(target_arch))
         .arg(CONDA_RENDER_ADAPTER_SCRIPT)
         .arg(&resolved.variant_dir)
         .stdout(Stdio::piped())
@@ -1101,6 +1118,13 @@ fn normalize_dep_specs_to_set(raw_specs: &[String]) -> BTreeSet<String> {
         .iter()
         .filter_map(|raw| normalize_dependency_name(raw))
         .collect()
+}
+
+fn conda_subdir_for_target_arch(target_arch: &str) -> &'static str {
+    match target_arch {
+        "aarch64" | "arm64" => "linux-aarch64",
+        _ => "linux-64",
+    }
 }
 
 fn load_top_tools(tools_csv: &Path, top_n: usize) -> Result<Vec<PriorityTool>> {
@@ -1205,27 +1229,28 @@ fn process_tool(
         }
     };
 
-    let parsed_result = match parse_meta_for_resolved(&resolved, metadata_adapter) {
-        Ok(v) => v,
-        Err(err) => {
-            let reason = format!("failed to parse rendered metadata: {err}");
-            quarantine_note(bad_spec_dir, &software_slug, &reason);
-            return ReportEntry {
-                software: tool.software.clone(),
-                priority: tool.priority,
-                status: "quarantined".to_string(),
-                reason,
-                overlap_recipe: resolved.recipe_name,
-                overlap_reason: resolved.overlap_reason,
-                variant_dir: resolved.variant_dir.display().to_string(),
-                package_name: String::new(),
-                version: String::new(),
-                payload_spec_path: String::new(),
-                meta_spec_path: String::new(),
-                staged_build_sh: String::new(),
-            };
-        }
-    };
+    let parsed_result =
+        match parse_meta_for_resolved(&resolved, metadata_adapter, &build_config.target_arch) {
+            Ok(v) => v,
+            Err(err) => {
+                let reason = format!("failed to parse rendered metadata: {err}");
+                quarantine_note(bad_spec_dir, &software_slug, &reason);
+                return ReportEntry {
+                    software: tool.software.clone(),
+                    priority: tool.priority,
+                    status: "quarantined".to_string(),
+                    reason,
+                    overlap_recipe: resolved.recipe_name,
+                    overlap_reason: resolved.overlap_reason,
+                    variant_dir: resolved.variant_dir.display().to_string(),
+                    package_name: String::new(),
+                    version: String::new(),
+                    payload_spec_path: String::new(),
+                    meta_spec_path: String::new(),
+                    staged_build_sh: String::new(),
+                };
+            }
+        };
     if parsed_result.build_skip {
         clear_quarantine_note(bad_spec_dir, &software_slug);
         return ReportEntry {
@@ -2001,7 +2026,7 @@ fn select_recipe_variant_dir(recipe_dir: &Path) -> Result<PathBuf> {
 fn rendered_recipe_version(dir: &Path) -> Option<String> {
     let meta_path = meta_file_path(dir)?;
     let text = fs::read_to_string(&meta_path).ok()?;
-    let selector_ctx = SelectorContext::for_rpm_build();
+    let selector_ctx = SelectorContext::for_rpm_build(std::env::consts::ARCH);
     let selected_meta = apply_selectors(&text, &selector_ctx);
     let rendered = render_meta_yaml(&selected_meta).ok()?;
     extract_package_scalar(&rendered, "version").or_else(|| {
@@ -2160,8 +2185,8 @@ struct SelectorContext {
 }
 
 impl SelectorContext {
-    fn for_rpm_build() -> Self {
-        let arch = std::env::consts::ARCH;
+    fn for_rpm_build(target_arch: &str) -> Self {
+        let arch = target_arch;
         let linux = true;
         let osx = false;
         let win = false;
@@ -5990,7 +6015,7 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
 
     if !status.success() {
         let arch_policy =
-            classify_arch_policy(&combined, &build_config.host_arch).unwrap_or("unknown");
+            classify_arch_policy(&combined, &build_config.target_arch).unwrap_or("unknown");
         let tail = tail_lines(&combined, 20);
         log_progress(format!(
             "phase=container-build status=failed label={} spec={} elapsed={} arch_policy={} failure_hint={}",
@@ -6244,12 +6269,43 @@ fn write_reports(
 
     let generated = entries.iter().filter(|e| e.status == "generated").count();
     let quarantined = entries.len().saturating_sub(generated);
+    let kpi_scope_entries: Vec<&ReportEntry> = entries
+        .iter()
+        .filter(|e| e.status != "up-to-date" && e.status != "skipped")
+        .collect();
+    let kpi_excluded_arch = kpi_scope_entries
+        .iter()
+        .filter(|e| report_entry_is_arch_incompatible(e))
+        .count();
+    let kpi_denominator = kpi_scope_entries.len().saturating_sub(kpi_excluded_arch);
+    let kpi_success = kpi_scope_entries
+        .iter()
+        .filter(|e| e.status == "generated" && !report_entry_is_arch_incompatible(e))
+        .count();
+    let kpi_success_pct = if kpi_denominator == 0 {
+        100.0
+    } else {
+        (kpi_success as f64 * 100.0) / (kpi_denominator as f64)
+    };
 
     let mut md = String::new();
     md.push_str("# Priority SPEC Generation Summary\n\n");
     md.push_str(&format!("- Requested: {}\n", entries.len()));
     md.push_str(&format!("- Generated: {}\n", generated));
     md.push_str(&format!("- Quarantined: {}\n\n", quarantined));
+    md.push_str("## Reliability KPI (Arch-Adjusted)\n\n");
+    md.push_str("- Rule: architecture-incompatible packages are excluded from denominator.\n");
+    md.push_str(&format!(
+        "- KPI scope entries: {}\n",
+        kpi_scope_entries.len()
+    ));
+    md.push_str(&format!(
+        "- Excluded (arch-incompatible): {}\n",
+        kpi_excluded_arch
+    ));
+    md.push_str(&format!("- KPI denominator: {}\n", kpi_denominator));
+    md.push_str(&format!("- KPI successes: {}\n", kpi_success));
+    md.push_str(&format!("- KPI success rate: {:.2}%\n\n", kpi_success_pct));
     md.push_str("| Software | Priority | Status | Overlap Recipe | Version | Reason |\n");
     md.push_str("|---|---:|---|---|---|---|\n");
     for e in entries {
@@ -6274,6 +6330,13 @@ fn write_reports(
 
     fs::write(md_path, md).with_context(|| format!("writing md report {}", md_path.display()))?;
     Ok(())
+}
+
+fn report_entry_is_arch_incompatible(entry: &ReportEntry) -> bool {
+    let reason = entry.reason.to_ascii_lowercase();
+    reason.contains("arch_policy=amd64_only")
+        || reason.contains("arch_policy=aarch64_only")
+        || reason.contains("arch_policy=arm64_only")
 }
 
 #[cfg(test)]

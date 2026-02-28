@@ -48,6 +48,7 @@ bioconda2rpm generate-priority-specs \
   - Default: `quarantine`
 - `--arch <host|x86-64|aarch64>`
   - Default: `host`
+  - Defines target architecture semantics used by metadata rendering and arch-policy classification.
 - `--topdir <path>`
   - Optional. Default: `~/bioconda2rpm` (auto-created if missing).
 - `--bad-spec-dir <path>`

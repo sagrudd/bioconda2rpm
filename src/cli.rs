@@ -56,6 +56,14 @@ pub enum BuildArch {
     Aarch64,
 }
 
+fn canonical_arch_name(raw: &str) -> &'static str {
+    match raw {
+        "x86_64" | "amd64" => "x86_64",
+        "aarch64" | "arm64" => "aarch64",
+        _ => "x86_64",
+    }
+}
+
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
 pub enum NamingProfile {
     Phoreus,
@@ -231,9 +239,17 @@ impl BuildArgs {
             .unwrap_or_else(|| self.effective_topdir().join("reports"))
     }
 
+    pub fn effective_target_arch(&self) -> String {
+        match self.arch {
+            BuildArch::Host => canonical_arch_name(std::env::consts::ARCH).to_string(),
+            BuildArch::X86_64 => "x86_64".to_string(),
+            BuildArch::Aarch64 => "aarch64".to_string(),
+        }
+    }
+
     pub fn execution_summary(&self) -> String {
         format!(
-            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} arch={arch:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
+            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} arch={arch:?} target_arch={target_arch} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
             pkg = self.package,
             stage = self.stage,
             deps = self.with_deps(),
@@ -246,6 +262,7 @@ impl BuildArgs {
             container_image = self.container_image,
             container_engine = self.container_engine,
             arch = self.arch,
+            target_arch = self.effective_target_arch(),
             naming = self.naming_profile,
             render = self.render_strategy,
             metadata_adapter = self.metadata_adapter,
@@ -379,6 +396,7 @@ mod tests {
         assert_eq!(args.container_mode, ContainerMode::Auto);
         assert_eq!(args.missing_dependency, MissingDependencyPolicy::Fail);
         assert_eq!(args.arch, BuildArch::Aarch64);
+        assert_eq!(args.effective_target_arch(), "aarch64".to_string());
         assert_eq!(args.metadata_adapter, MetadataAdapter::Native);
         assert_eq!(args.effective_topdir(), PathBuf::from("/rpmbuild"));
         assert_eq!(args.effective_reports_dir(), PathBuf::from("/reports"));

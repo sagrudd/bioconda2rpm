@@ -84,6 +84,9 @@ Common optional flags:
   - `auto` (default): try conda-build rendering first, then fallback to native parser.
   - `conda`: require conda-build adapter success.
   - `native`: use in-crate selector/Jinja parser only.
+- `--arch <host|x86-64|aarch64>`:
+  - sets target architecture semantics for metadata/render and compatibility classification.
+  - recommended usage: `aarch64` for current development campaigns, `x86-64` for production validation.
 
 Up-to-date behavior:
 
@@ -184,6 +187,7 @@ Use the Markdown report for quick review and JSON/CSV for automation.
 For dependency analysis, inspect `reports/dependency_graphs/`:
 - `status=resolved` entries include `source` (`installed`, `local_rpm`, `repo`).
 - `status=unresolved` entries include captured package-manager detail.
+- Build Markdown reports include an arch-adjusted reliability KPI block where architecture-incompatible packages are excluded from denominator.
 
 Generated payload RPMs include `Provides: <tool>` (for example `Provides: samtools`) so downstream builds can consume previously generated local RPMs when available.
 
