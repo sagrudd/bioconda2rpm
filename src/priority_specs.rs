@@ -4655,6 +4655,13 @@ mkdir -p %{bioconda_source_subdir}\n"
     } else {
         String::new()
     };
+    let perl_module_provides = if perl_recipe {
+        perl_module_name_from_conda(&parsed.package_name)
+            .map(|module| format!("Provides:       perl({module}) = %{{version}}-%{{release}}\n"))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
 
     format!(
         "%global debug_package %{{nil}}\n\
@@ -4670,6 +4677,7 @@ mkdir -p %{bioconda_source_subdir}\n"
     Version:        %{{upstream_version}}\n\
     Release:        1%{{?dist}}\n\
     Provides:       %{{tool}} = %{{version}}-%{{release}}\n\
+    {perl_module_provides}\
     Summary:        {summary}\n\
     License:        {license}\n\
     URL:            {homepage}\n\
@@ -5178,6 +5186,7 @@ fi\n\
         build_requires = build_requires_lines,
         requires = requires_lines,
         build_arch = build_arch_line,
+        perl_module_provides = perl_module_provides,
         python_venv_setup = python_venv_setup,
         module_lua_env = module_lua_env,
         changelog_date = changelog_date,
@@ -5851,6 +5860,9 @@ fn map_build_dependency(dep: &str) -> String {
     if let Some(mapped) = map_perl_core_dependency(dep) {
         return mapped;
     }
+    if let Some(mapped) = map_perl_module_dependency(dep) {
+        return mapped;
+    }
     if is_r_ecosystem_dependency_name(dep) {
         if is_r_base_dependency_name(dep) {
             return PHOREUS_R_PACKAGE.to_string();
@@ -5927,6 +5939,9 @@ fn map_runtime_dependency(dep: &str) -> String {
         return "phoreus-r-monocle3".to_string();
     }
     if let Some(mapped) = map_perl_core_dependency(dep) {
+        return mapped;
+    }
+    if let Some(mapped) = map_perl_module_dependency(dep) {
         return mapped;
     }
     if is_r_ecosystem_dependency_name(dep) {
@@ -6623,6 +6638,71 @@ fn map_perl_core_dependency(dep: &str) -> Option<String> {
         _ => return None,
     };
     Some(mapped.to_string())
+}
+
+fn map_perl_module_dependency(dep: &str) -> Option<String> {
+    let module = perl_module_name_from_conda(dep)?;
+    Some(format!("perl({module})"))
+}
+
+fn perl_module_name_from_conda(dep: &str) -> Option<String> {
+    let normalized = normalize_dependency_token(dep);
+    let module = normalized.strip_prefix("perl-")?;
+    if module.is_empty() {
+        return None;
+    }
+    let overridden = match module {
+        "test-leaktrace" => Some("Test::LeakTrace".to_string()),
+        "json-xs" => Some("JSON::XS".to_string()),
+        _ => None,
+    };
+    if let Some(name) = overridden {
+        return Some(name);
+    }
+
+    let parts = module
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .map(|part| match part {
+            "api" => "API".to_string(),
+            "cgi" => "CGI".to_string(),
+            "cpan" => "CPAN".to_string(),
+            "dbi" => "DBI".to_string(),
+            "dbd" => "DBD".to_string(),
+            "http" => "HTTP".to_string(),
+            "io" => "IO".to_string(),
+            "ipc" => "IPC".to_string(),
+            "json" => "JSON".to_string(),
+            "lwp" => "LWP".to_string(),
+            "mime" => "MIME".to_string(),
+            "ssl" => "SSL".to_string(),
+            "uri" => "URI".to_string(),
+            "utf8" => "UTF8".to_string(),
+            "www" => "WWW".to_string(),
+            "xml" => "XML".to_string(),
+            "xs" => "XS".to_string(),
+            "yaml" => "YAML".to_string(),
+            other => {
+                let mut chars = other.chars();
+                match chars.next() {
+                    Some(first) => {
+                        let mut out = String::new();
+                        out.push(first.to_ascii_uppercase());
+                        out.push_str(chars.as_str());
+                        out
+                    }
+                    None => String::new(),
+                }
+            }
+        })
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>();
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("::"))
+    }
 }
 
 fn payload_version_state(
@@ -8032,20 +8112,24 @@ mod tests {
         );
         assert_eq!(
             map_build_dependency("perl-canary-stability"),
-            "perl-canary-stability".to_string()
+            "perl(Canary::Stability)".to_string()
         );
         assert_eq!(
             map_build_dependency("perl-types-serialiser"),
-            "perl-types-serialiser".to_string()
+            "perl(Types::Serialiser)".to_string()
         );
         assert_eq!(
             map_build_dependency("perl-autoloader"),
             "perl-AutoLoader".to_string()
         );
-        assert_eq!(map_build_dependency("perl-test"), "perl-test".to_string());
+        assert_eq!(map_build_dependency("perl-test"), "perl(Test)".to_string());
         assert_eq!(
             map_build_dependency("perl-test-nowarnings"),
-            "perl-test-nowarnings".to_string()
+            "perl(Test::Nowarnings)".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl-test-leaktrace"),
+            "perl(Test::LeakTrace)".to_string()
         );
         assert_eq!(
             map_build_dependency("python"),
@@ -9125,7 +9209,7 @@ requirements:
             false,
         );
         assert!(!spec.contains("BuildRequires:  perl-Number-Compare"));
-        assert!(spec.contains("Requires:  perl-number-compare"));
+        assert!(spec.contains("Requires:  perl(Number::Compare)"));
     }
 
     #[test]
@@ -9181,8 +9265,9 @@ requirements:
         );
         assert!(spec.contains("BuildRequires:  perl"));
         assert!(spec.contains("BuildRequires:  perl-ExtUtils-MakeMaker"));
-        assert!(spec.contains("BuildRequires:  perl-number-compare"));
-        assert!(spec.contains("BuildRequires:  perl-text-glob"));
+        assert!(spec.contains("BuildRequires:  perl(Number::Compare)"));
+        assert!(spec.contains("BuildRequires:  perl(Text::Glob)"));
+        assert!(spec.contains("Provides:       perl(File::Find::Rule) = %{version}-%{release}"));
         assert!(spec.contains("lib64/perl5"));
     }
 
