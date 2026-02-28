@@ -4492,14 +4492,19 @@ fn render_payload_spec(
     let perl_runtime_setup = if perl_recipe {
         format!(
             "export PHOREUS_PERL_PREFIX=/usr/local/phoreus/perl/{version}\n\
-if [[ ! -d \"$PHOREUS_PERL_PREFIX/lib/perl5\" ]]; then\n\
-  echo \"missing Phoreus Perl runtime at $PHOREUS_PERL_PREFIX\" >&2\n\
-  exit 45\n\
+if [[ -d \"$PHOREUS_PERL_PREFIX/lib/perl5\" ]]; then\n\
+  export PATH=\"$PHOREUS_PERL_PREFIX/bin:$PATH\"\n\
+  export BIOCONDA2RPM_PERL_RUNTIME=phoreus\n\
+else\n\
+  # Keep builds functional when Phoreus Perl is not preinstalled in container.\n\
+  # Payload still installs into Phoreus prefix via PREFIX.\n\
+  export BIOCONDA2RPM_PERL_RUNTIME=system\n\
+  echo \"Phoreus Perl runtime not present; falling back to system perl for build-time execution\" >&2\n\
 fi\n\
-export PERL5LIB=\"$PHOREUS_PERL_PREFIX/lib/perl5:$PHOREUS_PERL_PREFIX/lib64/perl5${{PERL5LIB:+:$PERL5LIB}}\"\n\
-export PERL_LOCAL_LIB_ROOT=\"$PHOREUS_PERL_PREFIX\"\n\
-export PERL_MM_OPT=\"${{PERL_MM_OPT:+$PERL_MM_OPT }}INSTALL_BASE=$PHOREUS_PERL_PREFIX\"\n\
-export PERL_MB_OPT=\"${{PERL_MB_OPT:+$PERL_MB_OPT }}--install_base $PHOREUS_PERL_PREFIX\"\n",
+export PERL5LIB=\"$PREFIX/lib/perl5:$PREFIX/lib64/perl5${{PERL5LIB:+:$PERL5LIB}}\"\n\
+export PERL_LOCAL_LIB_ROOT=\"$PREFIX\"\n\
+export PERL_MM_OPT=\"${{PERL_MM_OPT:+$PERL_MM_OPT }}INSTALL_BASE=$PREFIX\"\n\
+export PERL_MB_OPT=\"${{PERL_MB_OPT:+$PERL_MB_OPT }}--install_base $PREFIX\"\n",
             version = PHOREUS_PERL_VERSION
         )
     } else {
@@ -4574,7 +4579,9 @@ mkdir -p %{bioconda_source_subdir}\n"
         build_requires.insert("git".to_string());
     }
     if perl_recipe {
-        build_requires.insert(PHOREUS_PERL_PACKAGE.to_string());
+        // Use system Perl toolchain for build-time resolution and reserve
+        // Phoreus Perl as runtime requirement in generated payload specs.
+        build_requires.insert("perl".to_string());
     }
     // HEURISTIC-TEMP(issue=HEUR-0003): monocle3 geospatial native stack mapping.
     if software_slug == "r-monocle3" {
@@ -6710,6 +6717,7 @@ fn topdir_has_package_artifact(
 fn map_perl_core_dependency(dep: &str) -> Option<String> {
     let mapped = match dep {
         "perl-extutils-makemaker" => "perl-ExtUtils-MakeMaker",
+        "perl-common-sense" => "perl-common-sense",
         "perl-compress-raw-bzip2" => "perl-Compress-Raw-Bzip2",
         "perl-compress-raw-zlib" => "perl-Compress-Raw-Zlib",
         "perl-scalar-list-utils" => "perl-Scalar-List-Utils",
@@ -8278,6 +8286,10 @@ mod tests {
             map_build_dependency("perl-autoloader"),
             "perl-AutoLoader".to_string()
         );
+        assert_eq!(
+            map_build_dependency("perl-common-sense"),
+            "perl-common-sense".to_string()
+        );
         assert_eq!(map_build_dependency("perl-base"), "perl".to_string());
         assert_eq!(map_build_dependency("perl-lib"), "perl".to_string());
         assert_eq!(
@@ -9482,6 +9494,7 @@ requirements:
         assert!(spec.contains("BuildRequires:  perl-ExtUtils-MakeMaker"));
         assert!(spec.contains("BuildRequires:  perl(Number::Compare)"));
         assert!(spec.contains("BuildRequires:  perl(Text::Glob)"));
+        assert!(!spec.contains(&format!("BuildRequires:  {PHOREUS_PERL_PACKAGE}")));
         assert!(spec.contains("Provides:       perl(File::Find::Rule) = %{version}-%{release}"));
         assert!(spec.contains("lib64/perl5"));
     }
