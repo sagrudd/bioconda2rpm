@@ -2870,6 +2870,8 @@ fn harden_build_script_text(script: &str) -> String {
         if let Some(expanded) = rewrite_streamed_wget_tar_line(line, rewrite_counter) {
             rewritten_lines.extend(expanded);
             rewrite_counter += 1;
+        } else if let Some(expanded) = rewrite_glob_copy_to_prefix_bin_line(line) {
+            rewritten_lines.extend(expanded);
         } else if let Some(rewritten) = rewrite_cargo_bundle_licenses_line(line) {
             rewritten_lines.push(rewritten);
         } else {
@@ -2931,6 +2933,40 @@ fn rewrite_streamed_wget_tar_line(line: &str, counter: usize) -> Option<Vec<Stri
         format!("{indent}{wget_prefix} -O \"${{{tmp_var}}}\" {wget_url}"),
         format!("{indent}tar -zxf \"${{{tmp_var}}}\""),
         format!("{indent}rm -f \"${{{tmp_var}}}\""),
+    ])
+}
+
+fn rewrite_glob_copy_to_prefix_bin_line(line: &str) -> Option<Vec<String>> {
+    let trimmed = line.trim();
+    let (glob, single_quoted) = if let Some(rest) = trimmed.strip_prefix("cp *.") {
+        (rest, false)
+    } else if let Some(rest) = trimmed.strip_prefix("cp '*.") {
+        (rest, true)
+    } else {
+        return None;
+    };
+    let (ext, remainder) = if single_quoted {
+        let (ext, rem) = glob.split_once('\'')?;
+        (ext, rem.trim())
+    } else {
+        let (ext, rem) = glob.split_once(' ')?;
+        (ext, rem.trim())
+    };
+    if ext.is_empty() {
+        return None;
+    }
+    if remainder != "$PREFIX/bin" && remainder != "\"$PREFIX/bin\"" {
+        return None;
+    }
+
+    let indent = &line[..line.len() - line.trim_start().len()];
+    let pattern = format!("*.{ext}");
+    Some(vec![
+        format!("{indent}while IFS= read -r -d '' _bioconda2rpm_src; do"),
+        format!("{indent}  cp \"$_bioconda2rpm_src\" \"$PREFIX/bin/\""),
+        format!(
+            "{indent}done < <(find . -maxdepth 2 -type f -name '{pattern}' -print0)"
+        ),
     ])
 }
 
@@ -7385,6 +7421,14 @@ requirements:
         let hardened = harden_build_script_text(raw);
         assert!(hardened.contains("Skipping cargo-bundle-licenses"));
         assert!(!hardened.contains("cargo-bundle-licenses --format yaml --output THIRDPARTY.yml"));
+    }
+
+    #[test]
+    fn harden_build_script_rewrites_glob_copy_to_prefix_bin() {
+        let raw = "mkdir -p $PREFIX/bin\ncp *.R $PREFIX/bin\ncp *.sh $PREFIX/bin\n";
+        let hardened = harden_build_script_text(raw);
+        assert!(hardened.contains("find . -maxdepth 2 -type f -name '*.R' -print0"));
+        assert!(hardened.contains("find . -maxdepth 2 -type f -name '*.sh' -print0"));
     }
 
     #[test]
