@@ -5936,6 +5936,9 @@ fn map_build_dependency(dep: &str) -> String {
     if dep == "r-monocle3" {
         return "phoreus-r-monocle3".to_string();
     }
+    if let Some(mapped) = map_perl_provider_dependency(dep) {
+        return mapped;
+    }
     if let Some(mapped) = map_perl_core_dependency(dep) {
         return mapped;
     }
@@ -6025,6 +6028,9 @@ fn map_runtime_dependency(dep: &str) -> String {
     }
     if dep == "r-monocle3" {
         return "phoreus-r-monocle3".to_string();
+    }
+    if let Some(mapped) = map_perl_provider_dependency(dep) {
+        return mapped;
     }
     if let Some(mapped) = map_perl_core_dependency(dep) {
         return mapped;
@@ -6715,7 +6721,8 @@ fn topdir_has_package_artifact(
 }
 
 fn map_perl_core_dependency(dep: &str) -> Option<String> {
-    let mapped = match dep {
+    let normalized = normalize_dependency_token(dep);
+    let mapped = match normalized.as_str() {
         "perl-extutils-makemaker" => "perl-ExtUtils-MakeMaker",
         "perl-common-sense" => "perl-common-sense",
         "perl-compress-raw-bzip2" => "perl-Compress-Raw-Bzip2",
@@ -6741,9 +6748,69 @@ fn map_perl_core_dependency(dep: &str) -> Option<String> {
     Some(mapped.to_string())
 }
 
+fn map_perl_provider_dependency(dep: &str) -> Option<String> {
+    let normalized = normalize_dependency_token(dep);
+    let module = normalized
+        .strip_prefix("perl(")?
+        .strip_suffix(')')?
+        .trim();
+    if module.is_empty() {
+        return None;
+    }
+    if module == "common::sense" {
+        return Some("perl-common-sense".to_string());
+    }
+    let canonical = canonicalize_perl_module_name(module);
+    Some(format!("perl({canonical})"))
+}
+
 fn map_perl_module_dependency(dep: &str) -> Option<String> {
     let module = perl_module_name_from_conda(dep)?;
     Some(format!("perl({module})"))
+}
+
+fn canonicalize_perl_module_name(module: &str) -> String {
+    module
+        .split("::")
+        .filter(|part| !part.is_empty())
+        .map(canonicalize_perl_module_segment)
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+fn canonicalize_perl_module_segment(segment: &str) -> String {
+    match segment {
+        "api" => "API".to_string(),
+        "cgi" => "CGI".to_string(),
+        "cpan" => "CPAN".to_string(),
+        "dbd" => "DBD".to_string(),
+        "dbi" => "DBI".to_string(),
+        "http" => "HTTP".to_string(),
+        "idn" => "IDN".to_string(),
+        "io" => "IO".to_string(),
+        "ipc" => "IPC".to_string(),
+        "json" => "JSON".to_string(),
+        "lwp" => "LWP".to_string(),
+        "mime" => "MIME".to_string(),
+        "moreutils" => "MoreUtils".to_string(),
+        "ssl" => "SSL".to_string(),
+        "uri" => "URI".to_string(),
+        "utf8" => "UTF8".to_string(),
+        "www" => "WWW".to_string(),
+        "xml" => "XML".to_string(),
+        "xs" => "XS".to_string(),
+        other => {
+            let mut chars = other.chars();
+            if let Some(first) = chars.next() {
+                let mut out = String::new();
+                out.extend(first.to_uppercase());
+                out.push_str(chars.as_str());
+                out
+            } else {
+                String::new()
+            }
+        }
+    }
 }
 
 fn perl_module_name_from_conda(dep: &str) -> Option<String> {
@@ -8308,6 +8375,14 @@ mod tests {
         assert_eq!(
             map_build_dependency("perl-list-moreutils-xs"),
             "perl(List::MoreUtils::XS)".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl(list::moreutils::xs)"),
+            "perl(List::MoreUtils::XS)".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl(common::sense)"),
+            "perl-common-sense".to_string()
         );
         assert_eq!(
             map_build_dependency("python"),
