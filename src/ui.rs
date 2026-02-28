@@ -33,6 +33,8 @@ struct UiState {
     last_phase: String,
     last_status_line: String,
     queue_line: String,
+    planned_root: String,
+    planned_order: Vec<String>,
     logs: VecDeque<String>,
     packages: BTreeMap<String, PackageState>,
     seq: u64,
@@ -47,6 +49,8 @@ impl UiState {
             last_phase: "starting".to_string(),
             last_status_line: "status=starting".to_string(),
             queue_line: String::new(),
+            planned_root: String::new(),
+            planned_order: Vec::new(),
             logs: VecDeque::new(),
             packages: BTreeMap::new(),
             seq: 0,
@@ -81,6 +85,21 @@ impl UiState {
                 "queue status={} running={} queued={} workers={}",
                 status, running, queued, workers
             );
+        }
+        if kv.get("phase").map(|v| v.as_str()) == Some("dependency-plan")
+            && kv.get("status").map(|v| v.as_str()) == Some("completed")
+        {
+            self.planned_root = kv.get("package").cloned().unwrap_or_default();
+            self.planned_order = kv
+                .get("order")
+                .map(|order| {
+                    order
+                        .split("->")
+                        .filter(|entry| !entry.is_empty())
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
         }
         if let Some(pkg) = kv.get("package") {
             self.seq = self.seq.saturating_add(1);
@@ -231,8 +250,9 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
         .constraints([
             Constraint::Length(3),
             Constraint::Length(3),
+            Constraint::Length(7),
             Constraint::Min(8),
-            Constraint::Length(8),
+            Constraint::Length(6),
             Constraint::Length(3),
         ])
         .split(frame.area());
@@ -259,6 +279,34 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
         .block(Block::default().borders(Borders::ALL).title("Status"))
         .wrap(Wrap { trim: true });
     frame.render_widget(status, chunks[1]);
+
+    let queue_body = if state.planned_order.is_empty() {
+        "no dependency plan yet".to_string()
+    } else {
+        let mut lines = Vec::with_capacity(state.planned_order.len() + 1);
+        let root = if state.planned_root.is_empty() {
+            "unknown"
+        } else {
+            state.planned_root.as_str()
+        };
+        lines.push(format!("root={} total={}", root, state.planned_order.len()));
+        lines.extend(
+            state
+                .planned_order
+                .iter()
+                .enumerate()
+                .map(|(idx, pkg)| format!("{}. {}", idx + 1, pkg)),
+        );
+        lines.join(" | ")
+    };
+    let planned = Paragraph::new(queue_body)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Planned Queue"),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(planned, chunks[2]);
 
     let mut rows = state
         .packages
@@ -295,7 +343,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
     )
     .header(Row::new(vec!["Package", "State", "Detail"]).style(Style::default().fg(Color::White)))
     .block(Block::default().borders(Borders::ALL).title("Packages"));
-    frame.render_widget(table, chunks[2]);
+    frame.render_widget(table, chunks[3]);
 
     let log_text = state
         .logs
@@ -311,7 +359,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
     let logs = Paragraph::new(log_text)
         .block(Block::default().borders(Borders::ALL).title("Recent Logs"))
         .wrap(Wrap { trim: true });
-    frame.render_widget(logs, chunks[3]);
+    frame.render_widget(logs, chunks[4]);
 
     let summary = Paragraph::new(
         state
@@ -321,7 +369,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
     )
     .block(Block::default().borders(Borders::ALL).title("Summary"))
     .wrap(Wrap { trim: true });
-    frame.render_widget(summary, chunks[4]);
+    frame.render_widget(summary, chunks[5]);
 }
 
 fn parse_progress_kv(line: &str) -> BTreeMap<String, String> {
