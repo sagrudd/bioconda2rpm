@@ -186,6 +186,30 @@ fn format_elapsed(elapsed: Duration) -> String {
     }
 }
 
+fn seed_heartbeat_rng(build_label: &str, spec_name: &str, attempt: usize) -> u64 {
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    for byte in build_label
+        .bytes()
+        .chain(spec_name.bytes())
+        .chain(attempt.to_string().bytes())
+    {
+        seed = seed.rotate_left(5) ^ u64::from(byte);
+        seed = seed.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    }
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    seed ^ now_nanos ^ u64::from(std::process::id())
+}
+
+fn next_heartbeat_interval_secs(state: &mut u64) -> u64 {
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    5 + ((*state >> 32) % 6)
+}
+
 fn compact_reason(reason: &str, limit: usize) -> String {
     let collapsed = reason.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() <= limit {
@@ -7071,7 +7095,9 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
             )
         })?;
 
-        let mut next_heartbeat = Duration::from_secs(60);
+        let mut heartbeat_rng = seed_heartbeat_rng(&build_label, spec_name, attempt);
+        let mut next_heartbeat_at =
+            Instant::now() + Duration::from_secs(next_heartbeat_interval_secs(&mut heartbeat_rng));
         loop {
             if child
                 .try_wait()
@@ -7080,9 +7106,9 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
             {
                 break;
             }
-            std::thread::sleep(Duration::from_secs(5));
-            let elapsed = step_started.elapsed();
-            if elapsed >= next_heartbeat {
+            std::thread::sleep(Duration::from_secs(1));
+            if Instant::now() >= next_heartbeat_at {
+                let elapsed = step_started.elapsed();
                 log_progress(format!(
                     "phase=container-build status=running label={} spec={} attempt={} elapsed={}",
                     build_label,
@@ -7090,7 +7116,8 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
                     attempt,
                     format_elapsed(elapsed)
                 ));
-                next_heartbeat += Duration::from_secs(60);
+                next_heartbeat_at = Instant::now()
+                    + Duration::from_secs(next_heartbeat_interval_secs(&mut heartbeat_rng));
             }
         }
 
