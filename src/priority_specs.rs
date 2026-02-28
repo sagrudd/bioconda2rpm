@@ -6758,7 +6758,13 @@ if [[ -z \"${{BIOCONDA2RPM_CPU_COUNT}}\" || \"${{BIOCONDA2RPM_CPU_COUNT}}\" == \
 fi\n\
 export BIOCONDA2RPM_ADAPTIVE_RETRY={adaptive_retry}\n\
 rpm_smp_flags=(--define \"_smp_mflags -j${{BIOCONDA2RPM_CPU_COUNT}}\" --define \"_smp_build_ncpus ${{BIOCONDA2RPM_CPU_COUNT}}\")\n\
-source0_url=$(awk '/^Source0:[[:space:]]+/ {{print $2; exit}}' '{spec}' || true)\n\
+source0_url=$(rpmspec -q --srpm --qf '%{{SOURCE0}}\\n' --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}' 2>/dev/null | head -n 1 | tr -d '\\r' || true)\n\
+if [[ -z \"$source0_url\" || \"$source0_url\" == '(none)' ]]; then\n\
+  source0_url=$(rpmspec -P --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}' 2>/dev/null | awk '/^Source0:[[:space:]]+/ {{print $2; exit}}' || true)\n\
+fi\n\
+if [[ -z \"$source0_url\" ]]; then\n\
+  source0_url=$(awk '/^Source0:[[:space:]]+/ {{print $2; exit}}' '{spec}' || true)\n\
+fi\n\
 source_candidates=()\n\
 if [[ -n \"$source0_url\" ]]; then\n\
   source_candidates+=(\"$source0_url\")\n\
