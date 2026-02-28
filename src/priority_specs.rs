@@ -4993,7 +4993,7 @@ fi\n\
 \n\
 {nim_runtime_setup}\
 \n\
-# BLAST recipes in Bioconda assume a conda-style shared prefix where ncbi-vdb\n\
+    # BLAST recipes in Bioconda assume a conda-style shared prefix where ncbi-vdb\n\
     # lives under the same PREFIX. In Phoreus, ncbi-vdb is a separate payload.\n\
     # Retarget the generated build.sh argument to the newest installed ncbi-vdb prefix.\n\
     if [[ \"%{{tool}}\" == \"blast\" ]]; then\n\
@@ -5016,6 +5016,9 @@ fi\n\
     # Bioconda's flat `cp $RESULT_PATH/lib/*` fails when a directory is present.\n\
     # Use recursive copy semantics so payload installation remains stable.\n\
     sed -i 's|^cp \\$RESULT_PATH/lib/\\* \"\\$LIB_INSTALL_DIR\"$|cp -r \\$RESULT_PATH/lib/* \"\\$LIB_INSTALL_DIR\"|g' ./build.sh\n\
+    # BLAST passes --with-sqlite3=$PREFIX in conda builds where sqlite lives in\n\
+    # that shared prefix. In RPM/container builds sqlite comes from system repos.\n\
+    sed -i 's|--with-sqlite3=\\$PREFIX|--with-sqlite3=/usr|g' ./build.sh || true\n\
     fi\n\
     \n\
     # GMAP upstream release tarballs already ship generated configure scripts.\n\
@@ -6017,6 +6020,7 @@ fn map_build_dependency(dep: &str) -> String {
         "ninja" => "ninja-build".to_string(),
         "openssl" => "openssl-devel".to_string(),
         "openmpi" => "openmpi-devel".to_string(),
+        "sqlite" => "sqlite-devel".to_string(),
         "qt" => "qt5-qtbase-devel qt5-qtsvg-devel".to_string(),
         "llvmdev" => "llvm-devel".to_string(),
         "xorg-libxext" => "libXext-devel".to_string(),
@@ -8287,6 +8291,7 @@ mod tests {
             "xz-devel".to_string()
         );
         assert_eq!(map_build_dependency("ninja"), "ninja-build".to_string());
+        assert_eq!(map_build_dependency("sqlite"), "sqlite-devel".to_string());
         assert_eq!(map_build_dependency("cereal"), "cereal-devel".to_string());
         assert_eq!(map_build_dependency("gnuconfig"), "automake".to_string());
         assert_eq!(map_build_dependency("glib"), "glib2-devel".to_string());
