@@ -3695,6 +3695,13 @@ fi\n\
     export LDFLAGS=\"-Wl,--no-keep-memory ${{LDFLAGS:-}}\"\n\
     fi\n\
     \n\
+    # RNA-SeQC v2.4.2 bundles a BWA fork that hard-requires x86 SSE headers\n\
+    # (emmintrin.h) and is not portable to Linux/aarch64 in this release.\n\
+    if [[ \"%{{tool}}\" == \"rna-seqc\" && \"${{BIOCONDA_TARGET_ARCH:-}}\" == \"aarch64\" ]]; then\n\
+    echo \"rna-seqc upstream source requires x86 SSE (emmintrin.h); no Linux/aarch64 build path in this release\" >&2\n\
+    exit 86\n\
+    fi\n\
+    \n\
     # Bcftools recipes often pass GSL_LIBS=-lgsl only, but EL9's GSL\n\
     # requires explicit CBLAS linkage at link time.\n\
     if [[ \"%{{tool}}\" == \"bcftools\" ]]; then\n\
