@@ -3849,7 +3849,16 @@ fn should_keep_rpm_dependency_for_r(dep: &str) -> bool {
     if !is_r_ecosystem_dependency_name(&normalized) {
         return true;
     }
-    is_r_base_dependency_name(&normalized)
+    if is_r_base_dependency_name(&normalized) {
+        return true;
+    }
+    // Keep Bioconductor packages as hard RPM deps so locally-built BioC
+    // payloads are installed into the buildroot before R CMD INSTALL runs.
+    if normalized.starts_with("bioconductor-") {
+        return true;
+    }
+    // Non-base CRAN deps are restored via the Phoreus R dependency script.
+    false
 }
 
 fn should_keep_rpm_dependency_for_perl(dep: &str) -> bool {
@@ -8664,6 +8673,44 @@ requirements:
         assert!(spec.contains(&format!("Requires:  {}", PHOREUS_R_PACKAGE)));
         assert!(!spec.contains("BuildRequires:  r-rcurl"));
         assert!(!spec.contains("Requires:  r-rcurl"));
+    }
+
+    #[test]
+    fn r_project_payload_keeps_bioconductor_rpm_dependencies() {
+        let parsed = ParsedMeta {
+            package_name: "bioconductor-rhtslib".to_string(),
+            version: "3.2.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/rhtslib_3.2.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/rhtslib".to_string(),
+            license: "Artistic-2.0".to_string(),
+            summary: "Rhtslib".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: vec!["r-base".to_string()],
+            host_dep_specs_raw: vec!["bioconductor-zlibbioc".to_string()],
+            run_dep_specs_raw: vec!["bioconductor-zlibbioc".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::from(["bioconductor-zlibbioc".to_string()]),
+            run_deps: BTreeSet::from(["bioconductor-zlibbioc".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "bioconductor-rhtslib",
+            &parsed,
+            "bioconda-bioconductor-rhtslib-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains("BuildRequires:  bioconductor-zlibbioc"));
+        assert!(spec.contains("Requires:  bioconductor-zlibbioc"));
     }
 
     #[test]
