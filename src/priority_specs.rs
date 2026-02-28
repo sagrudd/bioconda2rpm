@@ -11,13 +11,14 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::thread;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -381,8 +382,42 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
     })
 }
 
+fn collect_requested_build_packages(args: &BuildArgs) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+
+    for pkg in &args.packages {
+        let name = pkg.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let key = normalize_name(name);
+        if key.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        out.push(name.to_string());
+    }
+
+    if let Some(path) = args.packages_file.as_ref() {
+        let from_file = load_software_list(path)?;
+        for pkg in from_file {
+            let key = normalize_name(&pkg);
+            if key.is_empty() || !seen.insert(key) {
+                continue;
+            }
+            out.push(pkg);
+        }
+    }
+
+    if out.is_empty() {
+        anyhow::bail!("no packages requested: pass PACKAGE positional args and/or --packages-file");
+    }
+    Ok(out)
+}
+
 pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     let build_started = Instant::now();
+    let requested_packages = collect_requested_build_packages(args)?;
     let topdir = args.effective_topdir();
     let specs_dir = topdir.join("SPECS");
     let sources_dir = topdir.join("SOURCES");
@@ -394,8 +429,8 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     let bad_spec_dir = args.effective_bad_spec_dir();
     let effective_metadata_adapter = args.effective_metadata_adapter();
     log_progress(format!(
-        "phase=build-start package={} deps_enabled={} dependency_policy={:?} recipe_root={} topdir={} target_id={} target_root={} target_arch={} deployment_profile={:?} metadata_adapter={:?} parallel_policy={:?} build_jobs={} effective_build_jobs={}",
-        args.package,
+        "phase=build-start requested_packages={} deps_enabled={} dependency_policy={:?} recipe_root={} topdir={} target_id={} target_root={} target_arch={} deployment_profile={:?} metadata_adapter={:?} parallel_policy={:?} build_jobs={} effective_build_jobs={} queue_workers={} effective_queue_workers={}",
+        requested_packages.len(),
         args.with_deps(),
         args.dependency_policy,
         args.recipe_root.display(),
@@ -407,7 +442,11 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         effective_metadata_adapter,
         args.parallel_policy,
         args.build_jobs,
-        args.effective_build_jobs()
+        args.effective_build_jobs(),
+        args.queue_workers
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "auto".to_string()),
+        args.effective_queue_workers()
     ));
 
     fs::create_dir_all(&specs_dir)
@@ -446,8 +485,28 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     ensure_phoreus_python_bootstrap(&build_config, &specs_dir)
         .context("bootstrapping Phoreus Python runtime")?;
 
+    if requested_packages.len() > 1 {
+        return run_build_batch_queue(
+            args,
+            &requested_packages,
+            &recipe_dirs,
+            &specs_dir,
+            &sources_dir,
+            &bad_spec_dir,
+            &reports_dir,
+            &build_config,
+            &effective_metadata_adapter,
+            build_started,
+        );
+    }
+
+    let root_request = requested_packages
+        .first()
+        .cloned()
+        .context("missing requested package after validation")?;
+
     let Some(root_recipe) = resolve_and_parse_recipe(
-        &args.package,
+        &root_request,
         &args.recipe_root,
         &recipe_dirs,
         true,
@@ -457,7 +516,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     else {
         anyhow::bail!(
             "no overlapping recipe found in bioconda metadata for '{}'",
-            args.package
+            root_request
         );
     };
     if root_recipe.build_skip {
@@ -478,7 +537,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
             meta_spec_path: String::new(),
             staged_build_sh: String::new(),
         };
-        let report_stem = normalize_name(&args.package);
+        let report_stem = normalize_name(&root_request);
         let report_json = reports_dir.join(format!("build_{report_stem}.json"));
         let report_csv = reports_dir.join(format!("build_{report_stem}.csv"));
         let report_md = reports_dir.join(format!("build_{report_stem}.md"));
@@ -536,7 +595,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
             staged_build_sh: String::new(),
         };
 
-        let report_stem = normalize_name(&args.package);
+        let report_stem = normalize_name(&root_request);
         let report_json = reports_dir.join(format!("build_{report_stem}.json"));
         let report_csv = reports_dir.join(format!("build_{report_stem}.csv"));
         let report_md = reports_dir.join(format!("build_{report_stem}.md"));
@@ -562,7 +621,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     }
 
     let (plan_order, plan_nodes) = collect_build_plan(
-        &args.package,
+        &root_request,
         args.with_deps(),
         &args.dependency_policy,
         &args.recipe_root,
@@ -576,7 +635,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         .collect::<Vec<_>>();
     log_progress(format!(
         "phase=dependency-plan status=completed package={} planned_nodes={} order={}",
-        args.package,
+        root_request,
         build_order.len(),
         build_order.join("->")
     ));
@@ -678,7 +737,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         results.push(entry);
     }
 
-    let report_stem = normalize_name(&args.package);
+    let report_stem = normalize_name(&root_request);
     let report_json = reports_dir.join(format!("build_{report_stem}.json"));
     let report_csv = reports_dir.join(format!("build_{report_stem}.csv"));
     let report_md = reports_dir.join(format!("build_{report_stem}.md"));
@@ -734,6 +793,398 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         quarantined,
         format_elapsed(build_started.elapsed())
     ));
+    Ok(BuildSummary {
+        requested: results.len(),
+        generated,
+        up_to_date,
+        skipped,
+        quarantined,
+        kpi_scope_entries: kpi.scope_entries,
+        kpi_excluded_arch: kpi.excluded_arch,
+        kpi_denominator: kpi.denominator,
+        kpi_successes: kpi.successes,
+        kpi_success_rate: kpi.success_rate,
+        build_order,
+        report_json,
+        report_csv,
+        report_md,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_build_batch_queue(
+    args: &BuildArgs,
+    requested_packages: &[String],
+    recipe_dirs: &[RecipeDir],
+    specs_dir: &Path,
+    sources_dir: &Path,
+    bad_spec_dir: &Path,
+    reports_dir: &Path,
+    build_config: &BuildConfig,
+    metadata_adapter: &MetadataAdapter,
+    build_started: Instant,
+) -> Result<BuildSummary> {
+    let queue_workers = args.effective_queue_workers().max(1);
+    log_progress(format!(
+        "phase=batch-queue status=initialized roots={} queue_workers={} build_jobs_per_worker={} policy={:?}",
+        requested_packages.len(),
+        queue_workers,
+        build_config.build_jobs,
+        build_config.parallel_policy
+    ));
+
+    let mut global_nodes: BTreeMap<String, BuildPlanNode> = BTreeMap::new();
+    let mut results: Vec<ReportEntry> = Vec::new();
+    let mut fail_reason: Option<String> = None;
+
+    for root in requested_packages {
+        match collect_build_plan(
+            root,
+            args.with_deps(),
+            &args.dependency_policy,
+            &args.recipe_root,
+            recipe_dirs,
+            metadata_adapter,
+            &build_config.target_arch,
+        ) {
+            Ok((_order, nodes)) => {
+                for (key, node) in nodes {
+                    global_nodes
+                        .entry(key)
+                        .and_modify(|existing| {
+                            existing
+                                .direct_bioconda_deps
+                                .extend(node.direct_bioconda_deps.clone());
+                        })
+                        .or_insert(node);
+                }
+            }
+            Err(err) => {
+                let slug = normalize_name(root);
+                let reason = format!(
+                    "no overlapping recipe found in bioconda metadata for '{}': {}",
+                    root,
+                    compact_reason(&err.to_string(), 240)
+                );
+                let status = match args.missing_dependency {
+                    MissingDependencyPolicy::Skip => "skipped",
+                    _ => "quarantined",
+                }
+                .to_string();
+                if status == "quarantined" {
+                    quarantine_note(bad_spec_dir, &slug, &reason);
+                }
+                results.push(ReportEntry {
+                    software: root.clone(),
+                    priority: 0,
+                    status,
+                    reason: reason.clone(),
+                    overlap_recipe: root.clone(),
+                    overlap_reason: "requested-root".to_string(),
+                    variant_dir: String::new(),
+                    package_name: String::new(),
+                    version: String::new(),
+                    payload_spec_path: String::new(),
+                    meta_spec_path: String::new(),
+                    staged_build_sh: String::new(),
+                });
+                if args.missing_dependency == MissingDependencyPolicy::Fail && fail_reason.is_none()
+                {
+                    fail_reason = Some(reason);
+                }
+            }
+        }
+    }
+
+    let mut pending_deps: HashMap<String, usize> = HashMap::new();
+    let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
+    for (key, node) in &global_nodes {
+        pending_deps.insert(key.clone(), node.direct_bioconda_deps.len());
+        for dep in &node.direct_bioconda_deps {
+            dependents.entry(dep.clone()).or_default().push(key.clone());
+        }
+    }
+
+    let mut ready: Vec<String> = pending_deps
+        .iter()
+        .filter_map(|(key, count)| if *count == 0 { Some(key.clone()) } else { None })
+        .collect();
+    ready.sort();
+    let mut ready = VecDeque::from(ready);
+
+    let recipe_root = Arc::new(args.recipe_root.clone());
+    let recipe_dirs = Arc::new(recipe_dirs.to_vec());
+    let specs_dir = Arc::new(specs_dir.to_path_buf());
+    let sources_dir = Arc::new(sources_dir.to_path_buf());
+    let bad_spec_dir = Arc::new(bad_spec_dir.to_path_buf());
+    let build_config = Arc::new(build_config.clone());
+    let metadata_adapter = Arc::new(metadata_adapter.clone());
+
+    let (tx, rx) = mpsc::channel::<(String, ReportEntry, Duration)>();
+    let mut running = 0usize;
+    let mut finalized: HashSet<String> = HashSet::new();
+    let mut failed_by: HashMap<String, BTreeSet<String>> = HashMap::new();
+    let mut build_order = Vec::new();
+
+    while !ready.is_empty() || running > 0 {
+        while running < queue_workers && !ready.is_empty() {
+            let key = ready.pop_front().unwrap_or_default();
+            if key.is_empty() || finalized.contains(&key) {
+                continue;
+            }
+            if fail_reason.is_some() && args.missing_dependency == MissingDependencyPolicy::Fail {
+                break;
+            }
+            let Some(node) = global_nodes.get(&key) else {
+                finalized.insert(key);
+                continue;
+            };
+            build_order.push(node.name.clone());
+            let tool = PriorityTool {
+                line_no: 0,
+                software: node.name.clone(),
+                priority: 0,
+            };
+            let key_for_thread = key.clone();
+            let txc = tx.clone();
+            let recipe_root_c = Arc::clone(&recipe_root);
+            let recipe_dirs_c = Arc::clone(&recipe_dirs);
+            let specs_dir_c = Arc::clone(&specs_dir);
+            let sources_dir_c = Arc::clone(&sources_dir);
+            let bad_spec_dir_c = Arc::clone(&bad_spec_dir);
+            let build_config_c = Arc::clone(&build_config);
+            let metadata_adapter_c = Arc::clone(&metadata_adapter);
+            running += 1;
+            log_progress(format!(
+                "phase=batch-queue status=dispatch key={} package={} running={} queued={}",
+                key_for_thread,
+                tool.software,
+                running,
+                ready.len()
+            ));
+            thread::spawn(move || {
+                let package_started = Instant::now();
+                let entry = process_tool(
+                    &tool,
+                    recipe_root_c.as_path(),
+                    recipe_dirs_c.as_slice(),
+                    specs_dir_c.as_path(),
+                    sources_dir_c.as_path(),
+                    bad_spec_dir_c.as_path(),
+                    &build_config_c,
+                    &metadata_adapter_c,
+                );
+                let _ = txc.send((key_for_thread, entry, package_started.elapsed()));
+            });
+        }
+
+        if running == 0 {
+            break;
+        }
+
+        let (done_key, entry, elapsed) = rx
+            .recv()
+            .context("batch queue worker channel closed unexpectedly")?;
+        running = running.saturating_sub(1);
+        if finalized.contains(&done_key) {
+            continue;
+        }
+        finalized.insert(done_key.clone());
+        log_progress(format!(
+            "phase=batch-queue status=completed key={} package={} result={} elapsed={}",
+            done_key,
+            entry.software,
+            entry.status,
+            format_elapsed(elapsed)
+        ));
+        let success = entry.status == "generated"
+            || entry.status == "up-to-date"
+            || entry.status == "skipped";
+        if !success
+            && args.missing_dependency == MissingDependencyPolicy::Fail
+            && fail_reason.is_none()
+        {
+            fail_reason = Some(entry.reason.clone());
+        }
+        results.push(entry.clone());
+
+        let mut fail_queue: VecDeque<String> = VecDeque::new();
+        if !success {
+            fail_queue.push_back(done_key.clone());
+        }
+
+        if let Some(children) = dependents.get(&done_key) {
+            for child in children {
+                if finalized.contains(child) {
+                    continue;
+                }
+                if let Some(pending) = pending_deps.get_mut(child)
+                    && *pending > 0
+                {
+                    *pending -= 1;
+                }
+                if !success {
+                    failed_by
+                        .entry(child.clone())
+                        .or_default()
+                        .insert(done_key.clone());
+                }
+                if pending_deps.get(child).copied().unwrap_or(0) == 0 {
+                    if failed_by.get(child).map(|v| !v.is_empty()).unwrap_or(false) {
+                        fail_queue.push_back(child.clone());
+                    } else {
+                        ready.push_back(child.clone());
+                    }
+                }
+            }
+        }
+
+        while let Some(failed_key) = fail_queue.pop_front() {
+            if finalized.contains(&failed_key) {
+                continue;
+            }
+            let Some(node) = global_nodes.get(&failed_key) else {
+                finalized.insert(failed_key);
+                continue;
+            };
+            let failed_keys = failed_by.get(&failed_key).cloned().unwrap_or_default();
+            let failed_names = failed_keys
+                .iter()
+                .filter_map(|k| global_nodes.get(k).map(|n| n.name.clone()))
+                .collect::<Vec<_>>();
+            let reason = if failed_names.is_empty() {
+                format!("blocked by failed dependencies for {}", node.name)
+            } else {
+                format!(
+                    "blocked by failed dependencies: {}",
+                    failed_names.join(", ")
+                )
+            };
+            let status = match args.missing_dependency {
+                MissingDependencyPolicy::Skip => "skipped",
+                _ => "quarantined",
+            }
+            .to_string();
+            if status == "quarantined" {
+                quarantine_note(bad_spec_dir.as_path(), &failed_key, &reason);
+            }
+            log_progress(format!(
+                "phase=batch-queue status={} key={} package={} reason={}",
+                status,
+                failed_key,
+                node.name,
+                compact_reason(&reason, 220)
+            ));
+            results.push(ReportEntry {
+                software: node.name.clone(),
+                priority: 0,
+                status: status.clone(),
+                reason: reason.clone(),
+                overlap_recipe: node.name.clone(),
+                overlap_reason: "dependency-closure".to_string(),
+                variant_dir: String::new(),
+                package_name: String::new(),
+                version: String::new(),
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: String::new(),
+            });
+            finalized.insert(failed_key.clone());
+            if args.missing_dependency == MissingDependencyPolicy::Fail && fail_reason.is_none() {
+                fail_reason = Some(reason.clone());
+            }
+
+            if let Some(children) = dependents.get(&failed_key) {
+                for child in children {
+                    if finalized.contains(child) {
+                        continue;
+                    }
+                    if let Some(pending) = pending_deps.get_mut(child)
+                        && *pending > 0
+                    {
+                        *pending -= 1;
+                    }
+                    failed_by
+                        .entry(child.clone())
+                        .or_default()
+                        .insert(failed_key.clone());
+                    if pending_deps.get(child).copied().unwrap_or(0) == 0 {
+                        fail_queue.push_back(child.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    if finalized.len() < global_nodes.len() {
+        for (key, node) in &global_nodes {
+            if finalized.contains(key) {
+                continue;
+            }
+            let reason = "scheduler ended before node became buildable".to_string();
+            quarantine_note(bad_spec_dir.as_path(), key, &reason);
+            results.push(ReportEntry {
+                software: node.name.clone(),
+                priority: 0,
+                status: "quarantined".to_string(),
+                reason: reason.clone(),
+                overlap_recipe: node.name.clone(),
+                overlap_reason: "dependency-closure".to_string(),
+                variant_dir: String::new(),
+                package_name: String::new(),
+                version: String::new(),
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: String::new(),
+            });
+            if args.missing_dependency == MissingDependencyPolicy::Fail && fail_reason.is_none() {
+                fail_reason = Some(reason);
+            }
+        }
+    }
+
+    let report_stem = format!(
+        "batch_{}_{}",
+        requested_packages.len(),
+        Utc::now().format("%Y%m%d%H%M%S")
+    );
+    let report_json = reports_dir.join(format!("build_{report_stem}.json"));
+    let report_csv = reports_dir.join(format!("build_{report_stem}.csv"));
+    let report_md = reports_dir.join(format!("build_{report_stem}.md"));
+    write_reports(&results, &report_json, &report_csv, &report_md)?;
+
+    if let Some(reason) = fail_reason {
+        anyhow::bail!(
+            "batch build failed under missing-dependency policy fail: {} (report_md={})",
+            reason,
+            report_md.display()
+        );
+    }
+
+    let kpi = compute_arch_adjusted_kpi(&results);
+    if args.effective_kpi_gate() && kpi.success_rate + f64::EPSILON < args.kpi_min_success_rate {
+        anyhow::bail!(
+            "kpi gate failed: arch-adjusted success rate {:.2}% is below threshold {:.2}% (denominator={}, successes={}, excluded_arch={}, report_md={})",
+            kpi.success_rate,
+            args.kpi_min_success_rate,
+            kpi.denominator,
+            kpi.successes,
+            kpi.excluded_arch,
+            report_md.display()
+        );
+    }
+
+    log_progress(format!(
+        "phase=batch-queue status=completed requested_roots={} node_results={} elapsed={}",
+        requested_packages.len(),
+        results.len(),
+        format_elapsed(build_started.elapsed())
+    ));
+
+    let generated = results.iter().filter(|r| r.status == "generated").count();
+    let up_to_date = results.iter().filter(|r| r.status == "up-to-date").count();
+    let skipped = results.iter().filter(|r| r.status == "skipped").count();
+    let quarantined = results.iter().filter(|r| r.status == "quarantined").count();
     Ok(BuildSummary {
         requested: results.len(),
         generated,
@@ -862,7 +1313,9 @@ pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
             kpi_gate: false,
             kpi_min_success_rate: args.kpi_min_success_rate,
             outputs: OutputSelection::All,
-            package: tool.software.clone(),
+            packages_file: None,
+            packages: vec![tool.software.clone()],
+            queue_workers: None,
             phoreus_local_repo: Vec::new(),
             phoreus_core_repo: Vec::new(),
         };

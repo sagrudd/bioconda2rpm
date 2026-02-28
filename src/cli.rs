@@ -156,8 +156,13 @@ pub struct BuildArgs {
     pub parallel_policy: ParallelPolicy,
 
     /// Build job count for parallel mode. Accepts integer or `auto`.
-    #[arg(long, default_value = "auto")]
+    #[arg(long, default_value = "4")]
     pub build_jobs: String,
+
+    /// Maximum number of queued package builds to run concurrently.
+    /// Defaults to floor(host_cores / effective_build_jobs), minimum 1.
+    #[arg(long)]
+    pub queue_workers: Option<usize>,
 
     /// Behavior when dependency recipes cannot be resolved.
     #[arg(long, value_enum, default_value_t = MissingDependencyPolicy::Quarantine)]
@@ -197,8 +202,13 @@ pub struct BuildArgs {
     #[arg(long, value_enum, default_value_t = OutputSelection::All)]
     pub outputs: OutputSelection,
 
-    /// Requested Bioconda package name.
-    pub package: String,
+    /// Optional newline-delimited packages file (supports `#` comments).
+    #[arg(long)]
+    pub packages_file: Option<PathBuf>,
+
+    /// One or more requested Bioconda package names.
+    #[arg(value_name = "PACKAGE")]
+    pub packages: Vec<String>,
 
     /// Local Phoreus repository URLs to embed in reserved `phoreus` package config.
     #[arg(long = "phoreus-local-repo")]
@@ -241,7 +251,7 @@ pub struct GeneratePrioritySpecsArgs {
     pub parallel_policy: ParallelPolicy,
 
     /// Build job count for parallel mode. Accepts integer or `auto`.
-    #[arg(long, default_value = "auto")]
+    #[arg(long, default_value = "4")]
     pub build_jobs: String,
 
     /// RPM build topdir. Defaults to ~/bioconda2rpm when omitted.
@@ -315,7 +325,7 @@ pub struct RegressionArgs {
     pub parallel_policy: ParallelPolicy,
 
     /// Build job count for parallel mode. Accepts integer or `auto`.
-    #[arg(long, default_value = "auto")]
+    #[arg(long, default_value = "4")]
     pub build_jobs: String,
 
     /// Dependency closure policy for discovered requirements.
@@ -459,6 +469,15 @@ impl BuildArgs {
         }
     }
 
+    pub fn effective_queue_workers(&self) -> usize {
+        if let Some(workers) = self.queue_workers.filter(|v| *v > 0) {
+            return workers;
+        }
+        let host = host_parallelism();
+        let per_job = self.effective_build_jobs().max(1);
+        (host / per_job).max(1)
+    }
+
     pub fn effective_metadata_adapter(&self) -> MetadataAdapter {
         match self.deployment_profile {
             DeploymentProfile::Development => self.metadata_adapter.clone(),
@@ -472,8 +491,8 @@ impl BuildArgs {
 
     pub fn execution_summary(&self) -> String {
         format!(
-            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} target_id={target_id} target_root={target_root} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} parallel_policy={parallel_policy:?} build_jobs={build_jobs} effective_build_jobs={effective_build_jobs} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
-            pkg = self.package,
+            "build requested_packages={requested_packages} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} target_id={target_id} target_root={target_root} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} parallel_policy={parallel_policy:?} build_jobs={build_jobs} effective_build_jobs={effective_build_jobs} queue_workers={queue_workers} effective_queue_workers={effective_queue_workers} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
+            requested_packages = self.packages.len(),
             stage = self.stage,
             deps = self.with_deps(),
             policy = self.dependency_policy,
@@ -489,6 +508,11 @@ impl BuildArgs {
             parallel_policy = self.parallel_policy,
             build_jobs = self.build_jobs,
             effective_build_jobs = self.effective_build_jobs(),
+            queue_workers = self
+                .queue_workers
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "auto".to_string()),
+            effective_queue_workers = self.effective_queue_workers(),
             arch = self.arch,
             target_arch = self.effective_target_arch(),
             deployment_profile = self.deployment_profile,
@@ -618,13 +642,15 @@ mod tests {
         let Command::Build(args) = cli.command else {
             panic!("expected build command")
         };
-        assert_eq!(args.package, "fastp");
+        assert_eq!(args.packages, vec!["fastp".to_string()]);
         assert_eq!(args.stage, BuildStage::Rpm);
         assert_eq!(args.dependency_policy, DependencyPolicy::BuildHostRun);
         assert!(args.with_deps());
         assert_eq!(args.container_mode, ContainerMode::Ephemeral);
         assert_eq!(args.parallel_policy, ParallelPolicy::Adaptive);
-        assert_eq!(args.build_jobs, "auto");
+        assert_eq!(args.build_jobs, "4");
+        assert_eq!(args.effective_build_jobs(), 4);
+        assert!(args.effective_queue_workers() >= 1);
         assert!(args.effective_build_jobs() >= 1);
         assert_eq!(args.missing_dependency, MissingDependencyPolicy::Quarantine);
         assert_eq!(args.arch, BuildArch::Host);
@@ -744,6 +770,52 @@ mod tests {
     }
 
     #[test]
+    fn build_accepts_multiple_positional_packages() {
+        let cli = Cli::try_parse_from([
+            "bioconda2rpm",
+            "build",
+            "fastqc",
+            "samtools",
+            "bcftools",
+            "--recipe-root",
+            "/recipes",
+        ])
+        .expect("multi package build should parse");
+        let Command::Build(args) = cli.command else {
+            panic!("expected build command")
+        };
+        assert_eq!(
+            args.packages,
+            vec![
+                "fastqc".to_string(),
+                "samtools".to_string(),
+                "bcftools".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn build_accepts_packages_file_without_positionals() {
+        let cli = Cli::try_parse_from([
+            "bioconda2rpm",
+            "build",
+            "--recipe-root",
+            "/recipes",
+            "--packages-file",
+            "/tmp/verification_software.txt",
+        ])
+        .expect("packages-file only build should parse");
+        let Command::Build(args) = cli.command else {
+            panic!("expected build command")
+        };
+        assert_eq!(
+            args.packages_file,
+            Some(PathBuf::from("/tmp/verification_software.txt"))
+        );
+        assert!(args.packages.is_empty());
+    }
+
+    #[test]
     fn generate_priority_specs_defaults_parse() {
         let cli = Cli::try_parse_from([
             "bioconda2rpm",
@@ -764,7 +836,7 @@ mod tests {
         assert_eq!(args.container_image, "almalinux:9");
         assert_eq!(args.container_engine, "docker");
         assert_eq!(args.parallel_policy, ParallelPolicy::Adaptive);
-        assert!(args.effective_build_jobs() >= 1);
+        assert_eq!(args.effective_build_jobs(), 4);
         assert_eq!(args.metadata_adapter, MetadataAdapter::Auto);
         assert!(args.effective_topdir().ends_with("bioconda2rpm"));
         assert!(
@@ -798,7 +870,7 @@ mod tests {
         assert_eq!(args.top_n, 25);
         assert!(args.software_list.is_none());
         assert_eq!(args.parallel_policy, ParallelPolicy::Adaptive);
-        assert!(args.effective_build_jobs() >= 1);
+        assert_eq!(args.effective_build_jobs(), 4);
         assert_eq!(args.deployment_profile, DeploymentProfile::Production);
         assert_eq!(args.effective_metadata_adapter(), MetadataAdapter::Conda);
         assert_eq!(args.effective_target_arch(), "x86_64".to_string());

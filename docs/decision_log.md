@@ -110,6 +110,11 @@
 - Generated payload specs must route Nim/Nimble through `/usr/local/phoreus/nim/2.2` and isolate nimble state under payload prefix.
 - Selector handling distinguishes Linux `aarch64` from `arm64` (macOS) to avoid dropping valid Linux build dependencies.
 
+### 2026-02-28 Amendment - Multi-root queue scheduler
+- `build` now accepts multiple requested packages (plus optional package-list file) in one invocation.
+- Queue scheduler dispatches package jobs with dependency gates so dependents only run after dependencies succeed.
+- Worker throughput is controlled by per-job build cores (`--build-jobs`) and queue worker count (`--queue-workers`).
+
 ## 2026-02-28
 
 ### Redesign KPI denominator decision

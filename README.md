@@ -5,7 +5,16 @@ Rust CLI to convert Bioconda recipes into Phoreus-style RPM artifacts.
 ## Baseline CLI
 
 ```bash
-cargo run -- build <package> --recipe-root <path/to/bioconda-recipes/recipes>
+cargo run -- build <package...> --recipe-root <path/to/bioconda-recipes/recipes>
+```
+
+Batch queue example:
+
+```bash
+cargo run -- build bbmap samtools blast fastqc \
+  --recipe-root ../bioconda-recipes/recipes \
+  --parallel-policy adaptive \
+  --build-jobs 4
 ```
 
 ## Priority SPEC Generation (Parallel)

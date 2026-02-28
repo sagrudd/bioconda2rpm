@@ -56,6 +56,10 @@ The product is structured as layered components:
   - build dependency packages first
   - build requested package last
   - enforce per-package `SPEC -> SRPM -> RPM` chain
+- Multi-root build invocations use a dependency-gated queue scheduler:
+  - each queued node represents a package payload/meta build unit
+  - worker parallelism is bounded by queue worker count
+  - node dispatch waits for successful completion of dependency nodes
 - For generated priority specs, execution is strictly ordered per spec as:
   - SPEC generation
   - SRPM build (`rpmbuild -bs`) in container

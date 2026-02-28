@@ -42,13 +42,30 @@ The tool creates these folders automatically if missing.
 ### 4.1 Primary Build Command
 
 ```bash
-cargo run -- build <tool> --recipe-root <path/to/recipes>
+cargo run -- build <tool...> --recipe-root <path/to/recipes>
 ```
 
 Example:
 
 ```bash
 cargo run -- build bbmap --recipe-root ../bioconda-recipes/recipes
+```
+
+Batch example (multi-root queue):
+
+```bash
+cargo run -- build bbmap samtools blast fastqc \
+  --recipe-root ../bioconda-recipes/recipes \
+  --parallel-policy adaptive \
+  --build-jobs 4
+```
+
+Packages-file example:
+
+```bash
+cargo run -- build \
+  --recipe-root ../bioconda-recipes/recipes \
+  --packages-file ./docs/verification_software.txt
 ```
 
 Optional container controls:
@@ -110,7 +127,7 @@ cargo run -- regression \
 For `build`:
 
 - `--recipe-root <path>`: Bioconda recipe tree root.
-- `<tool>` positional: requested Bioconda package name.
+- `<tool...>` positional: one or more requested Bioconda package names.
 
 Common optional flags:
 
@@ -120,8 +137,14 @@ Common optional flags:
   - `adaptive` (default): run with configured concurrency and retry once in serial on failure.
   - `serial`: force single-core package builds.
 - `--build-jobs <N|auto>`:
-  - `auto` (default): use host parallelism for initial adaptive attempt.
+  - `4` (default): initial jobs per package build in adaptive mode.
   - numeric value: fixed initial job count for adaptive mode.
+- `--queue-workers <N>`:
+  - optional; controls concurrent package jobs in multi-root queue mode.
+  - default auto-calculates from host cores and `--build-jobs`.
+- `--packages-file <path>`:
+  - optional newline-delimited package roots (supports `#` comments).
+  - combined with positional package roots; duplicates are deduplicated.
 - `--topdir <path>`: artifact/report root override.
 - `--bad-spec-dir <path>`: quarantine override.
 - `--reports-dir <path>`: report directory override.
@@ -162,8 +185,12 @@ Per `build <tool>` run:
 
 1. Resolve requested recipe from Bioconda metadata.
 2. Resolve Bioconda dependency closure (unless `--no-deps`).
-3. Build dependencies first in deterministic order.
-4. For each package:
+3. Build dependencies first.
+4. In multi-root mode, dispatch ready nodes through a worker queue:
+   - dependency gate enforced per node
+   - a node builds only after all upstream Bioconda dependency nodes succeed
+   - blocked descendants are quarantined/skipped according to missing-dependency policy
+5. For each package:
    - Resolve/prepare sources from recipe metadata.
    - Stage and apply any `source.patches` entries during `%prep`.
    - Build SRPM inside container (`rpmbuild -bs`).

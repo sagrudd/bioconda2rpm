@@ -26,6 +26,7 @@ Out of scope (initial baseline):
 
 FR-001 CLI entrypoint
 - The tool shall expose `bioconda2rpm build <package>` as the primary command.
+- The build command shall accept one or more root packages per invocation and optional package-list file input.
 
 FR-002 Build stage control
 - The tool shall support stage selection: `spec`, `srpm`, `rpm`.
@@ -36,6 +37,7 @@ FR-003 Dependency closure control
 - The tool shall provide an opt-out flag (`--no-deps`).
 - Dependency policy shall be configurable.
 - Default dependency policy shall include `build + host + run`.
+- Multi-root queue execution shall enforce dependency gates: a package job shall start only after required Bioconda dependency jobs complete successfully.
 
 FR-004 Recipe rendering
 - `meta.yaml` rendering shall use full Jinja support.

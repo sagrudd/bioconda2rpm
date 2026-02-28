@@ -3,7 +3,7 @@
 ## Primary Command
 
 ```bash
-bioconda2rpm build <package> --recipe-root <path>
+bioconda2rpm build <package...> --recipe-root <path>
 ```
 
 Production expectation:
@@ -36,7 +36,7 @@ bioconda2rpm regression \
 
 ## Required Inputs
 
-- `<package>`: Bioconda package name.
+- `<package...>`: one or more Bioconda package names.
 - `--recipe-root <path>`: external path to Bioconda recipes clone.
 
 ## Core Options
@@ -60,8 +60,14 @@ bioconda2rpm regression \
   - `serial`: enforce single-core package builds.
   - `adaptive`: attempt configured parallel build first and auto-retry serial on failure.
 - `--build-jobs <N|auto>`
-  - Default: `auto`
+  - Default: `4`
   - Sets initial build job count for adaptive mode.
+- `--queue-workers <N>`
+  - Optional. Default: `floor(host_cores / effective_build_jobs)`, minimum `1`.
+  - Controls how many package build jobs run concurrently in multi-package queue mode.
+- `--packages-file <path>`
+  - Optional newline-delimited package list (supports `#` comments).
+  - Combined with positional package args; duplicates are deduplicated.
 - `--missing-dependency <fail|skip|quarantine>`
   - Default: `quarantine`
 - `--arch <host|x86-64|aarch64>`
@@ -108,6 +114,8 @@ Regression-only options:
 ## Baseline Behavior Guarantees
 
 - Dependencies are resolved by default.
+- Multiple requested roots are supported in one build invocation.
+- Multi-package queue mode enforces dependency gates: a package is dispatched only after its Bioconda dependency nodes succeed.
 - Recipes with `outputs:` are expanded into discrete package outputs.
 - Highest versioned recipe subdirectory is selected when present.
 - Unresolved dependencies quarantine by default.
