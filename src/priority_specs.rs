@@ -1,6 +1,7 @@
 use crate::cli::{
-    BuildArgs, DependencyPolicy, GeneratePrioritySpecsArgs, MetadataAdapter,
-    MissingDependencyPolicy,
+    BuildArgs, BuildStage, ContainerMode, DependencyPolicy, GeneratePrioritySpecsArgs,
+    MetadataAdapter, MissingDependencyPolicy, NamingProfile, OutputSelection, RegressionArgs,
+    RegressionMode, RenderStrategy,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -168,7 +169,7 @@ struct DependencyGraphSummary {
     unresolved: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReportEntry {
     pub software: String,
     pub priority: i64,
@@ -207,6 +208,34 @@ pub struct BuildSummary {
     pub kpi_successes: usize,
     pub kpi_success_rate: f64,
     pub build_order: Vec<String>,
+    pub report_json: PathBuf,
+    pub report_csv: PathBuf,
+    pub report_md: PathBuf,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct RegressionReportEntry {
+    software: String,
+    priority: i64,
+    status: String,
+    reason: String,
+    root_status: String,
+    root_reason: String,
+    build_report_json: String,
+    build_report_md: String,
+}
+
+#[derive(Debug)]
+pub struct RegressionSummary {
+    pub mode: RegressionMode,
+    pub requested: usize,
+    pub attempted: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub excluded: usize,
+    pub kpi_denominator: usize,
+    pub kpi_successes: usize,
+    pub kpi_success_rate: f64,
     pub report_json: PathBuf,
     pub report_csv: PathBuf,
     pub report_md: PathBuf,
@@ -673,6 +702,208 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         kpi_successes: kpi.successes,
         kpi_success_rate: kpi.success_rate,
         build_order,
+        report_json,
+        report_csv,
+        report_md,
+    })
+}
+
+pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
+    let campaign_started = Instant::now();
+    let topdir = args.effective_topdir();
+    let reports_dir = args.effective_reports_dir();
+    let bad_spec_dir = args.effective_bad_spec_dir();
+    log_progress(format!(
+        "phase=regression-start mode={:?} recipe_root={} tools_csv={} topdir={} target_arch={} deployment_profile={:?} metadata_adapter={:?}",
+        args.mode,
+        args.recipe_root.display(),
+        args.tools_csv.display(),
+        topdir.display(),
+        args.effective_target_arch(),
+        args.deployment_profile,
+        args.effective_metadata_adapter()
+    ));
+
+    fs::create_dir_all(&topdir).with_context(|| format!("creating topdir {}", topdir.display()))?;
+    fs::create_dir_all(&reports_dir)
+        .with_context(|| format!("creating reports dir {}", reports_dir.display()))?;
+    fs::create_dir_all(&bad_spec_dir)
+        .with_context(|| format!("creating bad spec dir {}", bad_spec_dir.display()))?;
+    ensure_container_engine_available(&args.container_engine)?;
+
+    let all_tools = load_tools_csv_rows(&args.tools_csv)?;
+    let selected_tools = match args.mode {
+        RegressionMode::Pr => all_tools.into_iter().take(args.top_n).collect::<Vec<_>>(),
+        RegressionMode::Nightly => all_tools,
+    };
+    log_progress(format!(
+        "phase=regression-corpus status=selected mode={:?} requested={} elapsed={}",
+        args.mode,
+        selected_tools.len(),
+        format_elapsed(campaign_started.elapsed())
+    ));
+
+    let mut rows = Vec::new();
+    let mut attempted = 0usize;
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+    let mut excluded = 0usize;
+
+    for (idx, tool) in selected_tools.iter().enumerate() {
+        attempted += 1;
+        log_progress(format!(
+            "phase=regression-tool status=started index={}/{} tool={}",
+            idx + 1,
+            selected_tools.len(),
+            tool.software
+        ));
+        let build_args = BuildArgs {
+            recipe_root: args.recipe_root.clone(),
+            topdir: Some(topdir.clone()),
+            bad_spec_dir: Some(bad_spec_dir.clone()),
+            reports_dir: Some(reports_dir.clone()),
+            stage: BuildStage::Rpm,
+            dependency_policy: args.dependency_policy.clone(),
+            no_deps: args.no_deps,
+            container_mode: ContainerMode::Ephemeral,
+            container_image: args.container_image.clone(),
+            container_engine: args.container_engine.clone(),
+            missing_dependency: args.missing_dependency.clone(),
+            arch: args.arch.clone(),
+            naming_profile: NamingProfile::Phoreus,
+            render_strategy: RenderStrategy::JinjaFull,
+            metadata_adapter: args.metadata_adapter.clone(),
+            deployment_profile: args.deployment_profile.clone(),
+            kpi_gate: false,
+            kpi_min_success_rate: args.kpi_min_success_rate,
+            outputs: OutputSelection::All,
+            package: tool.software.clone(),
+            phoreus_local_repo: Vec::new(),
+            phoreus_core_repo: Vec::new(),
+        };
+
+        match run_build(&build_args) {
+            Ok(summary) => {
+                let root =
+                    detect_root_outcome(&tool.software, &summary).unwrap_or_else(|| RootOutcome {
+                        status: "unknown".to_string(),
+                        reason: "unable to infer root status from build report".to_string(),
+                        excluded: false,
+                        success: false,
+                    });
+                if root.excluded {
+                    excluded += 1;
+                } else if root.success {
+                    succeeded += 1;
+                } else {
+                    failed += 1;
+                }
+                rows.push(RegressionReportEntry {
+                    software: tool.software.clone(),
+                    priority: tool.priority,
+                    status: if root.excluded {
+                        "excluded".to_string()
+                    } else if root.success {
+                        "success".to_string()
+                    } else {
+                        "failed".to_string()
+                    },
+                    reason: root.reason.clone(),
+                    root_status: root.status,
+                    root_reason: root.reason,
+                    build_report_json: summary.report_json.display().to_string(),
+                    build_report_md: summary.report_md.display().to_string(),
+                });
+            }
+            Err(err) => {
+                let reason = err.to_string();
+                let arch_excluded = reason_is_arch_incompatible(&reason);
+                if arch_excluded {
+                    excluded += 1;
+                } else {
+                    failed += 1;
+                }
+                rows.push(RegressionReportEntry {
+                    software: tool.software.clone(),
+                    priority: tool.priority,
+                    status: if arch_excluded {
+                        "excluded".to_string()
+                    } else {
+                        "failed".to_string()
+                    },
+                    reason: reason.clone(),
+                    root_status: "build_error".to_string(),
+                    root_reason: reason,
+                    build_report_json: String::new(),
+                    build_report_md: String::new(),
+                });
+            }
+        }
+    }
+
+    let kpi_denominator = attempted.saturating_sub(excluded);
+    let kpi_successes = succeeded;
+    let kpi_success_rate = if kpi_denominator == 0 {
+        100.0
+    } else {
+        (kpi_successes as f64 * 100.0) / (kpi_denominator as f64)
+    };
+
+    let mode_slug = match args.mode {
+        RegressionMode::Pr => "pr",
+        RegressionMode::Nightly => "nightly",
+    };
+    let report_json = reports_dir.join(format!("regression_{mode_slug}.json"));
+    let report_csv = reports_dir.join(format!("regression_{mode_slug}.csv"));
+    let report_md = reports_dir.join(format!("regression_{mode_slug}.md"));
+    write_regression_reports(
+        &rows,
+        &report_json,
+        &report_csv,
+        &report_md,
+        args,
+        kpi_denominator,
+        kpi_successes,
+        kpi_success_rate,
+    )?;
+
+    if args.effective_kpi_gate() && kpi_success_rate + f64::EPSILON < args.kpi_min_success_rate {
+        anyhow::bail!(
+            "regression KPI gate failed: success rate {:.2}% < threshold {:.2}% (mode={:?}, denominator={}, successes={}, excluded={}, report_md={})",
+            kpi_success_rate,
+            args.kpi_min_success_rate,
+            args.mode,
+            kpi_denominator,
+            kpi_successes,
+            excluded,
+            report_md.display()
+        );
+    }
+
+    log_progress(format!(
+        "phase=regression status=completed mode={:?} requested={} attempted={} succeeded={} failed={} excluded={} kpi_denominator={} kpi_successes={} kpi_success_rate={:.2} elapsed={}",
+        args.mode,
+        selected_tools.len(),
+        attempted,
+        succeeded,
+        failed,
+        excluded,
+        kpi_denominator,
+        kpi_successes,
+        kpi_success_rate,
+        format_elapsed(campaign_started.elapsed())
+    ));
+
+    Ok(RegressionSummary {
+        mode: args.mode.clone(),
+        requested: selected_tools.len(),
+        attempted,
+        succeeded,
+        failed,
+        excluded,
+        kpi_denominator,
+        kpi_successes,
+        kpi_success_rate,
         report_json,
         report_csv,
         report_md,
@@ -1179,6 +1410,12 @@ fn conda_subdir_for_target_arch(target_arch: &str) -> &'static str {
 }
 
 fn load_top_tools(tools_csv: &Path, top_n: usize) -> Result<Vec<PriorityTool>> {
+    let mut rows = load_tools_csv_rows(tools_csv)?;
+    rows.truncate(top_n);
+    Ok(rows)
+}
+
+fn load_tools_csv_rows(tools_csv: &Path) -> Result<Vec<PriorityTool>> {
     let mut reader = ReaderBuilder::new()
         .has_headers(true)
         .from_path(tools_csv)
@@ -1204,7 +1441,6 @@ fn load_top_tools(tools_csv: &Path, top_n: usize) -> Result<Vec<PriorityTool>> {
     }
 
     rows.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.line_no.cmp(&b.line_no)));
-    rows.truncate(top_n);
     Ok(rows)
 }
 
@@ -6376,6 +6612,56 @@ fn report_entry_is_arch_incompatible(entry: &ReportEntry) -> bool {
         || reason.contains("arch_policy=arm64_only")
 }
 
+#[derive(Debug, Clone)]
+struct RootOutcome {
+    status: String,
+    reason: String,
+    excluded: bool,
+    success: bool,
+}
+
+fn detect_root_outcome(requested_tool: &str, summary: &BuildSummary) -> Option<RootOutcome> {
+    let payload = fs::read_to_string(&summary.report_json).ok()?;
+    let entries: Vec<ReportEntry> = serde_json::from_str(&payload).ok()?;
+    if entries.is_empty() {
+        return None;
+    }
+    let requested_norm = normalize_name(requested_tool);
+    let root_norm = summary
+        .build_order
+        .last()
+        .map(|s| normalize_name(s))
+        .unwrap_or_else(|| requested_norm.clone());
+
+    let selected = entries
+        .iter()
+        .rev()
+        .find(|e| normalize_name(&e.software) == root_norm)
+        .or_else(|| {
+            entries
+                .iter()
+                .rev()
+                .find(|e| normalize_name(&e.software) == requested_norm)
+        })
+        .or_else(|| entries.last())?;
+
+    let success = selected.status == "generated" || selected.status == "up-to-date";
+    let excluded = selected.status == "skipped" || report_entry_is_arch_incompatible(selected);
+    Some(RootOutcome {
+        status: selected.status.clone(),
+        reason: selected.reason.clone(),
+        excluded,
+        success,
+    })
+}
+
+fn reason_is_arch_incompatible(reason: &str) -> bool {
+    let lower = reason.to_ascii_lowercase();
+    lower.contains("arch_policy=amd64_only")
+        || lower.contains("arch_policy=aarch64_only")
+        || lower.contains("arch_policy=arm64_only")
+}
+
 fn compute_arch_adjusted_kpi(entries: &[ReportEntry]) -> KpiSummary {
     let scope_entries: Vec<&ReportEntry> = entries
         .iter()
@@ -6402,6 +6688,73 @@ fn compute_arch_adjusted_kpi(entries: &[ReportEntry]) -> KpiSummary {
         successes,
         success_rate,
     }
+}
+
+fn write_regression_reports(
+    entries: &[RegressionReportEntry],
+    json_path: &Path,
+    csv_path: &Path,
+    md_path: &Path,
+    args: &RegressionArgs,
+    kpi_denominator: usize,
+    kpi_successes: usize,
+    kpi_success_rate: f64,
+) -> Result<()> {
+    let json = serde_json::to_string_pretty(entries).context("serializing regression json")?;
+    fs::write(json_path, json)
+        .with_context(|| format!("writing regression json {}", json_path.display()))?;
+
+    let mut writer = Writer::from_path(csv_path)
+        .with_context(|| format!("opening regression csv {}", csv_path.display()))?;
+    for entry in entries {
+        writer
+            .serialize(entry)
+            .context("writing regression csv row")?;
+    }
+    writer.flush().context("flushing regression csv writer")?;
+
+    let attempted = entries.len();
+    let succeeded = entries.iter().filter(|e| e.status == "success").count();
+    let failed = entries.iter().filter(|e| e.status == "failed").count();
+    let excluded = entries.iter().filter(|e| e.status == "excluded").count();
+
+    let mut md = String::new();
+    md.push_str("# Regression Campaign Summary\n\n");
+    md.push_str(&format!("- Mode: {:?}\n", args.mode));
+    md.push_str(&format!("- Requested: {}\n", attempted));
+    md.push_str(&format!("- Succeeded: {}\n", succeeded));
+    md.push_str(&format!("- Failed: {}\n", failed));
+    md.push_str(&format!("- Excluded: {}\n", excluded));
+    md.push_str(&format!(
+        "- KPI Gate Active: {}\n",
+        if args.effective_kpi_gate() {
+            "yes"
+        } else {
+            "no"
+        }
+    ));
+    md.push_str(&format!(
+        "- KPI Threshold: {:.2}%\n",
+        args.kpi_min_success_rate
+    ));
+    md.push_str(&format!("- KPI Denominator: {}\n", kpi_denominator));
+    md.push_str(&format!("- KPI Successes: {}\n", kpi_successes));
+    md.push_str(&format!("- KPI Success Rate: {:.2}%\n\n", kpi_success_rate));
+    md.push_str("| Software | Priority | Status | Root Status | Reason |\n");
+    md.push_str("|---|---:|---|---|---|\n");
+    for e in entries {
+        md.push_str(&format!(
+            "| {} | {} | {} | {} | {} |\n",
+            e.software,
+            e.priority,
+            e.status,
+            e.root_status,
+            e.reason.replace('|', "\\|")
+        ));
+    }
+    fs::write(md_path, md)
+        .with_context(|| format!("writing regression markdown {}", md_path.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]

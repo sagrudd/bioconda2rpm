@@ -156,3 +156,6 @@ Definition of "first-pass success":
 
 5. Do you want strict "no new per-package heuristic branches" from this point, except temporary shims explicitly tagged for removal?
    - Decision (2026-02-28): yes, strict policy with mandatory retirement issue tags
+
+6. Regression corpus strategy for merge-gate?
+   - Decision (2026-02-28): PR uses top-N priority corpus; nightly runs full corpus

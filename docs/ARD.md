@@ -133,3 +133,11 @@ Current baseline includes:
 - Package-specific heuristics are controlled exceptions, not a default implementation pattern.
 - Any retained package-specific heuristic must be tagged with `HEURISTIC-TEMP(issue=...)` and associated retirement tracking.
 - Build-time tests enforce that untagged package-specific heuristic blocks are rejected.
+
+## 10. Regression Campaign Architecture
+
+- Introduces `regression` command with corpus modes:
+  - `pr`: top-N from `tools.csv`
+  - `nightly`: full `tools.csv` corpus
+- Campaign execution reuses `build` pipeline per tool under a production-aligned profile.
+- Campaign reports emit JSON/CSV/Markdown and enforce campaign-level arch-adjusted KPI thresholds.

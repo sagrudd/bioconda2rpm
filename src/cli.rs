@@ -17,6 +17,8 @@ pub struct Cli {
 pub enum Command {
     /// Build RPM artifacts for a package and optionally its dependency closure.
     Build(BuildArgs),
+    /// Run a regression corpus campaign (PR top-N or full nightly).
+    Regression(RegressionArgs),
     /// Generate Phoreus payload/meta SPECs for top-priority tools from tools.csv.
     GeneratePrioritySpecs(GeneratePrioritySpecsArgs),
 }
@@ -85,6 +87,12 @@ pub enum MetadataAdapter {
 pub enum DeploymentProfile {
     Development,
     Production,
+}
+
+#[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
+pub enum RegressionMode {
+    Pr,
+    Nightly,
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
@@ -230,6 +238,80 @@ pub struct GeneratePrioritySpecsArgs {
     pub metadata_adapter: MetadataAdapter,
 }
 
+#[derive(Debug, clap::Args)]
+pub struct RegressionArgs {
+    /// Root directory containing Bioconda recipes.
+    #[arg(long)]
+    pub recipe_root: PathBuf,
+
+    /// CSV file containing priority scores (RPM Priority Score column).
+    #[arg(long)]
+    pub tools_csv: PathBuf,
+
+    /// Regression campaign mode.
+    #[arg(long, value_enum, default_value_t = RegressionMode::Pr)]
+    pub mode: RegressionMode,
+
+    /// Number of highest-priority tools for PR mode.
+    #[arg(long, default_value_t = 25)]
+    pub top_n: usize,
+
+    /// RPM build topdir. Defaults to ~/bioconda2rpm when omitted.
+    #[arg(long)]
+    pub topdir: Option<PathBuf>,
+
+    /// Quarantine folder for unresolved/non-compliant packages.
+    /// Defaults to <topdir>/BAD_SPEC when omitted.
+    #[arg(long)]
+    pub bad_spec_dir: Option<PathBuf>,
+
+    /// Optional explicit report output directory.
+    #[arg(long)]
+    pub reports_dir: Option<PathBuf>,
+
+    /// Container image to use for RPM builds (SPEC -> SRPM -> RPM).
+    #[arg(long, default_value = "dropworm_dev_almalinux_9_5:0.1.2")]
+    pub container_image: String,
+
+    /// Container engine binary. Defaults to docker.
+    #[arg(long, default_value = "docker")]
+    pub container_engine: String,
+
+    /// Dependency closure policy for discovered requirements.
+    #[arg(long, value_enum, default_value_t = DependencyPolicy::BuildHostRun)]
+    pub dependency_policy: DependencyPolicy,
+
+    /// Disable dependency closure and build only the requested package.
+    #[arg(long)]
+    pub no_deps: bool,
+
+    /// Behavior when dependency recipes cannot be resolved.
+    #[arg(long, value_enum, default_value_t = MissingDependencyPolicy::Quarantine)]
+    pub missing_dependency: MissingDependencyPolicy,
+
+    /// Target architecture for the campaign.
+    #[arg(long, value_enum, default_value_t = BuildArch::X86_64)]
+    pub arch: BuildArch,
+
+    /// Metadata ingestion adapter.
+    /// `auto` tries conda-build rendering first, then falls back to native parser.
+    #[arg(long, value_enum, default_value_t = MetadataAdapter::Auto)]
+    pub metadata_adapter: MetadataAdapter,
+
+    /// Deployment profile.
+    /// Production profile enforces conda-based metadata rendering.
+    #[arg(long, value_enum, default_value_t = DeploymentProfile::Production)]
+    pub deployment_profile: DeploymentProfile,
+
+    /// Disable campaign-level arch-adjusted KPI gate.
+    #[arg(long)]
+    pub no_kpi_gate: bool,
+
+    /// Minimum campaign arch-adjusted first-pass success rate.
+    #[arg(long, default_value_t = 99.0)]
+    pub kpi_min_success_rate: f64,
+}
+
 pub fn default_topdir() -> PathBuf {
     match env::var_os("HOME") {
         Some(home) => PathBuf::from(home).join("bioconda2rpm"),
@@ -323,6 +405,43 @@ impl GeneratePrioritySpecsArgs {
         self.reports_dir
             .clone()
             .unwrap_or_else(|| self.effective_topdir().join("reports"))
+    }
+}
+
+impl RegressionArgs {
+    pub fn effective_topdir(&self) -> PathBuf {
+        self.topdir.clone().unwrap_or_else(default_topdir)
+    }
+
+    pub fn effective_bad_spec_dir(&self) -> PathBuf {
+        self.bad_spec_dir
+            .clone()
+            .unwrap_or_else(|| self.effective_topdir().join("BAD_SPEC"))
+    }
+
+    pub fn effective_reports_dir(&self) -> PathBuf {
+        self.reports_dir
+            .clone()
+            .unwrap_or_else(|| self.effective_topdir().join("reports"))
+    }
+
+    pub fn effective_target_arch(&self) -> String {
+        match self.arch {
+            BuildArch::Host => canonical_arch_name(std::env::consts::ARCH).to_string(),
+            BuildArch::X86_64 => "x86_64".to_string(),
+            BuildArch::Aarch64 => "aarch64".to_string(),
+        }
+    }
+
+    pub fn effective_metadata_adapter(&self) -> MetadataAdapter {
+        match self.deployment_profile {
+            DeploymentProfile::Development => self.metadata_adapter.clone(),
+            DeploymentProfile::Production => MetadataAdapter::Conda,
+        }
+    }
+
+    pub fn effective_kpi_gate(&self) -> bool {
+        !self.no_kpi_gate
     }
 }
 
@@ -485,5 +604,29 @@ mod tests {
             args.effective_reports_dir()
                 .ends_with("bioconda2rpm/reports")
         );
+    }
+
+    #[test]
+    fn regression_defaults_parse() {
+        let cli = Cli::try_parse_from([
+            "bioconda2rpm",
+            "regression",
+            "--recipe-root",
+            "/recipes",
+            "--tools-csv",
+            "/tmp/tools.csv",
+        ])
+        .expect("regression defaults should parse");
+
+        let Command::Regression(args) = cli.command else {
+            panic!("expected regression subcommand");
+        };
+        assert_eq!(args.mode, RegressionMode::Pr);
+        assert_eq!(args.top_n, 25);
+        assert_eq!(args.deployment_profile, DeploymentProfile::Production);
+        assert_eq!(args.effective_metadata_adapter(), MetadataAdapter::Conda);
+        assert_eq!(args.effective_target_arch(), "x86_64".to_string());
+        assert!(args.effective_kpi_gate());
+        assert_eq!(args.kpi_min_success_rate, 99.0);
     }
 }

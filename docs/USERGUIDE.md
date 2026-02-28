@@ -64,6 +64,31 @@ cargo run -- generate-priority-specs \
   --container-image dropworm_dev_almalinux_9_5:0.1.2
 ```
 
+### 4.3 Regression Campaign Command
+
+PR corpus (top-N):
+
+```bash
+cargo run -- regression \
+  --recipe-root ../bioconda-recipes/recipes \
+  --tools-csv ../software_query/tools.csv \
+  --mode pr \
+  --top-n 25 \
+  --deployment-profile production \
+  --arch x86-64
+```
+
+Nightly full corpus:
+
+```bash
+cargo run -- regression \
+  --recipe-root ../bioconda-recipes/recipes \
+  --tools-csv ../software_query/tools.csv \
+  --mode nightly \
+  --deployment-profile production \
+  --arch x86-64
+```
+
 ## 5. Required and Important Flags
 
 For `build`:
@@ -91,6 +116,11 @@ Common optional flags:
   - enables hard arch-adjusted KPI gate for the current run.
 - `--kpi-min-success-rate <float>`:
   - default `99.0`; run fails when KPI falls below threshold while gate is active.
+- `--mode <pr|nightly>` (regression command):
+  - `pr`: top-N priority tools from `tools.csv`
+  - `nightly`: full corpus from `tools.csv`
+- `--top-n <N>` (regression command):
+  - top-N size for PR mode (default `25`).
 - `--arch <host|x86-64|aarch64>`:
   - sets target architecture semantics for metadata/render and compatibility classification.
   - recommended usage: `aarch64` for current development campaigns, `x86-64` for production validation.

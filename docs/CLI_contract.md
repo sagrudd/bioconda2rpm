@@ -23,6 +23,16 @@ bioconda2rpm generate-priority-specs \
   [--container-engine docker]
 ```
 
+## Regression Campaign Command
+
+```bash
+bioconda2rpm regression \
+  --recipe-root <path> \
+  --tools-csv <path/to/tools.csv> \
+  [--mode pr|nightly] \
+  [--top-n 25]
+```
+
 ## Required Inputs
 
 - `<package>`: Bioconda package name.
@@ -74,6 +84,13 @@ bioconda2rpm generate-priority-specs \
   - Run fails when arch-adjusted success rate is below this threshold while KPI gate is active.
 - `--outputs <all>`
   - Default: `all`
+
+Regression-only options:
+- `--mode <pr|nightly>`
+  - `pr`: top-N priority corpus
+  - `nightly`: full corpus
+- `--top-n <n>`
+  - Used by PR mode.
 
 ## Baseline Behavior Guarantees
 

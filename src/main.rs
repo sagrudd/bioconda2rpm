@@ -89,6 +89,39 @@ fn main() -> ExitCode {
                 }
             }
         }
+        cli::Command::Regression(args) => {
+            let topdir = args.effective_topdir();
+            let bad_spec = args.effective_bad_spec_dir();
+            let reports = args.effective_reports_dir();
+            if let Err(err) = ensure_workspace_paths(&topdir, &bad_spec, &reports) {
+                eprintln!("failed to prepare workspace directories: {err}");
+                return ExitCode::FAILURE;
+            }
+
+            match priority_specs::run_regression(&args) {
+                Ok(summary) => {
+                    println!(
+                        "regression mode={:?} requested={} attempted={} succeeded={} failed={} excluded={} kpi_denominator={} kpi_successes={} kpi_success_rate={:.2}% report_json={} report_csv={} report_md={}",
+                        summary.mode,
+                        summary.requested,
+                        summary.attempted,
+                        summary.succeeded,
+                        summary.failed,
+                        summary.excluded,
+                        summary.kpi_denominator,
+                        summary.kpi_successes,
+                        summary.kpi_success_rate,
+                        summary.report_json.display(),
+                        summary.report_csv.display(),
+                        summary.report_md.display(),
+                    );
+                }
+                Err(err) => {
+                    eprintln!("regression failed: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
     }
 
     ExitCode::SUCCESS

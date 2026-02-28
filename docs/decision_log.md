@@ -139,3 +139,8 @@
 - New package-specific heuristics are disallowed unless explicitly temporary.
 - Any package-specific heuristic must carry `HEURISTIC-TEMP(issue=...)` with a retirement issue identifier.
 - Source-policy tests enforce this requirement in `src/priority_specs.rs`.
+
+### Regression corpus policy
+- PR merge gate runs against a top-N priority corpus.
+- Nightly regression runs against the full corpus.
+- Implemented via `bioconda2rpm regression --mode pr --top-n <N>` and `--mode nightly`.

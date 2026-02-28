@@ -153,6 +153,12 @@ FR-025 Package heuristic governance
 - Temporary package heuristics shall include a retirement issue identifier.
 - Automated tests shall fail when package-specific heuristic blocks do not include required retirement tags.
 
+FR-026 Regression corpus campaign modes
+- The CLI shall provide a regression campaign command supporting:
+  - PR mode: top-N priority corpus
+  - Nightly mode: full corpus
+- Regression command shall compute arch-adjusted campaign KPI and fail on threshold breach when KPI gate is active.
+
 ## 4. Non-Functional Requirements
 
 NFR-001 Reproducibility
