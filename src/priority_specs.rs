@@ -1,7 +1,7 @@
 use crate::cli::{
     BuildArgs, BuildStage, ContainerMode, DependencyPolicy, GeneratePrioritySpecsArgs,
-    MetadataAdapter, MissingDependencyPolicy, NamingProfile, OutputSelection, RegressionArgs,
-    RegressionMode, RenderStrategy,
+    MetadataAdapter, MissingDependencyPolicy, NamingProfile, OutputSelection, ParallelPolicy,
+    RegressionArgs, RegressionMode, RenderStrategy,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -106,6 +106,8 @@ struct BuildConfig {
     container_engine: String,
     container_image: String,
     target_arch: String,
+    parallel_policy: ParallelPolicy,
+    build_jobs: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +130,7 @@ static PHOREUS_RUST_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 const PHOREUS_NIM_SERIES: &str = "2.2";
 const PHOREUS_NIM_PACKAGE: &str = "phoreus-nim-2.2";
 static PHOREUS_NIM_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static BUILD_STABILITY_CACHE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 const CONDA_RENDER_ADAPTER_SCRIPT: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/conda_render_ir.py");
 
@@ -169,6 +172,13 @@ struct DependencyGraphSummary {
     json_path: PathBuf,
     md_path: PathBuf,
     unresolved: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct BuildStabilityRecord {
+    status: String,
+    updated_at: String,
+    detail: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -311,6 +321,8 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
         container_engine: args.container_engine.clone(),
         container_image: args.container_image.clone(),
         target_arch: args.effective_target_arch(),
+        parallel_policy: args.parallel_policy.clone(),
+        build_jobs: args.effective_build_jobs(),
     };
     ensure_phoreus_python_bootstrap(&build_config, &specs_dir)
         .context("bootstrapping Phoreus Python runtime")?;
@@ -382,7 +394,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     let bad_spec_dir = args.effective_bad_spec_dir();
     let effective_metadata_adapter = args.effective_metadata_adapter();
     log_progress(format!(
-        "phase=build-start package={} deps_enabled={} dependency_policy={:?} recipe_root={} topdir={} target_id={} target_root={} target_arch={} deployment_profile={:?} metadata_adapter={:?}",
+        "phase=build-start package={} deps_enabled={} dependency_policy={:?} recipe_root={} topdir={} target_id={} target_root={} target_arch={} deployment_profile={:?} metadata_adapter={:?} parallel_policy={:?} build_jobs={} effective_build_jobs={}",
         args.package,
         args.with_deps(),
         args.dependency_policy,
@@ -392,7 +404,10 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         target_root.display(),
         args.effective_target_arch(),
         args.deployment_profile,
-        effective_metadata_adapter
+        effective_metadata_adapter,
+        args.parallel_policy,
+        args.build_jobs,
+        args.effective_build_jobs()
     ));
 
     fs::create_dir_all(&specs_dir)
@@ -425,6 +440,8 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         container_engine: args.container_engine.clone(),
         container_image: args.container_image.clone(),
         target_arch: args.effective_target_arch(),
+        parallel_policy: args.parallel_policy.clone(),
+        build_jobs: args.effective_build_jobs(),
     };
     ensure_phoreus_python_bootstrap(&build_config, &specs_dir)
         .context("bootstrapping Phoreus Python runtime")?;
@@ -743,7 +760,7 @@ pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
     let reports_dir = args.effective_reports_dir();
     let bad_spec_dir = args.effective_bad_spec_dir();
     log_progress(format!(
-        "phase=regression-start mode={:?} recipe_root={} tools_csv={} topdir={} target_id={} target_root={} target_arch={} deployment_profile={:?} metadata_adapter={:?}",
+        "phase=regression-start mode={:?} recipe_root={} tools_csv={} topdir={} target_id={} target_root={} target_arch={} deployment_profile={:?} metadata_adapter={:?} parallel_policy={:?} build_jobs={} effective_build_jobs={}",
         args.mode,
         args.recipe_root.display(),
         args.tools_csv.display(),
@@ -752,7 +769,10 @@ pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
         target_root.display(),
         args.effective_target_arch(),
         args.deployment_profile,
-        args.effective_metadata_adapter()
+        args.effective_metadata_adapter(),
+        args.parallel_policy,
+        args.build_jobs,
+        args.effective_build_jobs()
     ));
 
     fs::create_dir_all(&topdir).with_context(|| format!("creating topdir {}", topdir.display()))?;
@@ -831,6 +851,8 @@ pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
             container_mode: ContainerMode::Ephemeral,
             container_image: args.container_image.clone(),
             container_engine: args.container_engine.clone(),
+            parallel_policy: args.parallel_policy.clone(),
+            build_jobs: args.build_jobs.clone(),
             missing_dependency: args.missing_dependency.clone(),
             arch: args.arch.clone(),
             naming_profile: NamingProfile::Phoreus,
@@ -4082,8 +4104,11 @@ mkdir -p %{bioconda_source_subdir}\n"
     export BIOCONDA_TARGET_ARCH=x86_64\n\
     export target_platform=linux-64\n\
     %endif\n\
+    export CPU_COUNT=\"${{BIOCONDA2RPM_CPU_COUNT:-1}}\"\n\
+    if [[ -z \"$CPU_COUNT\" || \"$CPU_COUNT\" == \"0\" ]]; then\n\
     export CPU_COUNT=1\n\
-    export MAKEFLAGS=-j1\n\
+    fi\n\
+    export MAKEFLAGS=\"-j${{CPU_COUNT}}\"\n\
     \n\
     %install\n\
     rm -rf %{{buildroot}}\n\
@@ -4098,10 +4123,13 @@ mkdir -p %{bioconda_source_subdir}\n"
     %endif\n\
     export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
     export SRC_DIR=$(pwd)/%{{bioconda_source_relsubdir}}\n\
+    export CPU_COUNT=\"${{BIOCONDA2RPM_CPU_COUNT:-1}}\"\n\
+    if [[ -z \"$CPU_COUNT\" || \"$CPU_COUNT\" == \"0\" ]]; then\n\
     export CPU_COUNT=1\n\
-    export MAKEFLAGS=-j1\n\
-    export CMAKE_BUILD_PARALLEL_LEVEL=1\n\
-    export NINJAFLAGS=-j1\n\
+    fi\n\
+    export MAKEFLAGS=\"-j${{CPU_COUNT}}\"\n\
+    export CMAKE_BUILD_PARALLEL_LEVEL=\"$CPU_COUNT\"\n\
+    export NINJAFLAGS=\"-j${{CPU_COUNT}}\"\n\
     \n\
     # Compatibility shim for the legacy BLAST 2.5.0 configure parser.\n\
     # Its NCBI configure script cannot parse modern two-digit GCC majors.\n\
@@ -4326,10 +4354,8 @@ fi\n\
     if [[ -n \"$vdb_prefix\" ]]; then\n\
     sed -i 's|--with-vdb=$PREFIX|--with-vdb='\\\"$vdb_prefix\\\"'|g' ./build.sh\n\
     fi\n\
-    # BLAST's Bioconda script hard-codes n_workers=8 on aarch64, which has shown\n\
-    # unstable flat-make behavior in containerized RPM builds. Enforce single-core\n\
-    # policy so the orchestrator remains deterministic across all architectures.\n\
-    export CPU_COUNT=1\n\
+    # BLAST's Bioconda script hard-codes n_workers=8 on aarch64. Route this through\n\
+    # canonical CPU_COUNT so orchestrator policy can tune concurrency consistently.\n\
     sed -i 's|n_workers=8|n_workers=${{CPU_COUNT:-1}}|g' ./build.sh\n\
     # Bioconda's BLAST script removes a temporary linker path with plain `rm`,\n\
     # but in our staged prefix this path may be materialized as a directory.\n\
@@ -4455,9 +4481,9 @@ fi\n\
     # noisy failures in shell/R startup locale checks.\n\
     sed -i 's|export LC_ALL=\"en_US.UTF-8\"|export LC_ALL=C|g' ./build.sh || true\n\
     \n\
-    # A number of upstream scripts hardcode aggressive THREADS values;\n\
-    # force single-core policy for deterministic container builds.\n\
-    sed -i -E 's/THREADS=\"-j[0-9]+\"/THREADS=\"-j1\"/g' ./build.sh || true\n\
+    # A number of upstream scripts hardcode aggressive THREADS values.\n\
+    # Normalize to canonical CPU_COUNT policy rather than fixed thread counts.\n\
+    sed -i -E 's/THREADS=\"-j[0-9]+\"/THREADS=\"-j${{CPU_COUNT:-1}}\"/g' ./build.sh || true\n\
     \n\
     # Capture a pristine buildsrc snapshot so serial retries run from a clean tree,\n\
     # not from a partially mutated/failed first attempt.\n\
@@ -4478,12 +4504,18 @@ fi\n\
     if [[ \"$rc\" == \"41\" || \"$rc\" == \"42\" || \"$rc\" == \"43\" || \"$rc\" == \"44\" || \"$rc\" == \"86\" || \"$rc\" == \"87\" ]]; then\n\
     exit \"$rc\"\n\
     fi\n\
+    if [[ \"${{BIOCONDA2RPM_ADAPTIVE_RETRY:-0}}\" != \"1\" ]]; then\n\
+    exit \"$rc\"\n\
+    fi\n\
     if [[ \"${{BIOCONDA2RPM_RETRIED_SERIAL:-0}}\" == \"1\" ]]; then\n\
     exit 1\n\
     fi\n\
+    echo \"BIOCONDA2RPM_SERIAL_RETRY_TRIGGERED=1\"\n\
     export BIOCONDA2RPM_RETRIED_SERIAL=1\n\
     export CPU_COUNT=1\n\
     export MAKEFLAGS=-j1\n\
+    export CMAKE_BUILD_PARALLEL_LEVEL=1\n\
+    export NINJAFLAGS=-j1\n\
     find . -mindepth 1 -maxdepth 1 ! -name \"$(basename \"$retry_snapshot\")\" -exec rm -rf {{}} +\n\
     tar -xf \"$retry_snapshot\"\n\
     bash -eo pipefail ./build.sh\n\
@@ -6038,6 +6070,33 @@ fn build_spec_chain_in_container(
     fs::create_dir_all(&logs_dir)
         .with_context(|| format!("creating build logs dir {}", logs_dir.display()))?;
     let final_log_path = logs_dir.join(format!("{}.log", sanitize_label(&build_label)));
+    let stability_key = spec_name.replace(".spec", "");
+    let requested_jobs = build_config.build_jobs.max(1);
+    let cached_parallel_unstable = matches!(build_config.parallel_policy, ParallelPolicy::Adaptive)
+        && requested_jobs > 1
+        && is_parallel_unstable_cached(&build_config.reports_dir, &stability_key);
+    let initial_jobs = match build_config.parallel_policy {
+        ParallelPolicy::Serial => 1,
+        ParallelPolicy::Adaptive => {
+            if cached_parallel_unstable {
+                1
+            } else {
+                requested_jobs
+            }
+        }
+    };
+    let adaptive_retry_enabled =
+        matches!(build_config.parallel_policy, ParallelPolicy::Adaptive) && initial_jobs > 1;
+    log_progress(format!(
+        "phase=container-build status=config label={} spec={} parallel_policy={:?} requested_jobs={} initial_jobs={} adaptive_retry={} cache_parallel_unstable={}",
+        build_label,
+        spec_name,
+        build_config.parallel_policy,
+        requested_jobs,
+        initial_jobs,
+        adaptive_retry_enabled,
+        cached_parallel_unstable
+    ));
 
     let script = format!(
         "set -euo pipefail\n\
@@ -6070,7 +6129,12 @@ if ! command -v spectool >/dev/null 2>&1; then\n\
   else echo 'spectool unavailable and rpmdevtools cannot be installed' >&2; exit 3; fi\n\
 fi\n\
 touch /work/.build-start-{label}.ts\n\
-rpm_single_core_flags=(--define '_smp_mflags -j1' --define '_smp_build_ncpus 1')\n\
+export BIOCONDA2RPM_CPU_COUNT={initial_jobs}\n\
+if [[ -z \"${{BIOCONDA2RPM_CPU_COUNT}}\" || \"${{BIOCONDA2RPM_CPU_COUNT}}\" == \"0\" ]]; then\n\
+  export BIOCONDA2RPM_CPU_COUNT=1\n\
+fi\n\
+export BIOCONDA2RPM_ADAPTIVE_RETRY={adaptive_retry}\n\
+rpm_smp_flags=(--define \"_smp_mflags -j${{BIOCONDA2RPM_CPU_COUNT}}\" --define \"_smp_build_ncpus ${{BIOCONDA2RPM_CPU_COUNT}}\")\n\
 source0_url=$(awk '/^Source0:[[:space:]]+/ {{print $2; exit}}' '{spec}' || true)\n\
 source_candidates=()\n\
 if [[ -n \"$source0_url\" ]]; then\n\
@@ -6165,7 +6229,7 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
 fi\n\
 find /work/SPECS -type f -name '*.spec' -exec chmod 0644 {{}} + || true\n\
 find /work/SOURCES -type f -exec chmod 0644 {{}} + || true\n\
-rpmbuild -bs --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' \"${{rpm_single_core_flags[@]}}\" '{spec}'\n\
+rpmbuild -bs --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' \"${{rpm_smp_flags[@]}}\" '{spec}'\n\
 srpm_path=$(find \"$build_root/SRPMS\" -type f -name '*.src.rpm' | sort | tail -n 1)\n\
 if [[ -z \"${{srpm_path}}\" ]]; then\n\
   echo 'no SRPM produced from spec build step' >&2\n\
@@ -6270,7 +6334,7 @@ install_local_with_hydration() {{\n\
   return 0\n\
 }}\n\
 \n\
-mapfile -t build_requires < <(rpmspec -q --buildrequires --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' --define '_smp_build_ncpus 1' '{spec}' | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
+mapfile -t build_requires < <(rpmspec -q --buildrequires --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' --define \"_smp_build_ncpus ${{BIOCONDA2RPM_CPU_COUNT}}\" '{spec}' | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
 dep_log=\"/tmp/bioconda2rpm-dep-{label}.log\"\n\
 for dep in \"${{build_requires[@]}}\"; do\n\
   if rpm -q --whatprovides \"$dep\" >/dev/null 2>&1; then\n\
@@ -6316,7 +6380,7 @@ for dep in \"${{build_requires[@]}}\"; do\n\
   fi\n\
 done\n\
 \n\
-rpmbuild --rebuild --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' \"${{rpm_single_core_flags[@]}}\" \"${{srpm_path}}\"\n\
+rpmbuild --rebuild --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' \"${{rpm_smp_flags[@]}}\" \"${{srpm_path}}\"\n\
 find \"$build_root/SRPMS\" -type f -name '*.src.rpm' -exec cp -f {{}} '{target_srpms_dir}'/ \\;\n\
 while IFS= read -r rpmf; do\n\
   rel=\"${{rpmf#$build_root/RPMS/}}\"\n\
@@ -6329,6 +6393,8 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         target_rpms_dir = target_rpms_in_container,
         target_srpms_dir = target_srpms_in_container,
         legacy_rpms_dir = legacy_rpms_in_container,
+        initial_jobs = initial_jobs,
+        adaptive_retry = if adaptive_retry_enabled { 1 } else { 0 },
     );
 
     let run_once = |attempt: usize| -> Result<(std::process::ExitStatus, String)> {
@@ -6459,6 +6525,33 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
 
     fs::write(&final_log_path, &combined)
         .with_context(|| format!("writing build log {}", final_log_path.display()))?;
+    let serial_retry_triggered = combined.contains("BIOCONDA2RPM_SERIAL_RETRY_TRIGGERED=1");
+    if status.success() && serial_retry_triggered && adaptive_retry_enabled {
+        let detail = compact_reason(&tail_lines(&combined, 12), 320);
+        match mark_parallel_unstable_cache(
+            &build_config.reports_dir,
+            &stability_key,
+            &detail,
+            initial_jobs,
+        ) {
+            Ok(()) => {
+                log_progress(format!(
+                    "phase=container-build status=learned-parallel-unstable spec={} target_id={} initial_jobs={} cache={}",
+                    spec_name,
+                    build_config.target_id,
+                    initial_jobs,
+                    build_stability_cache_path(&build_config.reports_dir).display()
+                ));
+            }
+            Err(err) => {
+                log_progress(format!(
+                    "phase=container-build status=cache-write-warning spec={} reason={}",
+                    spec_name,
+                    compact_reason(&err.to_string(), 240)
+                ));
+            }
+        }
+    }
 
     if !status.success() {
         let arch_policy =
@@ -6523,6 +6616,59 @@ fn sanitize_label(input: &str) -> String {
             }
         })
         .collect()
+}
+
+fn build_stability_cache_path(reports_dir: &Path) -> PathBuf {
+    reports_dir.join("build_stability.json")
+}
+
+fn read_build_stability_cache(path: &Path) -> BTreeMap<String, BuildStabilityRecord> {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return BTreeMap::new();
+    };
+    serde_json::from_str::<BTreeMap<String, BuildStabilityRecord>>(&raw).unwrap_or_default()
+}
+
+fn is_parallel_unstable_cached(reports_dir: &Path, key: &str) -> bool {
+    let lock = BUILD_STABILITY_CACHE_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = match lock.lock() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    let path = build_stability_cache_path(reports_dir);
+    read_build_stability_cache(&path)
+        .get(key)
+        .map(|entry| entry.status == "parallel_unstable")
+        .unwrap_or(false)
+}
+
+fn mark_parallel_unstable_cache(
+    reports_dir: &Path,
+    key: &str,
+    detail: &str,
+    initial_jobs: usize,
+) -> Result<()> {
+    let lock = BUILD_STABILITY_CACHE_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow::anyhow!("build stability cache lock poisoned"))?;
+    fs::create_dir_all(reports_dir)
+        .with_context(|| format!("creating reports dir {}", reports_dir.display()))?;
+    let path = build_stability_cache_path(reports_dir);
+    let mut cache = read_build_stability_cache(&path);
+    cache.insert(
+        key.to_string(),
+        BuildStabilityRecord {
+            status: "parallel_unstable".to_string(),
+            updated_at: Utc::now().to_rfc3339(),
+            detail: format!("initial_jobs={} detail={}", initial_jobs, detail),
+        },
+    );
+    let payload = serde_json::to_string_pretty(&cache)
+        .context("serializing build stability cache json payload")?;
+    fs::write(&path, payload)
+        .with_context(|| format!("writing build stability cache {}", path.display()))?;
+    Ok(())
 }
 
 fn tail_lines(text: &str, line_count: usize) -> String {
@@ -7153,8 +7299,10 @@ requirements:
         assert!(spec.contains("patch --batch -p1 -i %{SOURCE2}"));
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(spec.contains("retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\""));
-        assert!(spec.contains("export CPU_COUNT=1"));
-        assert!(spec.contains("export MAKEFLAGS=-j1"));
+        assert!(spec.contains("export CPU_COUNT=\"${BIOCONDA2RPM_CPU_COUNT:-1}\""));
+        assert!(spec.contains("export MAKEFLAGS=\"-j${CPU_COUNT}\""));
+        assert!(spec.contains("if [[ \"${BIOCONDA2RPM_ADAPTIVE_RETRY:-0}\" != \"1\" ]]; then"));
+        assert!(spec.contains("BIOCONDA2RPM_SERIAL_RETRY_TRIGGERED=1"));
         assert!(spec.contains("/opt/rh/autoconf271/bin/autoconf"));
         assert!(
             spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name include")
@@ -8529,6 +8677,23 @@ dep: osx-arm64-only # [arm64]\n";
         assert_eq!(kpi.denominator, 2);
         assert_eq!(kpi.successes, 1);
         assert!((kpi.success_rate - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parallel_unstable_cache_is_persisted_per_reports_dir() {
+        let unique = format!(
+            "bioconda2rpm-stability-cache-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let reports_dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&reports_dir).expect("create temp reports dir");
+        let key = "phoreus-blast";
+        assert!(!is_parallel_unstable_cached(&reports_dir, key));
+        mark_parallel_unstable_cache(&reports_dir, key, "retry succeeded", 8)
+            .expect("write stability cache");
+        assert!(is_parallel_unstable_cached(&reports_dir, key));
+        let _ = std::fs::remove_dir_all(&reports_dir);
     }
 
     #[test]

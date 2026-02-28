@@ -35,6 +35,9 @@ Behavior:
 - Build chain is always: `SPEC -> SRPM -> RPM`.
 - SRPM and RPM build stages run inside the specified container image.
 - One canonical SPEC set is reused across OS targets; build outputs are target-scoped.
+- Build concurrency is policy-driven:
+  - `--parallel-policy adaptive` (default): parallel first attempt, automatic serial retry, learned stability cache
+  - `--parallel-policy serial`: force single-core builds
 
 Defaults when omitted:
 - `--topdir` -> `~/bioconda2rpm`

@@ -44,7 +44,7 @@ The product is structured as layered components:
 - For R ecosystem dependencies, routes dependency mapping through a Phoreus R interpreter package (`phoreus-r-4.5.2`) rather than shared distro R module dependencies.
 - For R project recipes, configures isolated R library trees under the tool prefix and supports `renv.lock` restoration in build-time setup.
 - For Rust ecosystem dependencies, routes dependency mapping through a pinned Phoreus Rust toolchain package (`phoreus-rust-1.92`, Rust `1.92.0`) rather than distro Rust toolchain packages.
-- Rust/Cargo execution is rooted in `/usr/local/phoreus/rust/1.92` with deterministic single-core cargo build settings.
+- Rust/Cargo execution is rooted in `/usr/local/phoreus/rust/1.92` and follows global build concurrency policy (serial/adaptive) with deterministic single-core fallback.
 - For Nim ecosystem dependencies, routes dependency mapping through a Phoreus Nim runtime package (`phoreus-nim-2.2`) rather than distro Nim package names.
 - Supports policy-driven precompiled-binary overrides for selected packages (for example, `k8`) to bypass fragile source bootstrap chains when upstream recommends prebuilt artefacts.
 
@@ -61,6 +61,10 @@ The product is structured as layered components:
   - SRPM build (`rpmbuild -bs`) in container
   - RPM rebuild from SRPM (`rpmbuild --rebuild`) in container
 - Container image is provided at runtime via CLI flag.
+- Build concurrency is policy-driven:
+  - `serial`: initial single-core execution
+  - `adaptive`: configured parallel first attempt with automatic serial retry on failure
+  - successful serial retries are recorded in target-scoped stability cache (`reports/build_stability.json`)
 - Before SRPM rebuild, `BuildRequires` are preflight-resolved with tolerant sourcing:
   - already installed packages
   - local RPM artifact reuse

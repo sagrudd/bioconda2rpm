@@ -55,6 +55,13 @@ bioconda2rpm regression \
   - Used to execute SRPM/RPM builds in-container.
 - `--container-engine <docker|podman|...>`
   - Optional. Default: `docker`.
+- `--parallel-policy <serial|adaptive>`
+  - Default: `adaptive`
+  - `serial`: enforce single-core package builds.
+  - `adaptive`: attempt configured parallel build first and auto-retry serial on failure.
+- `--build-jobs <N|auto>`
+  - Default: `auto`
+  - Sets initial build job count for adaptive mode.
 - `--missing-dependency <fail|skip|quarantine>`
   - Default: `quarantine`
 - `--arch <host|x86-64|aarch64>`
@@ -112,6 +119,7 @@ Regression-only options:
 - Priority SPEC generation performs overlap resolution and SPEC creation in parallel workers.
 - For each generated SPEC, build order is always `SPEC -> SRPM -> RPM` in the selected container image.
 - RPM stage is executed as SRPM rebuild (`rpmbuild --rebuild <src.rpm>`).
+- Adaptive mode records package-level `parallel_unstable` outcomes in `<topdir>/targets/<target-id>/reports/build_stability.json` and forces serial first pass on subsequent runs for those specs.
 - Successful package builds clear stale `<topdir>/targets/<target-id>/BAD_SPEC/<tool>.txt` quarantine notes.
 - If local payload artifacts already match the requested Bioconda version, `build` exits with `up-to-date` status.
 - If Bioconda has a newer payload version than local artifacts, `build` rebuilds payload and bumps default/meta package version.

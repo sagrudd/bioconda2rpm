@@ -102,7 +102,7 @@
 - Introduce a pinned Rust runtime bootstrap package: `phoreus-rust-1.92` (Rust `1.92.0`).
 - Rust ecosystem recipe dependencies (`rust`, `rustc`, `cargo`, `rustup`, `rust-*`, `cargo-*`) map to `phoreus-rust-1.92` rather than distro toolchain RPMs.
 - Generated payload specs must route Rust/Cargo through `/usr/local/phoreus/rust/1.92`.
-- Cargo execution policy remains deterministic and single-core by default.
+- Cargo execution policy follows global concurrency controls (`serial` or `adaptive`) with deterministic single-core fallback and learned stability cache.
 
 ### 2026-02-27 Amendment - Phoreus Nim runtime policy
 - Introduce a Nim runtime bootstrap package: `phoreus-nim-2.2`.

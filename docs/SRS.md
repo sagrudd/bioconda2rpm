@@ -139,7 +139,12 @@ FR-022 Rust runtime and cargo policy
 - The system shall provide a bootstrap runtime package `phoreus-rust-1.92` pinned to Rust `1.92.0`.
 - Rust ecosystem dependencies (`rust`, `rustc`, `cargo`, `rustup`, `rust-*`, `cargo-*`) shall map to `phoreus-rust-1.92` rather than distro toolchain packages.
 - Generated SPECs for Rust-dependent recipes shall export Rust/Cargo environment roots from `/usr/local/phoreus/rust/1.92` and fail deterministically if the pinned runtime is absent.
-- Cargo-based builds shall default to single-core execution for deterministic enterprise builds.
+- Cargo-based builds shall honor global build concurrency policy (`serial` or `adaptive`) while retaining deterministic fallback behavior.
+
+FR-022a Build concurrency policy
+- The CLI shall expose configurable build concurrency via `--parallel-policy <serial|adaptive>` and `--build-jobs <N|auto>`.
+- In `adaptive` mode, failed parallel package builds shall automatically retry once with single-core settings.
+- Successful adaptive serial retries shall be persisted in a per-target stability cache so subsequent builds of that spec start in serial mode.
 
 FR-023 Nim runtime policy
 - The system shall provide a bootstrap runtime package `phoreus-nim-2.2` for Nim-dependent recipe builds.

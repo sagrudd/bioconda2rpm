@@ -45,6 +45,12 @@ pub enum ContainerMode {
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
+pub enum ParallelPolicy {
+    Serial,
+    Adaptive,
+}
+
+#[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
 pub enum MissingDependencyPolicy {
     Fail,
     Skip,
@@ -144,6 +150,15 @@ pub struct BuildArgs {
     #[arg(long, default_value = "docker")]
     pub container_engine: String,
 
+    /// Build parallelism policy.
+    /// `adaptive` attempts parallel build first and retries serial when needed.
+    #[arg(long, value_enum, default_value_t = ParallelPolicy::Adaptive)]
+    pub parallel_policy: ParallelPolicy,
+
+    /// Build job count for parallel mode. Accepts integer or `auto`.
+    #[arg(long, default_value = "auto")]
+    pub build_jobs: String,
+
     /// Behavior when dependency recipes cannot be resolved.
     #[arg(long, value_enum, default_value_t = MissingDependencyPolicy::Quarantine)]
     pub missing_dependency: MissingDependencyPolicy,
@@ -220,6 +235,15 @@ pub struct GeneratePrioritySpecsArgs {
     #[arg(long, default_value = "docker")]
     pub container_engine: String,
 
+    /// Build parallelism policy.
+    /// `adaptive` attempts parallel build first and retries serial when needed.
+    #[arg(long, value_enum, default_value_t = ParallelPolicy::Adaptive)]
+    pub parallel_policy: ParallelPolicy,
+
+    /// Build job count for parallel mode. Accepts integer or `auto`.
+    #[arg(long, default_value = "auto")]
+    pub build_jobs: String,
+
     /// RPM build topdir. Defaults to ~/bioconda2rpm when omitted.
     #[arg(long)]
     pub topdir: Option<PathBuf>,
@@ -284,6 +308,15 @@ pub struct RegressionArgs {
     /// Container engine binary. Defaults to docker.
     #[arg(long, default_value = "docker")]
     pub container_engine: String,
+
+    /// Build parallelism policy.
+    /// `adaptive` attempts parallel build first and retries serial when needed.
+    #[arg(long, value_enum, default_value_t = ParallelPolicy::Adaptive)]
+    pub parallel_policy: ParallelPolicy,
+
+    /// Build job count for parallel mode. Accepts integer or `auto`.
+    #[arg(long, default_value = "auto")]
+    pub build_jobs: String,
 
     /// Dependency closure policy for discovered requirements.
     #[arg(long, value_enum, default_value_t = DependencyPolicy::BuildHostRun)]
@@ -361,6 +394,25 @@ pub fn default_build_target_id(container_image: &str, target_arch: &str) -> Stri
     format!("{image}-{arch}")
 }
 
+fn host_parallelism() -> usize {
+    std::thread::available_parallelism()
+        .map(|v| v.get())
+        .unwrap_or(1)
+        .max(1)
+}
+
+fn parse_build_jobs(raw: &str) -> usize {
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("auto") {
+        return host_parallelism();
+    }
+    trimmed
+        .parse::<usize>()
+        .ok()
+        .filter(|v| *v > 0)
+        .unwrap_or(1)
+}
+
 impl BuildArgs {
     pub fn with_deps(&self) -> bool {
         !self.no_deps
@@ -400,6 +452,13 @@ impl BuildArgs {
         }
     }
 
+    pub fn effective_build_jobs(&self) -> usize {
+        match self.parallel_policy {
+            ParallelPolicy::Serial => 1,
+            ParallelPolicy::Adaptive => parse_build_jobs(&self.build_jobs),
+        }
+    }
+
     pub fn effective_metadata_adapter(&self) -> MetadataAdapter {
         match self.deployment_profile {
             DeploymentProfile::Development => self.metadata_adapter.clone(),
@@ -413,7 +472,7 @@ impl BuildArgs {
 
     pub fn execution_summary(&self) -> String {
         format!(
-            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} target_id={target_id} target_root={target_root} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
+            "build package={pkg} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} target_id={target_id} target_root={target_root} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} parallel_policy={parallel_policy:?} build_jobs={build_jobs} effective_build_jobs={effective_build_jobs} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
             pkg = self.package,
             stage = self.stage,
             deps = self.with_deps(),
@@ -427,6 +486,9 @@ impl BuildArgs {
             container = self.container_mode,
             container_image = self.container_image,
             container_engine = self.container_engine,
+            parallel_policy = self.parallel_policy,
+            build_jobs = self.build_jobs,
+            effective_build_jobs = self.effective_build_jobs(),
             arch = self.arch,
             target_arch = self.effective_target_arch(),
             deployment_profile = self.deployment_profile,
@@ -451,6 +513,13 @@ impl GeneratePrioritySpecsArgs {
 
     pub fn effective_target_arch(&self) -> String {
         canonical_arch_name(std::env::consts::ARCH).to_string()
+    }
+
+    pub fn effective_build_jobs(&self) -> usize {
+        match self.parallel_policy {
+            ParallelPolicy::Serial => 1,
+            ParallelPolicy::Adaptive => parse_build_jobs(&self.build_jobs),
+        }
     }
 
     pub fn effective_target_id(&self) -> String {
@@ -511,6 +580,13 @@ impl RegressionArgs {
         }
     }
 
+    pub fn effective_build_jobs(&self) -> usize {
+        match self.parallel_policy {
+            ParallelPolicy::Serial => 1,
+            ParallelPolicy::Adaptive => parse_build_jobs(&self.build_jobs),
+        }
+    }
+
     pub fn effective_metadata_adapter(&self) -> MetadataAdapter {
         match self.deployment_profile {
             DeploymentProfile::Development => self.metadata_adapter.clone(),
@@ -547,6 +623,9 @@ mod tests {
         assert_eq!(args.dependency_policy, DependencyPolicy::BuildHostRun);
         assert!(args.with_deps());
         assert_eq!(args.container_mode, ContainerMode::Ephemeral);
+        assert_eq!(args.parallel_policy, ParallelPolicy::Adaptive);
+        assert_eq!(args.build_jobs, "auto");
+        assert!(args.effective_build_jobs() >= 1);
         assert_eq!(args.missing_dependency, MissingDependencyPolicy::Quarantine);
         assert_eq!(args.arch, BuildArch::Host);
         assert_eq!(args.naming_profile, NamingProfile::Phoreus);
@@ -617,6 +696,10 @@ mod tests {
             "--no-deps",
             "--container-mode",
             "auto",
+            "--parallel-policy",
+            "serial",
+            "--build-jobs",
+            "12",
             "--missing-dependency",
             "fail",
             "--arch",
@@ -639,6 +722,8 @@ mod tests {
         assert_eq!(args.dependency_policy, DependencyPolicy::RunOnly);
         assert!(!args.with_deps());
         assert_eq!(args.container_mode, ContainerMode::Auto);
+        assert_eq!(args.parallel_policy, ParallelPolicy::Serial);
+        assert_eq!(args.effective_build_jobs(), 1);
         assert_eq!(args.missing_dependency, MissingDependencyPolicy::Fail);
         assert_eq!(args.arch, BuildArch::Aarch64);
         assert_eq!(args.effective_target_arch(), "aarch64".to_string());
@@ -678,6 +763,8 @@ mod tests {
         assert_eq!(args.top_n, 10);
         assert_eq!(args.container_image, "almalinux:9");
         assert_eq!(args.container_engine, "docker");
+        assert_eq!(args.parallel_policy, ParallelPolicy::Adaptive);
+        assert!(args.effective_build_jobs() >= 1);
         assert_eq!(args.metadata_adapter, MetadataAdapter::Auto);
         assert!(args.effective_topdir().ends_with("bioconda2rpm"));
         assert!(
@@ -710,6 +797,8 @@ mod tests {
         assert_eq!(args.mode, RegressionMode::Pr);
         assert_eq!(args.top_n, 25);
         assert!(args.software_list.is_none());
+        assert_eq!(args.parallel_policy, ParallelPolicy::Adaptive);
+        assert!(args.effective_build_jobs() >= 1);
         assert_eq!(args.deployment_profile, DeploymentProfile::Production);
         assert_eq!(args.effective_metadata_adapter(), MetadataAdapter::Conda);
         assert_eq!(args.effective_target_arch(), "x86_64".to_string());
@@ -757,5 +846,13 @@ mod tests {
     fn default_build_target_id_is_sanitized_and_stable() {
         let target_id = default_build_target_id("dropworm_dev_almalinux_9_5:0.1.2", "aarch64");
         assert_eq!(target_id, "dropworm_dev_almalinux_9_5-0.1.2-aarch64");
+    }
+
+    #[test]
+    fn parse_build_jobs_supports_auto_and_numeric() {
+        assert!(parse_build_jobs("auto") >= 1);
+        assert_eq!(parse_build_jobs("8"), 8);
+        assert_eq!(parse_build_jobs("0"), 1);
+        assert_eq!(parse_build_jobs("invalid"), 1);
     }
 }

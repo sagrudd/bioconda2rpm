@@ -64,8 +64,9 @@ For Rust-dependent recipes, generated payload SPEC files MUST:
 
 ## 7. Cargo Build Determinism Policy
 
-For enterprise repeatability, Cargo execution MUST default to deterministic single-core behavior:
-- `CARGO_BUILD_JOBS=1`
+For enterprise repeatability, Cargo execution MUST follow orchestrator concurrency policy:
+- `serial` policy: `CARGO_BUILD_JOBS=1`
+- `adaptive` policy: initial job count from orchestrator `--build-jobs`, with automatic single-core retry on failure
 - `CARGO_INCREMENTAL=0`
 
 Temporary build products SHOULD be isolated per build invocation via `CARGO_TARGET_DIR`.

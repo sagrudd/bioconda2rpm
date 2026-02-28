@@ -116,6 +116,12 @@ Common optional flags:
 
 - `--container-image <image:tag>`: image used for SRPM/RPM builds.
 - `--container-engine <engine>`: default `docker`.
+- `--parallel-policy <serial|adaptive>`:
+  - `adaptive` (default): run with configured concurrency and retry once in serial on failure.
+  - `serial`: force single-core package builds.
+- `--build-jobs <N|auto>`:
+  - `auto` (default): use host parallelism for initial adaptive attempt.
+  - numeric value: fixed initial job count for adaptive mode.
 - `--topdir <path>`: artifact/report root override.
 - `--bad-spec-dir <path>`: quarantine override.
 - `--reports-dir <path>`: report directory override.
@@ -165,6 +171,10 @@ Per `build <tool>` run:
      - already installed packages
      - local RPM reuse from `<topdir>/targets/<target-id>/RPMS` (plus legacy `<topdir>/RPMS` compatibility read)
      - distro/core repos with unavailable-repo tolerance
+   - If `--parallel-policy adaptive` is active:
+     - first attempt uses `--build-jobs`
+     - failed attempts automatically retry once with single-core settings
+     - successful serial retries are recorded in per-target stability cache for future runs
    - Rebuild RPM from SRPM (`rpmbuild --rebuild <generated.src.rpm>`).
 
 For each package build step:
@@ -198,7 +208,7 @@ Rust charter behavior:
 
 - `bioconda2rpm` provisions `phoreus-rust-1.92` on demand when a recipe or dependency graph references Rust ecosystem dependencies (`rust`, `rustc`, `cargo`, `rustup`, `rust-*`, `cargo-*`) or staged `build.sh` rust/cargo usage.
 - Rust ecosystem dependencies are mapped to `phoreus-rust-1.92` instead of distro Rust toolchain RPMs.
-- Generated SPECs route all Rust/Cargo execution through `/usr/local/phoreus/rust/1.92` and export deterministic cargo settings (`CARGO_BUILD_JOBS=1`, `CARGO_INCREMENTAL=0`) for reproducible builds.
+- Generated SPECs route all Rust/Cargo execution through `/usr/local/phoreus/rust/1.92` and export deterministic cargo settings rooted in orchestrator policy (`CARGO_INCREMENTAL=0`; job count from adaptive/serial settings).
 
 Nim runtime behavior:
 
@@ -225,6 +235,7 @@ Under `<topdir>`:
 - `targets/<target-id>/reports/build_<tool>.md`
 - `targets/<target-id>/reports/dependency_graphs/*.json` per-package dependency resolution graph
 - `targets/<target-id>/reports/dependency_graphs/*.md` per-package dependency resolution graph
+- `targets/<target-id>/reports/build_stability.json` learned package-level concurrency compatibility cache (`parallel_unstable`)
 - `targets/<target-id>/BAD_SPEC/` quarantine notes for failed/unresolved items
 
 This layout keeps one canonical SPEC set while isolating binary artifacts by build OS target. Use one SPEC with `%ifarch` / distro conditionals when needed.
