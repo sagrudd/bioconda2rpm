@@ -1,3 +1,4 @@
+mod build_lock;
 mod cli;
 mod priority_specs;
 mod recipe_repo;
@@ -42,6 +43,40 @@ fn main() -> ExitCode {
             if progress_ui.is_none() {
                 println!("{}", args.execution_summary());
             }
+            let requested_packages = if args.packages.is_empty() {
+                vec![format!(
+                    "packages-file:{}",
+                    args.packages_file
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "unknown".to_string())
+                )]
+            } else {
+                args.packages.clone()
+            };
+            let _build_session = match build_lock::BuildSessionGuard::acquire(
+                &topdir,
+                &args.effective_target_id(),
+                &requested_packages,
+            ) {
+                Ok(guard) => {
+                    priority_specs::log_external_progress(format!(
+                        "phase=workspace-lock status=acquired topdir={} target_id={} packages={}",
+                        topdir.display(),
+                        args.effective_target_id(),
+                        requested_packages.join(",")
+                    ));
+                    guard
+                }
+                Err(err) => {
+                    priority_specs::clear_progress_sink();
+                    if let Some(ui) = progress_ui.take() {
+                        ui.finish(format!("build failed: workspace lock error: {err}"));
+                    }
+                    eprintln!("failed to acquire workspace build session lock: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+            };
 
             let recipe_request = recipe_repo::RecipeRepoRequest {
                 recipe_root: args.effective_recipe_root(),
@@ -132,6 +167,20 @@ fn main() -> ExitCode {
                 eprintln!("failed to prepare workspace directories: {err}");
                 return ExitCode::FAILURE;
             }
+            let _build_session = match build_lock::BuildSessionGuard::acquire(
+                &topdir,
+                &args.effective_target_id(),
+                &[format!(
+                    "generate-priority-specs:{}",
+                    args.tools_csv.to_string_lossy()
+                )],
+            ) {
+                Ok(guard) => guard,
+                Err(err) => {
+                    eprintln!("failed to acquire workspace build session lock: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+            };
             let recipe_request = recipe_repo::RecipeRepoRequest {
                 recipe_root: args.effective_recipe_root(),
                 recipe_repo_root: args.effective_recipe_repo_root(),
@@ -183,6 +232,17 @@ fn main() -> ExitCode {
                 eprintln!("failed to prepare workspace directories: {err}");
                 return ExitCode::FAILURE;
             }
+            let _build_session = match build_lock::BuildSessionGuard::acquire(
+                &topdir,
+                &args.effective_target_id(),
+                &[format!("regression:{:?}", args.mode)],
+            ) {
+                Ok(guard) => guard,
+                Err(err) => {
+                    eprintln!("failed to acquire workspace build session lock: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+            };
             let recipe_request = recipe_repo::RecipeRepoRequest {
                 recipe_root: args.effective_recipe_root(),
                 recipe_repo_root: args.effective_recipe_repo_root(),
