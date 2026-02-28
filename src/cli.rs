@@ -45,6 +45,38 @@ pub enum ContainerMode {
     Auto,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum BuildContainerProfile {
+    #[value(name = "almalinux-9.7")]
+    Almalinux97,
+    #[value(name = "almalinux-10.1")]
+    Almalinux101,
+    #[value(name = "fedora-43")]
+    Fedora43,
+}
+
+impl BuildContainerProfile {
+    pub fn image(self) -> &'static str {
+        match self {
+            BuildContainerProfile::Almalinux97 => "phoreus/bioconda2rpm-build:almalinux-9.7",
+            BuildContainerProfile::Almalinux101 => "phoreus/bioconda2rpm-build:almalinux-10.1",
+            BuildContainerProfile::Fedora43 => "phoreus/bioconda2rpm-build:fedora-43",
+        }
+    }
+
+    pub fn dockerfile_path(self) -> &'static str {
+        match self {
+            BuildContainerProfile::Almalinux97 => {
+                "containers/rpm-build-images/Dockerfile.almalinux-9.7"
+            }
+            BuildContainerProfile::Almalinux101 => {
+                "containers/rpm-build-images/Dockerfile.almalinux-10.1"
+            }
+            BuildContainerProfile::Fedora43 => "containers/rpm-build-images/Dockerfile.fedora-43",
+        }
+    }
+}
+
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
 pub enum ParallelPolicy {
     Serial,
@@ -150,9 +182,9 @@ pub struct BuildArgs {
     #[arg(long, value_enum, default_value_t = ContainerMode::Ephemeral)]
     pub container_mode: ContainerMode,
 
-    /// Container image to use for RPM builds (SPEC -> SRPM -> RPM).
-    #[arg(long, default_value = "dropworm_dev_almalinux_9_5:0.1.2")]
-    pub container_image: String,
+    /// Controlled build container profile used for SPEC -> SRPM -> RPM.
+    #[arg(long, value_enum, default_value_t = BuildContainerProfile::Almalinux97)]
+    pub container_profile: BuildContainerProfile,
 
     /// Container engine binary. Defaults to docker.
     #[arg(long, default_value = "docker")]
@@ -249,9 +281,9 @@ pub struct GeneratePrioritySpecsArgs {
     #[arg(long)]
     pub workers: Option<usize>,
 
-    /// Container image to use for RPM builds (SPEC -> SRPM -> RPM).
-    #[arg(long)]
-    pub container_image: String,
+    /// Controlled build container profile used for SPEC -> SRPM -> RPM.
+    #[arg(long, value_enum, default_value_t = BuildContainerProfile::Almalinux97)]
+    pub container_profile: BuildContainerProfile,
 
     /// Container engine binary. Defaults to docker.
     #[arg(long, default_value = "docker")]
@@ -323,9 +355,9 @@ pub struct RegressionArgs {
     #[arg(long)]
     pub reports_dir: Option<PathBuf>,
 
-    /// Container image to use for RPM builds (SPEC -> SRPM -> RPM).
-    #[arg(long, default_value = "dropworm_dev_almalinux_9_5:0.1.2")]
-    pub container_image: String,
+    /// Controlled build container profile used for SPEC -> SRPM -> RPM.
+    #[arg(long, value_enum, default_value_t = BuildContainerProfile::Almalinux97)]
+    pub container_profile: BuildContainerProfile,
 
     /// Container engine binary. Defaults to docker.
     #[arg(long, default_value = "docker")]
@@ -444,8 +476,15 @@ impl BuildArgs {
         self.topdir.clone().unwrap_or_else(default_topdir)
     }
 
+    pub fn effective_container_image(&self) -> &'static str {
+        self.container_profile.image()
+    }
+
     pub fn effective_target_id(&self) -> String {
-        default_build_target_id(&self.container_image, &self.effective_target_arch())
+        default_build_target_id(
+            self.effective_container_image(),
+            &self.effective_target_arch(),
+        )
     }
 
     pub fn effective_target_root(&self) -> PathBuf {
@@ -517,7 +556,7 @@ impl BuildArgs {
 
     pub fn execution_summary(&self) -> String {
         format!(
-            "build requested_packages={requested_packages} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} target_id={target_id} target_root={target_root} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} parallel_policy={parallel_policy:?} build_jobs={build_jobs} effective_build_jobs={effective_build_jobs} queue_workers={queue_workers} effective_queue_workers={effective_queue_workers} ui={ui:?} effective_ui={effective_ui:?} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
+            "build requested_packages={requested_packages} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} target_id={target_id} target_root={target_root} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_profile={container_profile:?} container_image={container_image} container_engine={container_engine} parallel_policy={parallel_policy:?} build_jobs={build_jobs} effective_build_jobs={effective_build_jobs} queue_workers={queue_workers} effective_queue_workers={effective_queue_workers} ui={ui:?} effective_ui={effective_ui:?} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
             requested_packages = self.packages.len(),
             stage = self.stage,
             deps = self.with_deps(),
@@ -529,7 +568,8 @@ impl BuildArgs {
             bad_spec = self.effective_bad_spec_dir().display(),
             reports = self.effective_reports_dir().display(),
             container = self.container_mode,
-            container_image = self.container_image,
+            container_profile = self.container_profile,
+            container_image = self.effective_container_image(),
             container_engine = self.container_engine,
             parallel_policy = self.parallel_policy,
             build_jobs = self.build_jobs,
@@ -563,6 +603,10 @@ impl GeneratePrioritySpecsArgs {
         self.topdir.clone().unwrap_or_else(default_topdir)
     }
 
+    pub fn effective_container_image(&self) -> &'static str {
+        self.container_profile.image()
+    }
+
     pub fn effective_target_arch(&self) -> String {
         canonical_arch_name(std::env::consts::ARCH).to_string()
     }
@@ -575,7 +619,10 @@ impl GeneratePrioritySpecsArgs {
     }
 
     pub fn effective_target_id(&self) -> String {
-        default_build_target_id(&self.container_image, &self.effective_target_arch())
+        default_build_target_id(
+            self.effective_container_image(),
+            &self.effective_target_arch(),
+        )
     }
 
     pub fn effective_target_root(&self) -> PathBuf {
@@ -602,8 +649,15 @@ impl RegressionArgs {
         self.topdir.clone().unwrap_or_else(default_topdir)
     }
 
+    pub fn effective_container_image(&self) -> &'static str {
+        self.container_profile.image()
+    }
+
     pub fn effective_target_id(&self) -> String {
-        default_build_target_id(&self.container_image, &self.effective_target_arch())
+        default_build_target_id(
+            self.effective_container_image(),
+            &self.effective_target_arch(),
+        )
     }
 
     pub fn effective_target_root(&self) -> PathBuf {
@@ -675,6 +729,11 @@ mod tests {
         assert_eq!(args.dependency_policy, DependencyPolicy::BuildHostRun);
         assert!(args.with_deps());
         assert_eq!(args.container_mode, ContainerMode::Ephemeral);
+        assert_eq!(args.container_profile, BuildContainerProfile::Almalinux97);
+        assert_eq!(
+            args.effective_container_image(),
+            "phoreus/bioconda2rpm-build:almalinux-9.7"
+        );
         assert_eq!(args.parallel_policy, ParallelPolicy::Adaptive);
         assert_eq!(args.build_jobs, "4");
         assert_eq!(args.effective_build_jobs(), 4);
@@ -716,6 +775,8 @@ mod tests {
             "samtools",
             "--recipe-root",
             "/recipes",
+            "--container-profile",
+            "almalinux-9.7",
             "--topdir",
             "/rpmbuild",
             "--bad-spec-dir",
@@ -751,6 +812,8 @@ mod tests {
             "--no-deps",
             "--container-mode",
             "auto",
+            "--container-profile",
+            "fedora-43",
             "--parallel-policy",
             "serial",
             "--build-jobs",
@@ -779,6 +842,7 @@ mod tests {
         assert_eq!(args.dependency_policy, DependencyPolicy::RunOnly);
         assert!(!args.with_deps());
         assert_eq!(args.container_mode, ContainerMode::Auto);
+        assert_eq!(args.container_profile, BuildContainerProfile::Fedora43);
         assert_eq!(args.parallel_policy, ParallelPolicy::Serial);
         assert_eq!(args.effective_build_jobs(), 1);
         assert_eq!(args.missing_dependency, MissingDependencyPolicy::Fail);
@@ -812,6 +876,8 @@ mod tests {
             "bcftools",
             "--recipe-root",
             "/recipes",
+            "--container-profile",
+            "almalinux-9.7",
         ])
         .expect("multi package build should parse");
         let Command::Build(args) = cli.command else {
@@ -834,6 +900,8 @@ mod tests {
             "build",
             "--recipe-root",
             "/recipes",
+            "--container-profile",
+            "almalinux-9.7",
             "--packages-file",
             "/tmp/verification_software.txt",
         ])
@@ -857,8 +925,6 @@ mod tests {
             "/recipes",
             "--tools-csv",
             "/tmp/tools.csv",
-            "--container-image",
-            "almalinux:9",
         ])
         .expect("generate-priority-specs defaults should parse");
 
@@ -866,7 +932,11 @@ mod tests {
             panic!("expected generate-priority-specs subcommand");
         };
         assert_eq!(args.top_n, 10);
-        assert_eq!(args.container_image, "almalinux:9");
+        assert_eq!(args.container_profile, BuildContainerProfile::Almalinux97);
+        assert_eq!(
+            args.effective_container_image(),
+            "phoreus/bioconda2rpm-build:almalinux-9.7"
+        );
         assert_eq!(args.container_engine, "docker");
         assert_eq!(args.parallel_policy, ParallelPolicy::Adaptive);
         assert_eq!(args.effective_build_jobs(), 4);
@@ -901,6 +971,7 @@ mod tests {
         };
         assert_eq!(args.mode, RegressionMode::Pr);
         assert_eq!(args.top_n, 25);
+        assert_eq!(args.container_profile, BuildContainerProfile::Almalinux97);
         assert!(args.software_list.is_none());
         assert_eq!(args.parallel_policy, ParallelPolicy::Adaptive);
         assert_eq!(args.effective_build_jobs(), 4);
@@ -930,6 +1001,8 @@ mod tests {
             "/recipes",
             "--tools-csv",
             "/tmp/tools.csv",
+            "--container-profile",
+            "fedora-43",
             "--software-list",
             "/tmp/essential_100.txt",
             "--mode",
@@ -941,6 +1014,7 @@ mod tests {
             panic!("expected regression subcommand");
         };
         assert_eq!(args.mode, RegressionMode::Nightly);
+        assert_eq!(args.container_profile, BuildContainerProfile::Fedora43);
         assert_eq!(
             args.software_list,
             Some(PathBuf::from("/tmp/essential_100.txt"))
@@ -959,5 +1033,21 @@ mod tests {
         assert_eq!(parse_build_jobs("8"), 8);
         assert_eq!(parse_build_jobs("0"), 1);
         assert_eq!(parse_build_jobs("invalid"), 1);
+    }
+
+    #[test]
+    fn container_profile_metadata_is_stable() {
+        assert_eq!(
+            BuildContainerProfile::Almalinux97.image(),
+            "phoreus/bioconda2rpm-build:almalinux-9.7"
+        );
+        assert_eq!(
+            BuildContainerProfile::Almalinux101.dockerfile_path(),
+            "containers/rpm-build-images/Dockerfile.almalinux-10.1"
+        );
+        assert_eq!(
+            BuildContainerProfile::Fedora43.image(),
+            "phoreus/bioconda2rpm-build:fedora-43"
+        );
     }
 }

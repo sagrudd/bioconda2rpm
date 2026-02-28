@@ -89,9 +89,12 @@
   - SPEC generation
   - SRPM build
   - RPM rebuild from SRPM
-- SRPM and RPM stages run inside a user-selected container image.
-- CLI now exposes container image selection for this workflow.
-- Current reference image in use: `dropworm_dev_almalinux_9_5:0.1.2`.
+- SRPM and RPM stages run inside a controlled container profile image.
+- CLI exposes `--container-profile` selection for this workflow with allowed values:
+  - `almalinux-9.7` (default)
+  - `almalinux-10.1`
+  - `fedora-43`
+- If the selected image is missing locally, bioconda2rpm auto-builds it from the matching Dockerfile under `containers/rpm-build-images/`.
 
 ### 2026-02-27 Amendment - Architecture restriction policy
 - Architecture/toolchain incompatibility should be classified explicitly, not treated as a global rollout blocker.

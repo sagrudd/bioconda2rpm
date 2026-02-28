@@ -87,5 +87,5 @@ docker buildx build \
 ```bash
 cargo run -- build samtools \
   --recipe-root ../bioconda-recipes/recipes \
-  --container-image phoreus/bioconda2rpm-build:almalinux-10.1
+  --container-profile almalinux-10.1
 ```

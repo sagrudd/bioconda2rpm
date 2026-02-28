@@ -17,7 +17,7 @@ Production expectation:
 bioconda2rpm generate-priority-specs \
   --recipe-root <path> \
   --tools-csv <path/to/tools.csv> \
-  --container-image <image[:tag]> \
+  [--container-profile <almalinux-9.7|almalinux-10.1|fedora-43>] \
   [--top-n 10] \
   [--workers <n>] \
   [--container-engine docker]
@@ -49,10 +49,14 @@ bioconda2rpm regression \
   - Disables dependency closure for the requested package.
 - `--container-mode <ephemeral|running|auto>`
   - Default: `ephemeral`
-- `--container-image <image[:tag]>`
+- `--container-profile <almalinux-9.7|almalinux-10.1|fedora-43>`
   - Optional for `build`.
-  - Default: `dropworm_dev_almalinux_9_5:0.1.2`.
-  - Used to execute SRPM/RPM builds in-container.
+  - Default: `almalinux-9.7`.
+  - Resolves to controlled build images only:
+    - `almalinux-9.7` -> `phoreus/bioconda2rpm-build:almalinux-9.7`
+    - `almalinux-10.1` -> `phoreus/bioconda2rpm-build:almalinux-10.1`
+    - `fedora-43` -> `phoreus/bioconda2rpm-build:fedora-43`
+  - If selected image is missing locally, bioconda2rpm builds it automatically from `containers/rpm-build-images/`.
 - `--container-engine <docker|podman|...>`
   - Optional. Default: `docker`.
 - `--parallel-policy <serial|adaptive>`
@@ -80,7 +84,7 @@ bioconda2rpm regression \
 - `--reports-dir <path>`
   - Optional. Default resolves to `<topdir>/targets/<target-id>/reports` (auto-created if missing).
 - `<target-id>`
-  - Derived as a deterministic sanitized slug from `<container-image>-<target-arch>`.
+  - Derived as a deterministic sanitized slug from the resolved `<container-image>-<target-arch>`.
 - `--naming-profile <phoreus>`
   - Default: `phoreus`
 - `--render-strategy <jinja-full>`
@@ -125,7 +129,7 @@ Regression-only options:
 - Console + JSON + CSV + Markdown reporting is expected per run.
 - Priority SPEC generation uses only Bioconda metadata inputs (`meta.yaml` + `build.sh`) and `tools.csv` priority rows.
 - Priority SPEC generation performs overlap resolution and SPEC creation in parallel workers.
-- For each generated SPEC, build order is always `SPEC -> SRPM -> RPM` in the selected container image.
+- For each generated SPEC, build order is always `SPEC -> SRPM -> RPM` in the selected controlled container profile image.
 - RPM stage is executed as SRPM rebuild (`rpmbuild --rebuild <src.rpm>`).
 - Adaptive mode records package-level `parallel_unstable` outcomes in `<topdir>/targets/<target-id>/reports/build_stability.json` and forces serial first pass on subsequent runs for those specs.
 - Successful package builds clear stale `<topdir>/targets/<target-id>/BAD_SPEC/<tool>.txt` quarantine notes.

@@ -19,9 +19,11 @@ Primary production workflow:
 - Container engine installed (default: `docker`).
 - Bioconda recipes clone available (example: `../bioconda-recipes/recipes`).
 - Priority CSV available (example: `../software_query/tools.csv`).
-- Build container image available locally or pullable, e.g.:
-  - `dropworm_dev_almalinux_9_5:0.1.2`
-  - or build one from `containers/rpm-build-images/` in this repository
+- Controlled build container profile selected via `--container-profile`:
+  - `almalinux-9.7` (default) -> `phoreus/bioconda2rpm-build:almalinux-9.7`
+  - `almalinux-10.1` -> `phoreus/bioconda2rpm-build:almalinux-10.1`
+  - `fedora-43` -> `phoreus/bioconda2rpm-build:fedora-43`
+- If the selected profile image is not present locally, `bioconda2rpm` builds it automatically from `containers/rpm-build-images/`.
 
 ## 3. Default Paths
 
@@ -73,7 +75,7 @@ Optional container controls:
 ```bash
 cargo run -- build bbmap \
   --recipe-root ../bioconda-recipes/recipes \
-  --container-image dropworm_dev_almalinux_9_5:0.1.2 \
+  --container-profile almalinux-10.1 \
   --container-engine docker
 ```
 
@@ -83,7 +85,7 @@ cargo run -- build bbmap \
 cargo run -- generate-priority-specs \
   --recipe-root ../bioconda-recipes/recipes \
   --tools-csv ../software_query/tools.csv \
-  --container-image dropworm_dev_almalinux_9_5:0.1.2
+  --container-profile almalinux-9.7
 ```
 
 ### 4.3 Regression Campaign Command
@@ -131,7 +133,10 @@ For `build`:
 
 Common optional flags:
 
-- `--container-image <image:tag>`: image used for SRPM/RPM builds.
+- `--container-profile <almalinux-9.7|almalinux-10.1|fedora-43>`:
+  - controls the only allowed container images for SRPM/RPM builds.
+  - default: `almalinux-9.7`.
+  - if local image is missing, it is built automatically from the matching Dockerfile in `containers/rpm-build-images/`.
 - `--container-engine <engine>`: default `docker`.
 - `--parallel-policy <serial|adaptive>`:
   - `adaptive` (default): run with configured concurrency and retry once in serial on failure.

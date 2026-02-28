@@ -25,7 +25,7 @@ Generate Phoreus payload/meta SPEC pairs for top-priority tools directly from Bi
 cargo run -- generate-priority-specs \
   --recipe-root ../bioconda-recipes/recipes \
   --tools-csv ../software_query/tools.csv \
-  --container-image dropworm_dev_almalinux_9_5:0.1.2 \
+  --container-profile almalinux-9.7 \
   --top-n 10 \
   --workers 6
 ```
@@ -38,11 +38,16 @@ Outputs are written under `--topdir` (default `~/bioconda2rpm`):
 - `targets/<target-id>/reports/priority_spec_generation.{json,csv,md}`
 - `targets/<target-id>/BAD_SPEC/` quarantine notes for unresolved/invalid entries
 
-`<target-id>` is derived from `<container-image>-<target-arch>` using a sanitized stable slug.
+`<target-id>` is derived from `<container-image>-<target-arch>` using a sanitized stable slug.  
+`<container-image>` is resolved from controlled `--container-profile` values:
+- `almalinux-9.7` (default) -> `phoreus/bioconda2rpm-build:almalinux-9.7`
+- `almalinux-10.1` -> `phoreus/bioconda2rpm-build:almalinux-10.1`
+- `fedora-43` -> `phoreus/bioconda2rpm-build:fedora-43`
 
 Behavior:
 - Build chain is always: `SPEC -> SRPM -> RPM`.
-- SRPM and RPM build stages run inside the specified container image.
+- SRPM and RPM build stages run inside the selected controlled container profile image.
+- If the selected image is missing locally, `bioconda2rpm` builds it automatically from `containers/rpm-build-images/`.
 - One canonical SPEC set is reused across OS targets; build outputs are target-scoped.
 - Build concurrency is policy-driven:
   - `--parallel-policy adaptive` (default): parallel first attempt, automatic serial retry, learned stability cache

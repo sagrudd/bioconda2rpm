@@ -104,6 +104,8 @@ The product is structured as layered components:
 
 - Constraint:
   - No build artifacts or recipe staging shall default into the crate workspace.
+  - Container runtime must use controlled build profiles only (`almalinux-9.7`, `almalinux-10.1`, `fedora-43`), defaulting to `almalinux-9.7`.
+  - Missing local container image for a selected profile is auto-built from `containers/rpm-build-images/` before package build stages run.
 
 ## 4. Platform and Build Strategy
 

@@ -54,6 +54,8 @@ FR-007 Missing dependency handling
 
 FR-008 Container execution model
 - Default build execution shall use an ephemeral container per run.
+- Container selection shall be restricted to controlled profiles: `almalinux-9.7`, `almalinux-10.1`, `fedora-43`.
+- If no container profile is specified, default shall be `almalinux-9.7`.
 
 FR-009 Architecture behavior
 - Default target architecture shall be host architecture.
@@ -96,9 +98,10 @@ FR-014 Priority SPEC generation workflow
 
 FR-015 Containerized build chain
 - For generated SPECs, the build order shall always be `SPEC -> SRPM -> RPM`.
-- SRPM generation shall execute inside a user-selected container image.
+- SRPM generation shall execute inside a selected controlled container profile image.
 - RPM generation shall rebuild from the generated SRPM (not direct SPEC-to-RPM).
-- The CLI shall expose a container image flag for this selection.
+- The CLI shall expose a container profile flag for this selection.
+- If the selected container image is missing locally, the system shall build it automatically from the repository-controlled Dockerfile for that profile before build execution continues.
 
 FR-016 Architecture restriction capture policy
 - When build logs indicate architecture-intrinsic incompatibility (for example, `emmintrin.h` missing on `aarch64`), the system shall classify the result as an architecture restriction (for example, `amd64_only`).

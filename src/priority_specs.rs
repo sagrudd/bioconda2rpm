@@ -1,7 +1,7 @@
 use crate::cli::{
-    BuildArgs, BuildStage, ContainerMode, DependencyPolicy, GeneratePrioritySpecsArgs,
-    MetadataAdapter, MissingDependencyPolicy, NamingProfile, OutputSelection, ParallelPolicy,
-    RegressionArgs, RegressionMode, RenderStrategy,
+    BuildArgs, BuildContainerProfile, BuildStage, ContainerMode, DependencyPolicy,
+    GeneratePrioritySpecsArgs, MetadataAdapter, MissingDependencyPolicy, NamingProfile,
+    OutputSelection, ParallelPolicy, RegressionArgs, RegressionMode, RenderStrategy,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -320,6 +320,7 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
     let topdir = args.effective_topdir();
     let specs_dir = topdir.join("SPECS");
     let sources_dir = topdir.join("SOURCES");
+    let target_arch = args.effective_target_arch();
     let target_id = args.effective_target_id();
     let target_root = args.effective_target_root();
     let rpms_dir = target_root.join("RPMS");
@@ -340,6 +341,11 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
     fs::create_dir_all(&bad_spec_dir)
         .with_context(|| format!("creating bad spec dir {}", bad_spec_dir.display()))?;
     ensure_container_engine_available(&args.container_engine)?;
+    ensure_container_profile_available(
+        &args.container_engine,
+        args.container_profile,
+        &target_arch,
+    )?;
     sync_reference_python_specs(&specs_dir).context("syncing reference Phoreus Python specs")?;
 
     let mut tools = load_top_tools(&args.tools_csv, args.top_n)?;
@@ -352,8 +358,8 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
         target_root: target_root.clone(),
         reports_dir: reports_dir.clone(),
         container_engine: args.container_engine.clone(),
-        container_image: args.container_image.clone(),
-        target_arch: args.effective_target_arch(),
+        container_image: args.effective_container_image().to_string(),
+        target_arch: target_arch.clone(),
         parallel_policy: args.parallel_policy.clone(),
         build_jobs: args.effective_build_jobs(),
     };
@@ -453,6 +459,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     let topdir = args.effective_topdir();
     let specs_dir = topdir.join("SPECS");
     let sources_dir = topdir.join("SOURCES");
+    let target_arch = args.effective_target_arch();
     let target_id = args.effective_target_id();
     let target_root = args.effective_target_root();
     let rpms_dir = target_root.join("RPMS");
@@ -469,7 +476,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         topdir.display(),
         target_id,
         target_root.display(),
-        args.effective_target_arch(),
+        target_arch,
         args.deployment_profile,
         effective_metadata_adapter,
         args.parallel_policy,
@@ -495,6 +502,11 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         .with_context(|| format!("creating bad spec dir {}", bad_spec_dir.display()))?;
 
     ensure_container_engine_available(&args.container_engine)?;
+    ensure_container_profile_available(
+        &args.container_engine,
+        args.container_profile,
+        &target_arch,
+    )?;
     sync_reference_python_specs(&specs_dir).context("syncing reference Phoreus Python specs")?;
     let recipe_dirs = discover_recipe_dirs(&args.recipe_root)?;
     log_progress(format!(
@@ -509,8 +521,8 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         target_root: target_root.clone(),
         reports_dir: reports_dir.clone(),
         container_engine: args.container_engine.clone(),
-        container_image: args.container_image.clone(),
-        target_arch: args.effective_target_arch(),
+        container_image: args.effective_container_image().to_string(),
+        target_arch: target_arch.clone(),
         parallel_policy: args.parallel_policy.clone(),
         build_jobs: args.effective_build_jobs(),
     };
@@ -1238,19 +1250,22 @@ fn run_build_batch_queue(
 pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
     let campaign_started = Instant::now();
     let topdir = args.effective_topdir();
+    let target_arch = args.effective_target_arch();
     let target_id = args.effective_target_id();
     let target_root = args.effective_target_root();
     let reports_dir = args.effective_reports_dir();
     let bad_spec_dir = args.effective_bad_spec_dir();
     log_progress(format!(
-        "phase=regression-start mode={:?} recipe_root={} tools_csv={} topdir={} target_id={} target_root={} target_arch={} deployment_profile={:?} metadata_adapter={:?} parallel_policy={:?} build_jobs={} effective_build_jobs={}",
+        "phase=regression-start mode={:?} recipe_root={} tools_csv={} topdir={} target_id={} target_root={} target_arch={} container_profile={:?} container_image={} deployment_profile={:?} metadata_adapter={:?} parallel_policy={:?} build_jobs={} effective_build_jobs={}",
         args.mode,
         args.recipe_root.display(),
         args.tools_csv.display(),
         topdir.display(),
         target_id,
         target_root.display(),
-        args.effective_target_arch(),
+        target_arch,
+        args.container_profile,
+        args.effective_container_image(),
         args.deployment_profile,
         args.effective_metadata_adapter(),
         args.parallel_policy,
@@ -1264,6 +1279,11 @@ pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
     fs::create_dir_all(&bad_spec_dir)
         .with_context(|| format!("creating bad spec dir {}", bad_spec_dir.display()))?;
     ensure_container_engine_available(&args.container_engine)?;
+    ensure_container_profile_available(
+        &args.container_engine,
+        args.container_profile,
+        &target_arch,
+    )?;
 
     let all_tools = load_tools_csv_rows(&args.tools_csv)?;
     let selected_tools = if let Some(software_list_path) = args.software_list.as_ref() {
@@ -1332,7 +1352,7 @@ pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
             dependency_policy: args.dependency_policy.clone(),
             no_deps: args.no_deps,
             container_mode: ContainerMode::Ephemeral,
-            container_image: args.container_image.clone(),
+            container_profile: args.container_profile,
             container_engine: args.container_engine.clone(),
             parallel_policy: args.parallel_policy.clone(),
             build_jobs: args.build_jobs.clone(),
@@ -6530,6 +6550,113 @@ fn ensure_container_engine_available(engine: &str) -> Result<()> {
     } else {
         anyhow::bail!("container engine not found: {engine}");
     }
+}
+
+fn container_image_exists(engine: &str, image: &str) -> Result<bool> {
+    let status = Command::new(engine)
+        .arg("image")
+        .arg("inspect")
+        .arg(image)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("checking container image '{image}' via {engine}"))?;
+    Ok(status.success())
+}
+
+fn container_platform_for_arch(target_arch: &str) -> &'static str {
+    match target_arch {
+        "aarch64" => "linux/arm64",
+        "x86_64" => "linux/amd64",
+        _ => "linux/amd64",
+    }
+}
+
+fn ensure_container_profile_available(
+    engine: &str,
+    profile: BuildContainerProfile,
+    target_arch: &str,
+) -> Result<()> {
+    let image = profile.image();
+    if container_image_exists(engine, image)? {
+        log_progress(format!(
+            "phase=container-profile status=ready profile={:?} image={} source=local",
+            profile, image
+        ));
+        return Ok(());
+    }
+
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dockerfile = repo_root.join(profile.dockerfile_path());
+    if !dockerfile.exists() {
+        anyhow::bail!(
+            "container profile {:?} is configured but Dockerfile is missing: {}",
+            profile,
+            dockerfile.display()
+        );
+    }
+
+    let platform = container_platform_for_arch(target_arch);
+    let started = Instant::now();
+    log_progress(format!(
+        "phase=container-profile status=building profile={:?} image={} platform={} dockerfile={}",
+        profile,
+        image,
+        platform,
+        dockerfile.display()
+    ));
+    let output = Command::new(engine)
+        .arg("build")
+        .arg("--platform")
+        .arg(platform)
+        .arg("-t")
+        .arg(image)
+        .arg("-f")
+        .arg(&dockerfile)
+        .arg(&repo_root)
+        .output()
+        .with_context(|| {
+            format!(
+                "building container image {} from {} via {}",
+                image,
+                dockerfile.display(),
+                engine
+            )
+        })?;
+    if !output.status.success() {
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let detail = compact_reason(&tail_lines(&combined, 20), 320);
+        log_progress(format!(
+            "phase=container-profile status=failed profile={:?} image={} elapsed={} detail={}",
+            profile,
+            image,
+            format_elapsed(started.elapsed()),
+            detail
+        ));
+        anyhow::bail!(
+            "failed to build container image {} for profile {:?} (engine={} dockerfile={} platform={} exit={}) detail={}",
+            image,
+            profile,
+            engine,
+            dockerfile.display(),
+            platform,
+            output.status,
+            detail
+        );
+    }
+
+    log_progress(format!(
+        "phase=container-profile status=built profile={:?} image={} elapsed={} platform={}",
+        profile,
+        image,
+        format_elapsed(started.elapsed()),
+        platform
+    ));
+    Ok(())
 }
 
 fn build_spec_chain_in_container(
