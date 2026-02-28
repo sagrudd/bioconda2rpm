@@ -84,16 +84,31 @@ impl UiState {
         }
         if let Some(pkg) = kv.get("package") {
             self.seq = self.seq.saturating_add(1);
+            let phase = kv.get("phase").map(|s| s.as_str()).unwrap_or_default();
+            let action = kv.get("action").map(|s| s.as_str()).unwrap_or_default();
+            let inferred_status = match (phase, action) {
+                ("dependency", "scan") | ("dependency", "follow") => "queued",
+                ("dependency", "unresolved") => "blocked",
+                ("dependency", "skip") => "skipped",
+                ("dependency-plan", _) => "planned",
+                _ => "queued",
+            };
             let status = kv
                 .get("status")
                 .cloned()
-                .unwrap_or_else(|| "unknown".to_string());
+                .unwrap_or_else(|| inferred_status.to_string());
             let detail = kv
                 .get("reason")
                 .or_else(|| kv.get("elapsed"))
-                .or_else(|| kv.get("phase"))
                 .cloned()
-                .unwrap_or_default();
+                .unwrap_or_else(|| match (phase, action) {
+                    ("dependency", "scan") => "dependency-queue".to_string(),
+                    ("dependency", "follow") => "dependency-follow".to_string(),
+                    ("dependency", "unresolved") => "dependency-unresolved".to_string(),
+                    ("dependency", "skip") => "dependency-skip".to_string(),
+                    ("dependency-plan", _) => "dependency-plan".to_string(),
+                    _ => phase.to_string(),
+                });
             self.packages.insert(
                 pkg.clone(),
                 PackageState {
@@ -258,6 +273,8 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
             "up-to-date" => Style::default().fg(Color::LightGreen),
             "quarantined" => Style::default().fg(Color::Red),
             "skipped" => Style::default().fg(Color::Yellow),
+            "queued" | "planned" => Style::default().fg(Color::Blue),
+            "blocked" => Style::default().fg(Color::LightRed),
             "started" | "running" => Style::default().fg(Color::Cyan),
             _ => Style::default(),
         };
