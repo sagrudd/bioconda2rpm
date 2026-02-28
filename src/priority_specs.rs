@@ -1919,7 +1919,7 @@ fn parse_meta_for_resolved(
             Ok(parsed) => Ok(parsed),
             Err(err) => {
                 log_progress(format!(
-                    "phase=metadata-adapter status=fallback recipe={} from=conda to=native reason={}",
+                    "phase=metadata-adapter status=using-native recipe={} from=conda to=native note={}",
                     resolved.recipe_name,
                     compact_reason(&err.to_string(), 240)
                 ));
@@ -1974,11 +1974,10 @@ fn parse_meta_for_resolved_conda(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = summarize_conda_adapter_issue(output.status, &stdout, &stderr);
         anyhow::bail!(
-            "conda render adapter failed (status: {}) stdout={} stderr={}",
-            output.status,
-            compact_reason(&stdout, 200),
-            compact_reason(&stderr, 400)
+            "conda render adapter unavailable: {}",
+            compact_reason(&detail, 400)
         );
     }
 
@@ -2018,6 +2017,29 @@ fn parse_meta_for_resolved_conda(
         parsed,
         build_skip: adapter.build_skip,
     })
+}
+
+fn summarize_conda_adapter_issue(
+    status: std::process::ExitStatus,
+    stdout: &str,
+    stderr: &str,
+) -> String {
+    let stderr_compact = compact_reason(stderr, 300);
+    if stderr.contains("No module named 'conda_build'") {
+        return format!("status={} detail=missing_python_module_conda_build", status);
+    }
+    if stderr.contains("command not found") {
+        return format!("status={} detail=missing_conda_tooling", status);
+    }
+    if stderr.trim().is_empty() && stdout.trim().is_empty() {
+        return format!("status={} detail=no_adapter_output", status);
+    }
+    format!(
+        "status={} detail={} stdout={}",
+        status,
+        stderr_compact,
+        compact_reason(stdout, 200)
+    )
 }
 
 fn normalize_dep_specs_to_set(raw_specs: &[String]) -> BTreeSet<String> {
