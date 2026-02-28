@@ -3836,6 +3836,14 @@ fn should_keep_rpm_dependency_for_python(dep: &str) -> bool {
     !is_python_ecosystem_dependency_name(&normalized)
 }
 
+fn should_keep_rpm_dependency_for_r(dep: &str) -> bool {
+    let normalized = normalize_dependency_token(dep);
+    if !is_r_ecosystem_dependency_name(&normalized) {
+        return true;
+    }
+    is_r_base_dependency_name(&normalized)
+}
+
 fn is_python_dev_test_dependency_name(dep: &str) -> bool {
     let normalized = normalize_dependency_token(dep);
     matches!(
@@ -4548,6 +4556,7 @@ mkdir -p %{bioconda_source_subdir}\n"
             .iter()
             .filter(|dep| !is_conda_only_dependency(dep))
             .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
+            .filter(|dep| !r_project_recipe || should_keep_rpm_dependency_for_r(dep))
             .map(|d| map_build_dependency(d)),
     );
     build_requires.extend(
@@ -4556,6 +4565,7 @@ mkdir -p %{bioconda_source_subdir}\n"
             .iter()
             .filter(|dep| !is_conda_only_dependency(dep))
             .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
+            .filter(|dep| !r_project_recipe || should_keep_rpm_dependency_for_r(dep))
             .map(|d| map_build_dependency(d)),
     );
     if !python_recipe && !perl_recipe && !runtime_only_metapackage {
@@ -4567,6 +4577,7 @@ mkdir -p %{bioconda_source_subdir}\n"
                 .filter(|dep| {
                     !is_python_ecosystem_dependency_name(&normalize_dependency_token(dep))
                 })
+                .filter(|dep| !r_project_recipe || should_keep_rpm_dependency_for_r(dep))
                 .map(|d| map_build_dependency(d)),
         );
     }
@@ -4609,6 +4620,7 @@ mkdir -p %{bioconda_source_subdir}\n"
                 .run_deps
                 .iter()
                 .filter(|dep| !is_conda_only_dependency(dep))
+                .filter(|dep| !r_project_recipe || should_keep_rpm_dependency_for_r(dep))
                 .map(|d| map_runtime_dependency(d)),
         );
     }
@@ -8472,6 +8484,56 @@ requirements:
             map_runtime_dependency("r-base"),
             PHOREUS_R_PACKAGE.to_string()
         );
+    }
+
+    #[test]
+    fn r_project_payload_uses_phoreus_r_without_hard_r_rpm_requires() {
+        let parsed = ParsedMeta {
+            package_name: "r-restfulr".to_string(),
+            version: "0.0.16".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/restfulr_0.0.16.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/restfulr".to_string(),
+            license: "MIT".to_string(),
+            summary: "restfulr".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: vec!["r-base".to_string()],
+            host_dep_specs_raw: vec!["r-rcurl".to_string(), "r-yaml".to_string()],
+            run_dep_specs_raw: vec![
+                "r-rcurl".to_string(),
+                "r-rjson".to_string(),
+                "r-xml".to_string(),
+                "r-yaml".to_string(),
+            ],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::from(["r-rcurl".to_string(), "r-yaml".to_string()]),
+            run_deps: BTreeSet::from([
+                "r-rcurl".to_string(),
+                "r-rjson".to_string(),
+                "r-xml".to_string(),
+                "r-yaml".to_string(),
+            ]),
+        };
+
+        let spec = render_payload_spec(
+            "r-restfulr",
+            &parsed,
+            "bioconda-r-restfulr-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains(&format!("BuildRequires:  {}", PHOREUS_R_PACKAGE)));
+        assert!(spec.contains(&format!("Requires:  {}", PHOREUS_R_PACKAGE)));
+        assert!(!spec.contains("BuildRequires:  r-rcurl"));
+        assert!(!spec.contains("Requires:  r-rcurl"));
     }
 
     #[test]
