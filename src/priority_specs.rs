@@ -3325,6 +3325,10 @@ mkdir -p %{bioconda_source_subdir}\n"
         build_requires.remove("java-11-openjdk");
         build_requires.insert("java-21-openjdk-devel".to_string());
     }
+    if software_slug == "spades" {
+        // SPAdes pulls ncbi_vdb_ext via ExternalProject git clone at configure time.
+        build_requires.insert("git".to_string());
+    }
 
     let mut runtime_requires = BTreeSet::new();
     runtime_requires.insert("phoreus".to_string());
@@ -3515,6 +3519,7 @@ mkdir -p %{bioconda_source_subdir}\n"
     export CPPFLAGS=\"${{CPPFLAGS:-}}\"\n\
     export LDFLAGS=\"${{LDFLAGS:-}}\"\n\
     export AR=\"${{AR:-ar}}\"\n\
+    export STRIP=\"${{STRIP:-strip}}\"\n\
     \n\
     # Canonical Python toolchain for Phoreus builds: never rely on system Python.\n\
     export PHOREUS_PYTHON_PREFIX=/usr/local/phoreus/python/{phoreus_python_version}\n\
@@ -3545,6 +3550,20 @@ mkdir -p %{bioconda_source_subdir}\n"
     export PATH=\"/opt/rh/autoconf271/bin:$PATH\"\n\
     fi\n\
     \n\
+    # EL9 OpenMPI installs wrappers and pkg-config files in a non-default prefix.\n\
+    # Surface them so CMake/Autotools recipes can discover MPI consistently.\n\
+    if [[ -d /usr/lib64/openmpi/bin ]]; then\n\
+    export PATH=\"/usr/lib64/openmpi/bin:$PATH\"\n\
+    fi\n\
+    if [[ -d /usr/lib64/openmpi/include ]]; then\n\
+    export CPATH=\"/usr/lib64/openmpi/include${{CPATH:+:$CPATH}}\"\n\
+    fi\n\
+    if [[ -d /usr/lib64/openmpi/lib ]]; then\n\
+    export LIBRARY_PATH=\"/usr/lib64/openmpi/lib${{LIBRARY_PATH:+:$LIBRARY_PATH}}\"\n\
+    export LD_LIBRARY_PATH=\"/usr/lib64/openmpi/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n\
+    export PKG_CONFIG_PATH=\"/usr/lib64/openmpi/lib/pkgconfig${{PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}}\"\n\
+    fi\n\
+\n\
 # Make locally installed Phoreus Perl dependency trees visible during build.\n\
 if [[ -d /usr/local/phoreus ]]; then\n\
 while IFS= read -r -d '' perl_lib; do\n\
@@ -4520,6 +4539,7 @@ fn map_build_dependency(dep: &str) -> String {
         "ncurses" => "ncurses-devel".to_string(),
         "ninja" => "ninja-build".to_string(),
         "openssl" => "openssl-devel".to_string(),
+        "openmpi" => "openmpi-devel".to_string(),
         "llvmdev" => "llvm-devel".to_string(),
         "xz" => "xz-devel".to_string(),
         "zlib" => "zlib-devel".to_string(),
