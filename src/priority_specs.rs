@@ -120,6 +120,9 @@ struct PrecompiledBinaryOverride {
 const PHOREUS_PYTHON_VERSION: &str = "3.11";
 const PHOREUS_PYTHON_FULL_VERSION: &str = "3.11.14";
 const PHOREUS_PYTHON_PACKAGE: &str = "phoreus-python-3.11";
+const PHOREUS_PERL_VERSION: &str = "5.32";
+const PHOREUS_PERL_PACKAGE: &str = "phoreus-perl-5.32";
+static PHOREUS_PERL_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 const PHOREUS_R_VERSION: &str = "4.5.2";
 const PHOREUS_R_MINOR: &str = "4.5";
 const PHOREUS_R_PACKAGE: &str = "phoreus-r-4.5.2";
@@ -394,6 +397,8 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
     };
     ensure_phoreus_python_bootstrap(&build_config, &specs_dir)
         .context("bootstrapping Phoreus Python runtime")?;
+    ensure_phoreus_perl_bootstrap(&build_config, &specs_dir)
+        .context("bootstrapping Phoreus Perl runtime")?;
 
     let indexed_tools: Vec<(usize, PriorityTool)> = tools.into_iter().enumerate().collect();
     let worker_count = args.workers.filter(|w| *w > 0);
@@ -558,6 +563,8 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     };
     ensure_phoreus_python_bootstrap(&build_config, &specs_dir)
         .context("bootstrapping Phoreus Python runtime")?;
+    ensure_phoreus_perl_bootstrap(&build_config, &specs_dir)
+        .context("bootstrapping Phoreus Perl runtime")?;
 
     if requested_packages.len() > 1 {
         return run_build_batch_queue(
@@ -4449,6 +4456,37 @@ fn render_payload_spec(
         rust_runtime_required,
         nim_runtime_required,
     );
+    let phoreus_prefix_macro = if perl_recipe {
+        format!("/usr/local/phoreus/perl/{PHOREUS_PERL_VERSION}")
+    } else {
+        "/usr/local/phoreus/%{tool}/%{version}".to_string()
+    };
+    let module_prefix_path = if perl_recipe {
+        format!("/usr/local/phoreus/perl/{PHOREUS_PERL_VERSION}")
+    } else {
+        format!(
+            "/usr/local/phoreus/{software_slug}/{}",
+            spec_escape(&parsed.version)
+        )
+    };
+    let perl_runtime_setup = if perl_recipe {
+        format!(
+            "export PHOREUS_PERL_PREFIX=/usr/local/phoreus/perl/{version}\n\
+if [[ ! -d \"$PHOREUS_PERL_PREFIX/lib/perl5\" ]]; then\n\
+  echo \"missing Phoreus Perl runtime at $PHOREUS_PERL_PREFIX\" >&2\n\
+  exit 45\n\
+fi\n\
+export PERL5LIB=\"$PHOREUS_PERL_PREFIX/lib/perl5:$PHOREUS_PERL_PREFIX/lib64/perl5${{PERL5LIB:+:$PERL5LIB}}\"\n\
+export PERL_LOCAL_LIB_ROOT=\"$PHOREUS_PERL_PREFIX\"\n\
+export PERL_MM_OPT=\"${{PERL_MM_OPT:+$PERL_MM_OPT }}INSTALL_BASE=$PHOREUS_PERL_PREFIX\"\n\
+export PERL_MB_OPT=\"${{PERL_MB_OPT:+$PERL_MB_OPT }}--install_base $PHOREUS_PERL_PREFIX\"\n",
+            version = PHOREUS_PERL_VERSION
+        )
+    } else {
+        "export PERL_MM_OPT=\"${PERL_MM_OPT:+$PERL_MM_OPT }INSTALL_BASE=$PREFIX\"\n\
+export PERL_MB_OPT=\"${PERL_MB_OPT:+$PERL_MB_OPT }--install_base $PREFIX\"\n"
+            .to_string()
+    };
 
     let source_kind = source_archive_kind(&parsed.source_url);
     let git_source = parse_git_source_descriptor(&parsed.source_url);
@@ -4510,6 +4548,9 @@ mkdir -p %{bioconda_source_subdir}\n"
     if nim_runtime_required {
         build_requires.insert(PHOREUS_NIM_PACKAGE.to_string());
         build_requires.insert("git".to_string());
+    }
+    if perl_recipe {
+        build_requires.insert(PHOREUS_PERL_PACKAGE.to_string());
     }
     // HEURISTIC-TEMP(issue=HEUR-0003): monocle3 geospatial native stack mapping.
     if software_slug == "r-monocle3" {
@@ -4577,6 +4618,9 @@ mkdir -p %{bioconda_source_subdir}\n"
                 .map(|d| map_runtime_dependency(d)),
         );
     } else {
+        if perl_recipe {
+            runtime_requires.insert(PHOREUS_PERL_PACKAGE.to_string());
+        }
         if r_runtime_required {
             runtime_requires.insert(PHOREUS_R_PACKAGE.to_string());
         }
@@ -4643,7 +4687,7 @@ mkdir -p %{bioconda_source_subdir}\n"
     {patch_sources}\n\
     {build_requires}\n\
     {requires}\n\
-    %global phoreus_prefix /usr/local/phoreus/%{{tool}}/%{{version}}\n\
+    %global phoreus_prefix {phoreus_prefix}\n\
     %global phoreus_moddir /usr/local/phoreus/modules/%{{tool}}\n\
     \n\
     %description\n\
@@ -4787,8 +4831,7 @@ mkdir -p %{bioconda_source_subdir}\n"
     if [[ \"${{CONFIG_SITE:-}}\" == \"NONE\" ]]; then\n\
     unset CONFIG_SITE\n\
     fi\n\
-    export PERL_MM_OPT=\"${{PERL_MM_OPT:+$PERL_MM_OPT }}INSTALL_BASE=$PREFIX\"\n\
-    export PERL_MB_OPT=\"${{PERL_MB_OPT:+$PERL_MB_OPT }}--install_base $PREFIX\"\n\
+    {perl_runtime_setup}\
     \n\
     # Prefer Autoconf 2.71 toolchain when present (EL9 autoconf271 package).\n\
     if [[ -x /opt/rh/autoconf271/bin/autoconf ]]; then\n\
@@ -5114,7 +5157,7 @@ fi\n\
     whatis(\"Name: {tool}\")\n\
     whatis(\"Version: {version}\")\n\
     whatis(\"URL: {homepage}\")\n\
-    local prefix = \"/usr/local/phoreus/{tool}/{version}\"\n\
+    local prefix = \"{module_prefix_path}\"\n\
     {module_lua_env}\
     LUAEOF\n\
     chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
@@ -5131,6 +5174,7 @@ fi\n\
         source_subdir = spec_escape(&source_subdir),
         source_relsubdir = spec_escape(&source_relsubdir),
         source_git_macros = source_git_macros,
+        phoreus_prefix = phoreus_prefix_macro,
         summary = summary,
         license = license,
         homepage = homepage,
@@ -5151,9 +5195,11 @@ fi\n\
         conda_pkg_name = spec_escape(&parsed.package_name),
         conda_pkg_version = spec_escape(&parsed.version),
         conda_pkg_build_number = spec_escape(&parsed.build_number),
+        perl_runtime_setup = perl_runtime_setup,
         r_runtime_setup = r_runtime_setup,
         rust_runtime_setup = rust_runtime_setup,
         nim_runtime_setup = nim_runtime_setup,
+        module_prefix_path = module_prefix_path,
     )
 }
 
@@ -6033,6 +6079,34 @@ fn ensure_phoreus_python_bootstrap(build_config: &BuildConfig, specs_dir: &Path)
     Ok(())
 }
 
+fn ensure_phoreus_perl_bootstrap(build_config: &BuildConfig, specs_dir: &Path) -> Result<()> {
+    let lock = PHOREUS_PERL_BOOTSTRAP_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow::anyhow!("phoreus Perl bootstrap lock poisoned"))?;
+
+    if topdir_has_package_artifact(
+        &build_config.topdir,
+        &build_config.target_root,
+        PHOREUS_PERL_PACKAGE,
+    )? {
+        return Ok(());
+    }
+
+    let spec_name = format!("{PHOREUS_PERL_PACKAGE}.spec");
+    let spec_path = specs_dir.join(&spec_name);
+    let spec_body = render_phoreus_perl_bootstrap_spec();
+    fs::write(&spec_path, spec_body)
+        .with_context(|| format!("writing Perl bootstrap spec {}", spec_path.display()))?;
+    #[cfg(unix)]
+    fs::set_permissions(&spec_path, fs::Permissions::from_mode(0o644))
+        .with_context(|| format!("setting permissions on {}", spec_path.display()))?;
+
+    build_spec_chain_in_container(build_config, &spec_path, PHOREUS_PERL_PACKAGE)
+        .with_context(|| format!("building bootstrap package {}", PHOREUS_PERL_PACKAGE))?;
+    Ok(())
+}
+
 fn ensure_phoreus_r_bootstrap(build_config: &BuildConfig, specs_dir: &Path) -> Result<()> {
     let lock = PHOREUS_R_BOOTSTRAP_LOCK.get_or_init(|| Mutex::new(()));
     let _guard = lock
@@ -6192,6 +6266,62 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{py_minor}}.lua\n\
         py_minor = PHOREUS_PYTHON_VERSION,
         package = PHOREUS_PYTHON_PACKAGE,
         version = PHOREUS_PYTHON_FULL_VERSION,
+    )
+}
+
+fn render_phoreus_perl_bootstrap_spec() -> String {
+    format!(
+        "%global debug_package %{{nil}}\n\
+\n\
+Name:           {package}\n\
+Version:        {version}\n\
+Release:        1%{{?dist}}\n\
+Summary:        Phoreus Perl shared runtime prefix\n\
+License:        GPL-1.0-or-later OR Artistic-1.0-Perl\n\
+URL:            https://www.perl.org/\n\
+\n\
+BuildArch:      noarch\n\
+Requires:       phoreus\n\
+Requires:       perl\n\
+\n\
+%global phoreus_tool perl\n\
+%global phoreus_prefix /usr/local/phoreus/%{{phoreus_tool}}/{version}\n\
+%global phoreus_moddir /usr/local/phoreus/modules/%{{phoreus_tool}}\n\
+\n\
+%description\n\
+Shared Perl runtime prefix for Phoreus Perl module payloads.\n\
+\n\
+%prep\n\
+\n\
+%build\n\
+\n\
+%install\n\
+rm -rf %{{buildroot}}\n\
+install -d %{{buildroot}}%{{phoreus_prefix}}/lib/perl5\n\
+install -d %{{buildroot}}%{{phoreus_prefix}}/lib64/perl5\n\
+install -d %{{buildroot}}%{{phoreus_moddir}}\n\
+cat > %{{buildroot}}%{{phoreus_moddir}}/{version}.lua <<'LUAEOF'\n\
+help([[ Phoreus Perl {version} runtime module ]])\n\
+whatis(\"Name: perl\")\n\
+whatis(\"Version: {version}\")\n\
+local prefix = \"/usr/local/phoreus/perl/{version}\"\n\
+prepend_path(\"PERL5LIB\", pathJoin(prefix, \"lib/perl5\"))\n\
+prepend_path(\"PERL5LIB\", pathJoin(prefix, \"lib64/perl5\"))\n\
+setenv(\"PERL_LOCAL_LIB_ROOT\", prefix)\n\
+setenv(\"PERL_MB_OPT\", \"--install_base \" .. prefix)\n\
+setenv(\"PERL_MM_OPT\", \"INSTALL_BASE=\" .. prefix)\n\
+LUAEOF\n\
+chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/{version}.lua\n\
+\n\
+%files\n\
+%{{phoreus_prefix}}/\n\
+%{{phoreus_moddir}}/{version}.lua\n\
+\n\
+%changelog\n\
+* Thu Feb 26 2026 Phoreus Builder <packaging@phoreus.local> - {version}-1\n\
+- Initialize shared Perl runtime prefix for Phoreus module payloads\n",
+        package = PHOREUS_PERL_PACKAGE,
+        version = PHOREUS_PERL_VERSION,
     )
 }
 
@@ -6490,26 +6620,14 @@ fn map_perl_core_dependency(dep: &str) -> Option<String> {
         "perl-exporter" => "perl-Exporter",
         "perl-file-path" => "perl-File-Path",
         "perl-file-temp" => "perl-File-Temp",
-        "perl-module-build" => "perl-Module-Build",
         "perl-autoloader" => "perl-AutoLoader",
         "perl-pathtools" => "perl-PathTools",
-        "perl-test" => "perl-Test",
-        "perl-test-harness" => "perl-Test-Harness",
-        "perl-test-nowarnings" => "perl-Test-NoWarnings",
-        "perl-test-simple" => "perl-Test-Simple",
-        "perl-number-compare" => "perl-Number-Compare",
         "perl-module-load" => "perl-Module-Load",
         "perl-params-check" => "perl-Params-Check",
-        "perl-test-more" => "perl-Test-Simple",
         "perl-storable" => "perl-Storable",
         "perl-encode" => "perl-Encode",
-        "perl-exporter-tiny" => "perl-Exporter-Tiny",
-        "perl-test-leaktrace" => "perl-Test-LeakTrace",
-        "perl-canary-stability" => "perl-Canary-Stability",
-        "perl-types-serialiser" => "perl-Types-Serialiser",
         "perl-data-dumper" => "perl-Data-Dumper",
         "perl-xml-parser" => "perl-XML-Parser",
-        "perl-importer" => "perl-Importer",
         _ => return None,
     };
     Some(mapped.to_string())
@@ -7914,20 +8032,20 @@ mod tests {
         );
         assert_eq!(
             map_build_dependency("perl-canary-stability"),
-            "perl-Canary-Stability".to_string()
+            "perl-canary-stability".to_string()
         );
         assert_eq!(
             map_build_dependency("perl-types-serialiser"),
-            "perl-Types-Serialiser".to_string()
+            "perl-types-serialiser".to_string()
         );
         assert_eq!(
             map_build_dependency("perl-autoloader"),
             "perl-AutoLoader".to_string()
         );
-        assert_eq!(map_build_dependency("perl-test"), "perl-Test".to_string());
+        assert_eq!(map_build_dependency("perl-test"), "perl-test".to_string());
         assert_eq!(
             map_build_dependency("perl-test-nowarnings"),
-            "perl-Test-NoWarnings".to_string()
+            "perl-test-nowarnings".to_string()
         );
         assert_eq!(
             map_build_dependency("python"),
@@ -8411,6 +8529,16 @@ requirements:
         ));
         assert!(spec.contains("BuildRequires:  openssl-devel"));
         assert!(spec.contains("BuildRequires:  sqlite-devel"));
+    }
+
+    #[test]
+    fn phoreus_perl_bootstrap_spec_is_rendered_with_expected_name() {
+        let spec = render_phoreus_perl_bootstrap_spec();
+        assert!(spec.contains("Name:           phoreus-perl-5.32"));
+        assert!(spec.contains("Version:        5.32"));
+        assert!(spec.contains("Requires:       phoreus"));
+        assert!(spec.contains("Requires:       perl"));
+        assert!(spec.contains("%{phoreus_prefix}/lib/perl5"));
     }
 
     #[test]
@@ -8953,7 +9081,7 @@ requirements:
             false,
         );
         assert!(!spec.contains("BuildRequires:  perl-Number-Compare"));
-        assert!(spec.contains("Requires:  perl-Number-Compare"));
+        assert!(spec.contains("Requires:  perl-number-compare"));
     }
 
     #[test]
@@ -9009,7 +9137,7 @@ requirements:
         );
         assert!(spec.contains("BuildRequires:  perl"));
         assert!(spec.contains("BuildRequires:  perl-ExtUtils-MakeMaker"));
-        assert!(spec.contains("BuildRequires:  perl-Number-Compare"));
+        assert!(spec.contains("BuildRequires:  perl-number-compare"));
         assert!(spec.contains("BuildRequires:  perl-text-glob"));
         assert!(spec.contains("lib64/perl5"));
     }
