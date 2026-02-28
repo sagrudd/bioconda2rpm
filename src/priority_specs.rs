@@ -132,11 +132,43 @@ const PHOREUS_NIM_SERIES: &str = "2.2";
 const PHOREUS_NIM_PACKAGE: &str = "phoreus-nim-2.2";
 static PHOREUS_NIM_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static BUILD_STABILITY_CACHE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+type ProgressSink = Arc<dyn Fn(String) + Send + Sync + 'static>;
+static PROGRESS_SINK: OnceLock<Mutex<Option<ProgressSink>>> = OnceLock::new();
 const CONDA_RENDER_ADAPTER_SCRIPT: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/conda_render_ir.py");
 
 fn log_progress(message: impl AsRef<str>) {
-    println!("progress {}", message.as_ref());
+    emit_progress_line(format!("progress {}", message.as_ref()));
+}
+
+fn emit_progress_line(line: String) {
+    let lock = PROGRESS_SINK.get_or_init(|| Mutex::new(None));
+    match lock.lock() {
+        Ok(guard) => {
+            if let Some(sink) = guard.as_ref() {
+                sink(line);
+            } else {
+                println!("{line}");
+            }
+        }
+        Err(_) => {
+            println!("{line}");
+        }
+    }
+}
+
+pub fn install_progress_sink(sink: Arc<dyn Fn(String) + Send + Sync + 'static>) {
+    let lock = PROGRESS_SINK.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = lock.lock() {
+        *guard = Some(sink);
+    }
+}
+
+pub fn clear_progress_sink() {
+    let lock = PROGRESS_SINK.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = lock.lock() {
+        *guard = None;
+    }
 }
 
 fn format_elapsed(elapsed: Duration) -> String {
@@ -1315,6 +1347,7 @@ pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
             outputs: OutputSelection::All,
             packages_file: None,
             packages: vec![tool.software.clone()],
+            ui: crate::cli::UiMode::Plain,
             queue_workers: None,
             phoreus_local_repo: Vec::new(),
             phoreus_core_repo: Vec::new(),

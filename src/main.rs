@@ -1,5 +1,6 @@
 mod cli;
 mod priority_specs;
+mod ui;
 
 use clap::Parser;
 use std::fs;
@@ -28,8 +29,39 @@ fn main() -> ExitCode {
                 eprintln!("failed to prepare workspace directories: {err}");
                 return ExitCode::FAILURE;
             }
-            println!("{}", args.execution_summary());
-            match priority_specs::run_build(&args) {
+            let ui_mode = args.effective_ui_mode();
+            let mut progress_ui = if ui_mode == cli::UiMode::Ratatui {
+                let title = format!("bioconda2rpm build ({})", args.effective_target_id());
+                let ui = ui::ProgressUi::start(title);
+                priority_specs::install_progress_sink(ui.sink());
+                Some(ui)
+            } else {
+                None
+            };
+            if progress_ui.is_none() {
+                println!("{}", args.execution_summary());
+            }
+
+            let outcome = priority_specs::run_build(&args);
+            priority_specs::clear_progress_sink();
+
+            if let Some(ui) = progress_ui.take() {
+                let summary = match &outcome {
+                    Ok(summary) => format!(
+                        "build completed requested={} generated={} up_to_date={} skipped={} quarantined={} kpi={:.2}%",
+                        summary.requested,
+                        summary.generated,
+                        summary.up_to_date,
+                        summary.skipped,
+                        summary.quarantined,
+                        summary.kpi_success_rate
+                    ),
+                    Err(err) => format!("build failed: {}", err),
+                };
+                ui.finish(summary);
+            }
+
+            match outcome {
                 Ok(summary) => {
                     println!(
                         "build requested={} generated={} up_to_date={} skipped={} quarantined={} kpi_scope_entries={} kpi_excluded_arch={} kpi_denominator={} kpi_successes={} kpi_success_rate={:.2}% order={} report_json={} report_csv={} report_md={}",

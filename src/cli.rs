@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::env;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -106,6 +107,13 @@ pub enum OutputSelection {
     All,
 }
 
+#[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
+pub enum UiMode {
+    Plain,
+    Ratatui,
+    Auto,
+}
+
 #[derive(Debug, clap::Args)]
 pub struct BuildArgs {
     /// Root directory containing Bioconda recipes.
@@ -201,6 +209,10 @@ pub struct BuildArgs {
     /// How to handle recipes with outputs: sections.
     #[arg(long, value_enum, default_value_t = OutputSelection::All)]
     pub outputs: OutputSelection,
+
+    /// Console UI mode for build progress.
+    #[arg(long, value_enum, default_value_t = UiMode::Auto)]
+    pub ui: UiMode,
 
     /// Optional newline-delimited packages file (supports `#` comments).
     #[arg(long)]
@@ -478,6 +490,20 @@ impl BuildArgs {
         (host / per_job).max(1)
     }
 
+    pub fn effective_ui_mode(&self) -> UiMode {
+        match self.ui {
+            UiMode::Plain => UiMode::Plain,
+            UiMode::Ratatui => UiMode::Ratatui,
+            UiMode::Auto => {
+                if std::io::stdout().is_terminal() {
+                    UiMode::Ratatui
+                } else {
+                    UiMode::Plain
+                }
+            }
+        }
+    }
+
     pub fn effective_metadata_adapter(&self) -> MetadataAdapter {
         match self.deployment_profile {
             DeploymentProfile::Development => self.metadata_adapter.clone(),
@@ -491,7 +517,7 @@ impl BuildArgs {
 
     pub fn execution_summary(&self) -> String {
         format!(
-            "build requested_packages={requested_packages} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} target_id={target_id} target_root={target_root} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} parallel_policy={parallel_policy:?} build_jobs={build_jobs} effective_build_jobs={effective_build_jobs} queue_workers={queue_workers} effective_queue_workers={effective_queue_workers} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
+            "build requested_packages={requested_packages} stage={stage:?} with_deps={deps} policy={policy:?} recipe_root={recipes} topdir={topdir} target_id={target_id} target_root={target_root} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_image={container_image} container_engine={container_engine} parallel_policy={parallel_policy:?} build_jobs={build_jobs} effective_build_jobs={effective_build_jobs} queue_workers={queue_workers} effective_queue_workers={effective_queue_workers} ui={ui:?} effective_ui={effective_ui:?} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
             requested_packages = self.packages.len(),
             stage = self.stage,
             deps = self.with_deps(),
@@ -513,6 +539,8 @@ impl BuildArgs {
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "auto".to_string()),
             effective_queue_workers = self.effective_queue_workers(),
+            ui = self.ui,
+            effective_ui = self.effective_ui_mode(),
             arch = self.arch,
             target_arch = self.effective_target_arch(),
             deployment_profile = self.deployment_profile,
@@ -662,6 +690,7 @@ mod tests {
         assert!(!args.effective_kpi_gate());
         assert_eq!(args.kpi_min_success_rate, 99.0);
         assert_eq!(args.outputs, OutputSelection::All);
+        assert_eq!(args.ui, UiMode::Auto);
         assert!(args.effective_topdir().ends_with("bioconda2rpm"));
         assert!(
             args.effective_target_root()
@@ -738,6 +767,8 @@ mod tests {
             "99.5",
             "--reports-dir",
             "/reports",
+            "--ui",
+            "plain",
         ])
         .expect("build overrides should parse");
 
@@ -760,6 +791,8 @@ mod tests {
         assert_eq!(args.kpi_min_success_rate, 99.5);
         assert_eq!(args.effective_topdir(), PathBuf::from("/rpmbuild"));
         assert_eq!(args.effective_reports_dir(), PathBuf::from("/reports"));
+        assert_eq!(args.ui, UiMode::Plain);
+        assert_eq!(args.effective_ui_mode(), UiMode::Plain);
     }
 
     #[test]
