@@ -5848,7 +5848,7 @@ fn map_build_dependency(dep: &str) -> String {
             return normalized;
         }
         if normalized.starts_with("r-") {
-            return PHOREUS_R_PACKAGE.to_string();
+            return normalized;
         }
         return PHOREUS_R_PACKAGE.to_string();
     }
@@ -5926,7 +5926,7 @@ fn map_runtime_dependency(dep: &str) -> String {
             return normalized;
         }
         if normalized.starts_with("r-") {
-            return PHOREUS_R_PACKAGE.to_string();
+            return normalized;
         }
         return PHOREUS_R_PACKAGE.to_string();
     }
@@ -8461,19 +8461,13 @@ requirements:
     }
 
     #[test]
-    fn r_dependencies_map_to_phoreus_r_runtime() {
-        assert_eq!(
-            map_build_dependency("r-ggplot2"),
-            PHOREUS_R_PACKAGE.to_string()
-        );
+    fn r_dependencies_map_to_explicit_r_packages() {
+        assert_eq!(map_build_dependency("r-ggplot2"), "r-ggplot2".to_string());
         assert_eq!(
             map_runtime_dependency("bioconductor-limma"),
             "bioconductor-limma".to_string()
         );
-        assert_eq!(
-            map_runtime_dependency("r-ggplot2"),
-            PHOREUS_R_PACKAGE.to_string()
-        );
+        assert_eq!(map_runtime_dependency("r-ggplot2"), "r-ggplot2".to_string());
         assert_eq!(
             map_runtime_dependency("r-base"),
             PHOREUS_R_PACKAGE.to_string()
@@ -8852,7 +8846,7 @@ requirements:
         assert!(spec.contains(&format!("Requires:  {}", PHOREUS_R_PACKAGE)));
         assert!(spec.contains("export R=\"$PHOREUS_R_PREFIX/bin/R\""));
         assert!(spec.contains("export R_LIBS_SITE=\"$R_LIBS\""));
-        assert!(!spec.contains("r-ggplot2"));
+        assert!(spec.contains("Requires:  r-ggplot2"));
     }
 
     #[test]
