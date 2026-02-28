@@ -3854,13 +3854,12 @@ fn should_keep_rpm_dependency_for_r(dep: &str) -> bool {
     if is_r_base_dependency_name(&normalized) {
         return true;
     }
-    // Keep Bioconductor packages as hard RPM deps so locally-built BioC
-    // payloads are installed into the buildroot before R CMD INSTALL runs.
-    if normalized.starts_with("bioconductor-") {
+    // Keep all non-base R ecosystem dependencies as hard RPM deps so the DAG
+    // scheduler resolves/builds them before payload install.
+    if normalized.starts_with("bioconductor-") || normalized.starts_with("r-") {
         return true;
     }
-    // Non-base CRAN deps are restored via the Phoreus R dependency script.
-    false
+    true
 }
 
 fn should_keep_rpm_dependency_for_perl(dep: &str) -> bool {
@@ -8760,7 +8759,7 @@ requirements:
     }
 
     #[test]
-    fn r_project_payload_uses_phoreus_r_without_hard_r_rpm_requires() {
+    fn r_project_payload_keeps_cran_rpm_dependencies() {
         let parsed = ParsedMeta {
             package_name: "r-restfulr".to_string(),
             version: "0.0.16".to_string(),
@@ -8805,8 +8804,8 @@ requirements:
         );
         assert!(spec.contains(&format!("BuildRequires:  {}", PHOREUS_R_PACKAGE)));
         assert!(spec.contains(&format!("Requires:  {}", PHOREUS_R_PACKAGE)));
-        assert!(!spec.contains("BuildRequires:  r-rcurl"));
-        assert!(!spec.contains("Requires:  r-rcurl"));
+        assert!(spec.contains("BuildRequires:  r-rcurl"));
+        assert!(spec.contains("Requires:  r-rcurl"));
     }
 
     #[test]
