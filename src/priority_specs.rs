@@ -3530,7 +3530,8 @@ fn build_r_cran_requirements(parsed: &ParsedMeta) -> Vec<String> {
 }
 
 fn canonical_r_package_name(name: &str) -> String {
-    match name.trim().to_lowercase().as_str() {
+    let normalized = name.trim().to_lowercase().replace('-', ".");
+    match normalized.as_str() {
         "rcurl" => "RCurl".to_string(),
         "xml" => "XML".to_string(),
         other => other.to_string(),
@@ -8623,6 +8624,10 @@ requirements:
         assert_eq!(canonical_r_package_name("rcurl"), "RCurl".to_string());
         assert_eq!(canonical_r_package_name("xml"), "XML".to_string());
         assert_eq!(canonical_r_package_name("httr"), "httr".to_string());
+        assert_eq!(
+            canonical_r_package_name("futile-logger"),
+            "futile.logger".to_string()
+        );
     }
 
     #[test]
