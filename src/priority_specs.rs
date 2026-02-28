@@ -677,6 +677,13 @@ fn visit_build_plan_node(
                 ));
                 continue;
             }
+            if normalize_dependency_token(&dep) == "k8" {
+                log_progress(format!(
+                    "phase=dependency action=skip from={} to={} reason=core-runtime-alias-nodejs",
+                    canonical, dep
+                ));
+                continue;
+            }
             if is_rust_ecosystem_dependency_name(&dep) {
                 log_progress(format!(
                     "phase=dependency action=skip from={} to={} reason=rust-runtime-provided",
@@ -1672,7 +1679,9 @@ fn resolve_recipe_for_tool_mode(
         return build_resolved(recipe, "plus-normalization-match");
     }
 
-    if let Some(recipe) = select_fallback_recipe(&lower, recipe_dirs) {
+    if allow_identifier_lookup
+        && let Some(recipe) = select_fallback_recipe(&lower, recipe_dirs)
+    {
         return build_resolved(recipe, "fallback-directory-match");
     }
 
@@ -4541,6 +4550,7 @@ fn map_build_dependency(dep: &str) -> String {
         "openssl" => "openssl-devel".to_string(),
         "openmpi" => "openmpi-devel".to_string(),
         "llvmdev" => "llvm-devel".to_string(),
+        "xorg-libxfixes" => "libXfixes-devel".to_string(),
         "xz" => "xz-devel".to_string(),
         "zlib" => "zlib-devel".to_string(),
         "zstd" => "libzstd-devel".to_string(),
@@ -4578,6 +4588,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         return "gsl".to_string();
     }
     match dep {
+        "k8" => "nodejs".to_string(),
         "boost-cpp" => "boost".to_string(),
         "biopython" => "python3-biopython".to_string(),
         "cereal" => "cereal-devel".to_string(),
@@ -4595,6 +4606,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "liblapack" => "lapack".to_string(),
         "llvmdev" => "llvm".to_string(),
         "ninja" => "ninja-build".to_string(),
+        "xorg-libxfixes" => "libXfixes".to_string(),
         other => other.to_string(),
     }
 }
@@ -5996,6 +6008,10 @@ mod tests {
         assert_eq!(map_build_dependency("zlib"), "zlib-devel".to_string());
         assert_eq!(map_build_dependency("openssl"), "openssl-devel".to_string());
         assert_eq!(map_build_dependency("bzip2"), "bzip2-devel".to_string());
+        assert_eq!(
+            map_build_dependency("xorg-libxfixes"),
+            "libXfixes-devel".to_string()
+        );
         assert_eq!(map_build_dependency("isa-l"), "isa-l-devel".to_string());
         assert_eq!(map_build_dependency("xz"), "xz-devel".to_string());
         assert_eq!(map_build_dependency("libcurl"), "libcurl-devel".to_string());
@@ -6039,12 +6055,17 @@ mod tests {
         );
         assert_eq!(map_runtime_dependency("ninja"), "ninja-build".to_string());
         assert_eq!(map_runtime_dependency("cereal"), "cereal-devel".to_string());
+        assert_eq!(map_runtime_dependency("k8"), "nodejs".to_string());
         assert_eq!(map_runtime_dependency("gnuconfig"), "automake".to_string());
         assert_eq!(map_runtime_dependency("libblas"), "openblas".to_string());
         assert_eq!(map_runtime_dependency("libiconv"), "glibc".to_string());
         assert_eq!(map_runtime_dependency("glib"), "glib2".to_string());
         assert_eq!(map_runtime_dependency("liblapack"), "lapack".to_string());
         assert_eq!(map_runtime_dependency("liblzma-devel"), "xz".to_string());
+        assert_eq!(
+            map_runtime_dependency("xorg-libxfixes"),
+            "libXfixes".to_string()
+        );
         assert_eq!(
             map_build_dependency("perl-canary-stability"),
             "perl-Canary-Stability".to_string()
@@ -6930,6 +6951,49 @@ requirements:
         assert!(!spec.contains("BuildRequires:  java-11-openjdk"));
         assert!(spec.contains("Requires:  java-21-openjdk"));
         assert!(spec.contains("export ORG_GRADLE_JAVA_HOME=\"$JAVA_HOME\""));
+    }
+
+    #[test]
+    fn canu_payload_keeps_boost_runtime_contract() {
+        let mut host_deps = BTreeSet::new();
+        host_deps.insert("boost-cpp".to_string());
+        let mut run_deps = BTreeSet::new();
+        run_deps.insert("boost-cpp".to_string());
+
+        let parsed = ParsedMeta {
+            package_name: "canu".to_string(),
+            version: "2.3".to_string(),
+            build_number: "2".to_string(),
+            source_url: "https://example.invalid/canu-2.3.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://github.com/marbl/canu".to_string(),
+            license: "GPL-2.0-or-later".to_string(),
+            summary: "Canu".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("make -j${CPU_COUNT}".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["boost-cpp".to_string()],
+            run_dep_specs_raw: vec!["boost-cpp".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps,
+            run_deps,
+        };
+
+        let spec = render_payload_spec(
+            "canu",
+            &parsed,
+            "bioconda-canu-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains("BuildRequires:  boost-devel"));
+        assert!(spec.contains("Requires:  boost"));
     }
 
     #[test]
