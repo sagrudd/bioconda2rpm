@@ -362,7 +362,10 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
             .then_with(|| b.1.seq.cmp(&a.1.seq))
             .then_with(|| a.0.cmp(&b.0))
     });
-    rows.truncate(12);
+    // Fit visible rows to current terminal height instead of a fixed cap.
+    // Table has: top border + header + bottom border.
+    let visible_capacity = chunks[2].height.saturating_sub(3) as usize;
+    rows.truncate(visible_capacity.max(1));
     let table_rows = rows.into_iter().map(|(pkg, ps)| {
         let style = match ps.status.as_str() {
             "generated" => Style::default().fg(Color::Green),
