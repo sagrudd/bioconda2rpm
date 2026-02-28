@@ -3864,12 +3864,15 @@ fn should_keep_rpm_dependency_for_r(dep: &str) -> bool {
 
 fn should_keep_rpm_dependency_for_perl(dep: &str) -> bool {
     let normalized = normalize_dependency_token(dep);
-    if !normalized.starts_with("perl-") {
-        return true;
-    }
     // Perl test-only modules frequently appear in Bioconda host/test deps but
     // should not hard-block RPM payload builds when upstream tests are not run.
-    !(normalized == "perl-test" || normalized.starts_with("perl-test-"))
+    if normalized == "perl-test" || normalized.starts_with("perl-test-") {
+        return false;
+    }
+    if normalized.starts_with("perl(test") {
+        return false;
+    }
+    true
 }
 
 fn is_python_dev_test_dependency_name(dep: &str) -> bool {
@@ -4589,8 +4592,8 @@ mkdir -p %{bioconda_source_subdir}\n"
             .filter(|dep| !is_conda_only_dependency(dep))
             .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
             .filter(|dep| !r_project_recipe || should_keep_rpm_dependency_for_r(dep))
-            .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep))
-            .map(|d| map_build_dependency(d)),
+            .map(|d| map_build_dependency(d))
+            .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep)),
     );
     build_requires.extend(
         parsed
@@ -4599,8 +4602,8 @@ mkdir -p %{bioconda_source_subdir}\n"
             .filter(|dep| !is_conda_only_dependency(dep))
             .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
             .filter(|dep| !r_project_recipe || should_keep_rpm_dependency_for_r(dep))
-            .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep))
-            .map(|d| map_build_dependency(d)),
+            .map(|d| map_build_dependency(d))
+            .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep)),
     );
     if !python_recipe && !perl_recipe && !runtime_only_metapackage {
         build_requires.extend(
@@ -4655,8 +4658,8 @@ mkdir -p %{bioconda_source_subdir}\n"
                 .iter()
                 .filter(|dep| !is_conda_only_dependency(dep))
                 .filter(|dep| !r_project_recipe || should_keep_rpm_dependency_for_r(dep))
-                .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep))
-                .map(|d| map_runtime_dependency(d)),
+                .map(|d| map_runtime_dependency(d))
+                .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep)),
         );
     }
     // HEURISTIC-TEMP(issue=HEUR-0006): IGV runtime also requires Java 21.
@@ -5467,28 +5470,42 @@ if (!requireNamespace(\"BiocManager\", quietly = TRUE)) {{\n\
 }}\n\
 repos <- tryCatch(BiocManager::repositories(), error = function(e) c(CRAN = \"https://cloud.r-project.org\"))\n\
 avail <- tryCatch(rownames(available.packages(repos = repos)), error = function(e) character())\n\
+normalize_pkg_key <- function(pkg) {{\n\
+  tolower(gsub(\"[-_]\", \".\", pkg))\n\
+}}\n\
 resolve_case <- function(pkg) {{\n\
   if (!length(avail)) return(pkg)\n\
+  key <- normalize_pkg_key(pkg)\n\
   if (pkg %in% avail) return(pkg)\n\
-  hit <- avail[tolower(avail) == tolower(pkg)]\n\
+  hit <- avail[normalize_pkg_key(avail) == key]\n\
   if (length(hit)) return(hit[[1]])\n\
   pkg\n\
 }}\n\
 resolved <- unique(vapply(req, resolve_case, character(1)))\n\
 canonicalize <- function(pkg) {{\n\
+  pkg <- gsub(\"[-_]\", \".\", pkg)\n\
   key <- tolower(pkg)\n\
   if (identical(key, \"rcurl\")) return(\"RCurl\")\n\
   if (identical(key, \"xml\")) return(\"XML\")\n\
   pkg\n\
 }}\n\
 resolved <- unique(vapply(resolved, canonicalize, character(1)))\n\
+dependency_diff <- function(expected, installed) {{\n\
+  if (!length(expected)) return(character())\n\
+  if (!length(installed)) return(expected)\n\
+  installed_keys <- normalize_pkg_key(installed)\n\
+  keep <- vapply(expected, function(pkg) {{\n\
+    !(normalize_pkg_key(pkg) %in% installed_keys)\n\
+  }}, logical(1))\n\
+  expected[keep]\n\
+}}\n\
 installed <- rownames(installed.packages(lib.loc = unique(c(.libPaths(), lib))))\n\
-missing <- setdiff(resolved, installed)\n\
+missing <- dependency_diff(resolved, installed)\n\
 if (length(missing)) {{\n\
   BiocManager::install(missing, ask = FALSE, update = FALSE, lib = lib, Ncpus = 1)\n\
 }}\n\
 installed_after <- rownames(installed.packages(lib.loc = unique(c(.libPaths(), lib))))\n\
-still_missing <- setdiff(resolved, installed_after)\n\
+still_missing <- dependency_diff(resolved, installed_after)\n\
 install_from_cran_archive <- function(pkg, lib) {{\n\
   archive_url <- sprintf(\"https://cran.r-project.org/src/contrib/Archive/%s/\", pkg)\n\
   idx <- tryCatch(suppressWarnings(readLines(archive_url, warn = FALSE)), error = function(e) character())\n\
@@ -5509,14 +5526,14 @@ if (length(still_missing)) {{\n\
     try(install.packages(pkg, repos = \"https://cloud.r-project.org\", lib = lib), silent = TRUE)\n\
   }}\n\
   installed_after <- rownames(installed.packages(lib.loc = unique(c(.libPaths(), lib))))\n\
-  still_missing <- setdiff(resolved, installed_after)\n\
+  still_missing <- dependency_diff(resolved, installed_after)\n\
 }}\n\
 if (length(still_missing)) {{\n\
   for (pkg in still_missing) {{\n\
     try(install_from_cran_archive(pkg, lib), silent = TRUE)\n\
   }}\n\
   installed_after <- rownames(installed.packages(lib.loc = unique(c(.libPaths(), lib))))\n\
-  still_missing <- setdiff(resolved, installed_after)\n\
+  still_missing <- dependency_diff(resolved, installed_after)\n\
 }}\n\
 if (length(still_missing)) {{\n\
   message(\"bioconda2rpm unresolved R deps after restore: \", paste(still_missing, collapse = \",\"))\n\
@@ -5948,6 +5965,7 @@ fn map_build_dependency(dep: &str) -> String {
         "gnuconfig" => "automake".to_string(),
         "isa-l" => "isa-l-devel".to_string(),
         "jansson" => "jansson-devel".to_string(),
+        "jsoncpp" => "jsoncpp-devel".to_string(),
         "libcurl" => "libcurl-devel".to_string(),
         "libgd" => "gd-devel".to_string(),
         "libblas" => "openblas-devel".to_string(),
@@ -6024,6 +6042,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "mscorefonts" => "dejavu-sans-fonts".to_string(),
         "glib" => "glib2".to_string(),
         "gnuconfig" => "automake".to_string(),
+        "jsoncpp" => "jsoncpp".to_string(),
         "libblas" => "openblas".to_string(),
         "libhwy" => "highway".to_string(),
         "libiconv" => "glibc".to_string(),
@@ -6671,10 +6690,13 @@ fn map_perl_core_dependency(dep: &str) -> Option<String> {
         "perl-file-path" => "perl-File-Path",
         "perl-file-temp" => "perl-File-Temp",
         "perl-autoloader" => "perl-AutoLoader",
+        "perl-base" => "perl",
         "perl-pathtools" => "perl-PathTools",
+        "perl-lib" => "perl",
         "perl-module-load" => "perl-Module-Load",
         "perl-params-check" => "perl-Params-Check",
         "perl-storable" => "perl-Storable",
+        "perl-version" => "perl-version",
         "perl-encode" => "perl-Encode",
         "perl-data-dumper" => "perl-Data-Dumper",
         "perl-xml-parser" => "perl-XML-Parser",
@@ -7213,8 +7235,22 @@ if [[ -z \"$pm\" ]]; then\n\
   echo 'no supported package manager for dependency preflight' >&2\n\
   exit 5\n\
 fi\n\
+declare -a pm_repo_args\n\
+pm_repo_args=()\n\
+mapfile -t pm_all_repos < <(\"$pm\" -q repolist all 2>/dev/null | awk 'NR > 1 {{print $1}}' | sed '/^$/d')\n\
+for repo in \\\n\
+  crb \\\n\
+  codeready-builder-for-rhel-9-$(arch)-rpms \\\n\
+  codeready-builder-for-rhel-10-$(arch)-rpms; do\n\
+  for known_repo in \"${{pm_all_repos[@]:-}}\"; do\n\
+    if [[ \"$known_repo\" == \"$repo\" ]]; then\n\
+      pm_repo_args+=(\"--enablerepo=$repo\")\n\
+      break\n\
+    fi\n\
+  done\n\
+done\n\
 pm_install() {{\n\
-  \"$pm\" -y --setopt='*.skip_if_unavailable=true' --disablerepo=dropworm install \"$@\"\n\
+  \"$pm\" -y --setopt='*.skip_if_unavailable=true' --disablerepo=dropworm \"${{pm_repo_args[@]}}\" install \"$@\"\n\
 }}\n\
 \n\
 declare -A local_candidates\n\
@@ -7227,19 +7263,45 @@ for rpm_dir in '{target_rpms_dir}' '{legacy_rpms_dir}'; do\n\
     if [[ -n \"$name\" && -z \"${{local_candidates[$name]:-}}\" ]]; then\n\
       local_candidates[\"$name\"]=\"$rpmf\"\n\
     fi\n\
+    lower_name=$(printf '%s' \"$name\" | tr '[:upper:]' '[:lower:]')\n\
+    if [[ -n \"$lower_name\" && -z \"${{local_candidates[$lower_name]:-}}\" ]]; then\n\
+      local_candidates[\"$lower_name\"]=\"$rpmf\"\n\
+    fi\n\
     while IFS= read -r provide; do\n\
       key=$(printf '%s' \"$provide\" | awk '{{print $1}}')\n\
       if [[ -n \"$key\" && -z \"${{local_candidates[$key]:-}}\" ]]; then\n\
         local_candidates[\"$key\"]=\"$rpmf\"\n\
       fi\n\
+      lower_key=$(printf '%s' \"$key\" | tr '[:upper:]' '[:lower:]')\n\
+      if [[ -n \"$lower_key\" && -z \"${{local_candidates[$lower_key]:-}}\" ]]; then\n\
+        local_candidates[\"$lower_key\"]=\"$rpmf\"\n\
+      fi\n\
     done < <(rpm -qp --provides \"$rpmf\" 2>/dev/null || true)\n\
   done < <(find \"$rpm_dir\" -type f -name '*.rpm' -print0 2>/dev/null)\n\
 done\n\
 \n\
+lookup_local_candidate() {{\n\
+  local req_key=\"$1\"\n\
+  local found=\"${{local_candidates[$req_key]:-}}\"\n\
+  if [[ -n \"$found\" ]]; then\n\
+    printf '%s' \"$found\"\n\
+    return 0\n\
+  fi\n\
+  local req_lower\n\
+  req_lower=$(printf '%s' \"$req_key\" | tr '[:upper:]' '[:lower:]')\n\
+  found=\"${{local_candidates[$req_lower]:-}}\"\n\
+  if [[ -n \"$found\" ]]; then\n\
+    printf '%s' \"$found\"\n\
+    return 0\n\
+  fi\n\
+  return 1\n\
+}}\n\
+\n\
 declare -A local_installed\n\
 install_local_with_hydration() {{\n\
   local req_key=\"$1\"\n\
-  local local_rpm=\"${{local_candidates[$req_key]:-}}\"\n\
+  local local_rpm\n\
+  local_rpm=$(lookup_local_candidate \"$req_key\" || true)\n\
   if [[ -z \"$local_rpm\" ]]; then\n\
     return 1\n\
   fi\n\
@@ -7276,9 +7338,9 @@ install_local_with_hydration() {{\n\
       if rpm -q --whatprovides \"$req\" >/dev/null 2>&1 || rpm -q --whatprovides \"$candidate\" >/dev/null 2>&1; then\n\
         continue\n\
       fi\n\
-      nested_local_rpm=\"${{local_candidates[$req]:-}}\"\n\
+      nested_local_rpm=$(lookup_local_candidate \"$req\" || true)\n\
       if [[ -z \"$nested_local_rpm\" ]]; then\n\
-        nested_local_rpm=\"${{local_candidates[$candidate]:-}}\"\n\
+        nested_local_rpm=$(lookup_local_candidate \"$candidate\" || true)\n\
       fi\n\
       if [[ -n \"$nested_local_rpm\" ]]; then\n\
         if [[ -z \"${{local_installed[$nested_local_rpm]:-}}\" ]]; then\n\
@@ -7308,7 +7370,7 @@ for dep in \"${{build_requires[@]}}\"; do\n\
     continue\n\
   fi\n\
 \n\
-  local_rpm=\"${{local_candidates[$dep]:-}}\"\n\
+  local_rpm=$(lookup_local_candidate \"$dep\" || true)\n\
   if [[ -n \"$local_rpm\" ]]; then\n\
     if pm_install \"$local_rpm\" >\"$dep_log\" 2>&1; then\n\
       if rpm -q --whatprovides \"$dep\" >/dev/null 2>&1; then\n\
@@ -8120,6 +8182,7 @@ mod tests {
         assert_eq!(map_build_dependency("gnuconfig"), "automake".to_string());
         assert_eq!(map_build_dependency("glib"), "glib2-devel".to_string());
         assert_eq!(map_build_dependency("libiconv"), "glibc-devel".to_string());
+        assert_eq!(map_build_dependency("jsoncpp"), "jsoncpp-devel".to_string());
         assert_eq!(
             map_build_dependency("font-ttf-dejavu-sans-mono"),
             "dejavu-sans-mono-fonts".to_string()
@@ -8148,6 +8211,7 @@ mod tests {
         assert_eq!(map_runtime_dependency("libblas"), "openblas".to_string());
         assert_eq!(map_runtime_dependency("libhwy"), "highway".to_string());
         assert_eq!(map_runtime_dependency("libiconv"), "glibc".to_string());
+        assert_eq!(map_runtime_dependency("jsoncpp"), "jsoncpp".to_string());
         assert_eq!(map_runtime_dependency("glib"), "glib2".to_string());
         assert_eq!(map_runtime_dependency("liblapack"), "lapack".to_string());
         assert_eq!(map_runtime_dependency("liblzma-devel"), "xz".to_string());
@@ -8166,6 +8230,12 @@ mod tests {
         assert_eq!(
             map_build_dependency("perl-autoloader"),
             "perl-AutoLoader".to_string()
+        );
+        assert_eq!(map_build_dependency("perl-base"), "perl".to_string());
+        assert_eq!(map_build_dependency("perl-lib"), "perl".to_string());
+        assert_eq!(
+            map_build_dependency("perl-version"),
+            "perl-version".to_string()
         );
         assert_eq!(map_build_dependency("perl-test"), "perl(Test)".to_string());
         assert_eq!(
@@ -9412,6 +9482,17 @@ requirements:
         );
         assert!(!spec.contains("perl(Test::LeakTrace)"));
         assert!(spec.contains("BuildRequires:  perl(List::MoreUtils::XS)"));
+    }
+
+    #[test]
+    fn perl_dependency_filter_drops_test_capability_forms() {
+        let mapped_test = map_build_dependency("perl-test-leaktrace");
+        assert_eq!(mapped_test, "perl(Test::LeakTrace)".to_string());
+        assert!(!should_keep_rpm_dependency_for_perl(&mapped_test));
+        assert!(!should_keep_rpm_dependency_for_perl("perl-test-leaktrace"));
+        assert!(should_keep_rpm_dependency_for_perl(
+            "perl(List::MoreUtils::XS)"
+        ));
     }
 
     #[test]
