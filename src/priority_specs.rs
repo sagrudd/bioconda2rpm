@@ -5131,6 +5131,12 @@ fi\n\
     # containers may not generate that locale. Normalize to C to avoid\n\
     # noisy failures in shell/R startup locale checks.\n\
     sed -i 's|export LC_ALL=\"en_US.UTF-8\"|export LC_ALL=C|g' ./build.sh || true\n\
+\n\
+    # BLAST configure --with-bin-release expects static libstdc++ in-toolchain.\n\
+    # EL containers are dynamic-first, so prefer non-bin-release mode.\n\
+    if [[ \"%{{tool}}\" == \"blast\" ]]; then\n\
+    sed -i 's/--with-bin-release/--without-bin-release/g' ./build.sh || true\n\
+    fi\n\
     \n\
     # Qt tooling (qmake) may be packaged under versioned bin roots on EL.\n\
     # Surface common locations so upstream build.sh can invoke qmake directly.\n\
