@@ -3685,6 +3685,14 @@ fi\n\
     # policy so the orchestrator remains deterministic across all architectures.\n\
     export CPU_COUNT=1\n\
     sed -i 's|n_workers=8|n_workers=${{CPU_COUNT:-1}}|g' ./build.sh\n\
+    # Bioconda's BLAST script removes a temporary linker path with plain `rm`,\n\
+    # but in our staged prefix this path may be materialized as a directory.\n\
+    # Ensure cleanup succeeds for both symlink and directory forms.\n\
+    sed -i 's|^rm \"\\$LIB_INSTALL_DIR\"$|rm -rf \"\\$LIB_INSTALL_DIR\"|g' ./build.sh\n\
+    # Newer BLAST source trees can ship subdirectories (for example `lib/outside`).\n\
+    # Bioconda's flat `cp $RESULT_PATH/lib/*` fails when a directory is present.\n\
+    # Use recursive copy semantics so payload installation remains stable.\n\
+    sed -i 's|^cp \\$RESULT_PATH/lib/\\* \"\\$LIB_INSTALL_DIR\"$|cp -r \\$RESULT_PATH/lib/* \"\\$LIB_INSTALL_DIR\"|g' ./build.sh\n\
     fi\n\
     \n\
     # GMAP upstream release tarballs already ship generated configure scripts.\n\
