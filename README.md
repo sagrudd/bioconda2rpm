@@ -84,6 +84,7 @@ Defaults when omitted:
 - `docs/STAGE_ISOLATION_AND_SAMPLING_BLUEPRINT.md`
 - `docs/STATISTICAL_SAMPLING_STRATEGY.md`
 - `docs/NORMALIZATION_READINESS_GATE.md`
+- `docs/NORMALIZATION_MATURITY_INDEX.md`
 - `docs/historical_log_mining/historical_log_mining_report.md`
 
 ## Container Build Images
