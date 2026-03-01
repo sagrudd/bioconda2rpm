@@ -5636,6 +5636,11 @@ mkdir -p %{bioconda_source_subdir}\n"
     \n\
     export CC=${{CC:-gcc}}\n\
     export CXX=${{CXX:-g++}}\n\
+    # Conda recipes frequently reference GCC/GXX variables directly in make\n\
+    # invocations. Provide deterministic aliases so these never expand empty\n\
+    # and accidentally erase the compiler command token.\n\
+    export GCC=${{GCC:-$CC}}\n\
+    export GXX=${{GXX:-$CXX}}\n\
     # Some Bioconda R recipes write FC/F77 directly into ~/.R/Makevars.\n\
     # Keep deterministic defaults so Fortran compilation never falls back to\n\
     # an empty command token when gcc-gfortran is present in dependencies.\n\
@@ -11114,6 +11119,47 @@ requirements:
             "sed -i 's|-DSPADES_USE_NCBISDK=ON|-DSPADES_USE_NCBISDK=OFF|g' spades_compile.sh || true"
         ));
         assert!(!spec.contains("BuildRequires:  git"));
+    }
+
+    #[test]
+    fn payload_spec_exports_conda_compiler_aliases_for_make_scripts() {
+        let parsed = ParsedMeta {
+            package_name: "clair3".to_string(),
+            version: "1.2.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/clair3-1.2.0.zip".to_string(),
+            source_folder: String::new(),
+            homepage: "https://github.com/HKU-BAL/Clair3".to_string(),
+            license: "BSD-3-Clause".to_string(),
+            summary: "clair3".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("make CC=${GCC} CXX=${GXX} PREFIX=${PREFIX}".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "clair3",
+            &parsed,
+            "bioconda-clair3-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("export CC=${CC:-gcc}"));
+        assert!(spec.contains("export CXX=${CXX:-g++}"));
+        assert!(spec.contains("export GCC=${GCC:-$CC}"));
+        assert!(spec.contains("export GXX=${GXX:-$CXX}"));
     }
 
     #[test]
