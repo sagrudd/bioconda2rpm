@@ -132,6 +132,9 @@ struct PhoreusPythonRuntime {
 const PHOREUS_PYTHON_VERSION: &str = "3.11";
 const PHOREUS_PYTHON_FULL_VERSION: &str = "3.11.14";
 const PHOREUS_PYTHON_PACKAGE: &str = "phoreus-python-3.11";
+const PHOREUS_PYTHON_VERSION_312: &str = "3.12";
+const PHOREUS_PYTHON_FULL_VERSION_312: &str = "3.12.11";
+const PHOREUS_PYTHON_PACKAGE_312: &str = "phoreus-python-3.12";
 const PHOREUS_PYTHON_VERSION_313: &str = "3.13";
 const PHOREUS_PYTHON_FULL_VERSION_313: &str = "3.13.2";
 const PHOREUS_PYTHON_PACKAGE_313: &str = "phoreus-python-3.13";
@@ -142,6 +145,13 @@ const PHOREUS_PYTHON_RUNTIME_311: PhoreusPythonRuntime = PhoreusPythonRuntime {
     full_version: PHOREUS_PYTHON_FULL_VERSION,
     package: PHOREUS_PYTHON_PACKAGE,
 };
+const PHOREUS_PYTHON_RUNTIME_312: PhoreusPythonRuntime = PhoreusPythonRuntime {
+    major: 3,
+    minor: 12,
+    minor_str: PHOREUS_PYTHON_VERSION_312,
+    full_version: PHOREUS_PYTHON_FULL_VERSION_312,
+    package: PHOREUS_PYTHON_PACKAGE_312,
+};
 const PHOREUS_PYTHON_RUNTIME_313: PhoreusPythonRuntime = PhoreusPythonRuntime {
     major: 3,
     minor: 13,
@@ -149,6 +159,11 @@ const PHOREUS_PYTHON_RUNTIME_313: PhoreusPythonRuntime = PhoreusPythonRuntime {
     full_version: PHOREUS_PYTHON_FULL_VERSION_313,
     package: PHOREUS_PYTHON_PACKAGE_313,
 };
+const PHOREUS_PYTHON_RUNTIMES: [PhoreusPythonRuntime; 3] = [
+    PHOREUS_PYTHON_RUNTIME_311,
+    PHOREUS_PYTHON_RUNTIME_312,
+    PHOREUS_PYTHON_RUNTIME_313,
+];
 const PHOREUS_PERL_VERSION: &str = "5.32";
 const PHOREUS_PERL_PACKAGE: &str = "phoreus-perl-5.32";
 static PHOREUS_PERL_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -2259,7 +2274,7 @@ fn is_buildable_recipe(resolved: &ResolvedRecipe, parsed: &ParsedMeta) -> bool {
     (resolved.build_sh_path.is_some()
         || parsed.build_script.is_some()
         || synthesize_fallback_build_sh(parsed).is_some())
-        && !parsed.source_url.trim().is_empty()
+        && (!parsed.source_url.trim().is_empty() || is_runtime_only_metapackage(parsed))
 }
 
 fn selected_dependency_set(
@@ -4210,30 +4225,44 @@ fn select_phoreus_python_runtime(parsed: &ParsedMeta, python_recipe: bool) -> Ph
     if !python_recipe {
         return PHOREUS_PYTHON_RUNTIME_311;
     }
-    if parsed
+    if let Some(explicit_runtime) = parsed
         .build_deps
         .iter()
         .chain(parsed.host_deps.iter())
         .chain(parsed.run_deps.iter())
         .map(|dep| normalize_dependency_token(dep))
-        .any(|dep| dep == PHOREUS_PYTHON_PACKAGE_313)
+        .find_map(|dep| phoreus_python_runtime_from_dep(&dep))
     {
-        return PHOREUS_PYTHON_RUNTIME_313;
+        return explicit_runtime;
     }
-    let conflicts_311 = recipe_python_runtime_incompatible_with(
-        parsed,
-        PHOREUS_PYTHON_RUNTIME_311.major,
-        PHOREUS_PYTHON_RUNTIME_311.minor,
-    );
-    let conflicts_313 = recipe_python_runtime_incompatible_with(
-        parsed,
-        PHOREUS_PYTHON_RUNTIME_313.major,
-        PHOREUS_PYTHON_RUNTIME_313.minor,
-    );
-    if conflicts_311 && !conflicts_313 {
-        PHOREUS_PYTHON_RUNTIME_313
-    } else {
+
+    let compatible_runtimes: Vec<PhoreusPythonRuntime> = PHOREUS_PYTHON_RUNTIMES
+        .iter()
+        .copied()
+        .filter(|runtime| !recipe_python_runtime_incompatible_with(parsed, runtime.major, runtime.minor))
+        .collect();
+
+    if compatible_runtimes.is_empty() {
         PHOREUS_PYTHON_RUNTIME_311
+    } else if compatible_runtimes
+        .iter()
+        .any(|runtime| runtime.package == PHOREUS_PYTHON_RUNTIME_311.package)
+    {
+        PHOREUS_PYTHON_RUNTIME_311
+    } else {
+        compatible_runtimes
+            .into_iter()
+            .max_by_key(|runtime| runtime.minor)
+            .unwrap_or(PHOREUS_PYTHON_RUNTIME_311)
+    }
+}
+
+fn phoreus_python_runtime_from_dep(dep: &str) -> Option<PhoreusPythonRuntime> {
+    match normalize_dependency_token(dep).as_str() {
+        PHOREUS_PYTHON_PACKAGE => Some(PHOREUS_PYTHON_RUNTIME_311),
+        PHOREUS_PYTHON_PACKAGE_312 => Some(PHOREUS_PYTHON_RUNTIME_312),
+        PHOREUS_PYTHON_PACKAGE_313 => Some(PHOREUS_PYTHON_RUNTIME_313),
+        _ => None,
     }
 }
 
@@ -4551,6 +4580,13 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "htslib"
             | "bwa"
             | "blast"
+            | "metaeuk"
+            | "hmmer"
+            | "augustus"
+            | "prodigal"
+            | "bbmap"
+            | "miniprot"
+            | "sepp"
             | "fastqc"
             | "trimmomatic"
             | "star"
@@ -4676,7 +4712,7 @@ fn canonicalize_meta_build_script(script: &str) -> String {
         } else {
             line.to_string()
         };
-        lines.push(rewritten);
+        lines.push(ensure_local_pip_install_no_build_isolation(rewritten));
     }
 
     if lines.is_empty() {
@@ -4684,6 +4720,60 @@ fn canonicalize_meta_build_script(script: &str) -> String {
     } else {
         lines.join("\n")
     }
+}
+
+fn ensure_local_pip_install_no_build_isolation(line: String) -> String {
+    if !pip_install_targets_local_source(&line) {
+        return line;
+    }
+    if line.contains("--no-build-isolation") {
+        return line;
+    }
+    format!("{line} --no-build-isolation")
+}
+
+fn pip_install_targets_local_source(line: &str) -> bool {
+    let normalized = line.replace('"', " ").replace('\'', " ");
+    let tokens: Vec<&str> = normalized.split_whitespace().collect();
+    let Some(install_idx) = tokens.iter().position(|t| *t == "install") else {
+        return false;
+    };
+    if !tokens[..install_idx]
+        .iter()
+        .any(|t| matches!(*t, "pip" | "pip3" | "$PIP"))
+    {
+        return false;
+    }
+
+    let mut i = install_idx + 1;
+    while i < tokens.len() {
+        let token = tokens[i];
+        if token.starts_with('-') {
+            // Editable install keeps path in next token.
+            if token == "-e" || token == "--editable" {
+                if i + 1 < tokens.len() {
+                    return pip_install_target_is_local(tokens[i + 1]);
+                }
+                return false;
+            }
+            i += 1;
+            continue;
+        }
+        return pip_install_target_is_local(token);
+    }
+    false
+}
+
+fn pip_install_target_is_local(token: &str) -> bool {
+    matches!(token, "." | "./")
+        || token.starts_with("./")
+        || token.starts_with("../")
+        || token.starts_with('/')
+        || token.starts_with("file://")
+        || token.contains("$SRC_DIR")
+        || token.contains("${SRC_DIR}")
+        || token.contains("$RECIPE_DIR")
+        || token.contains("${RECIPE_DIR}")
 }
 
 fn harden_staged_build_script(path: &Path) -> Result<()> {
@@ -4709,6 +4799,8 @@ fn harden_build_script_text(script: &str) -> String {
             rewritten_lines.extend(expanded);
         } else if let Some(rewritten) = rewrite_cargo_bundle_licenses_line(line) {
             rewritten_lines.push(rewritten);
+        } else if pip_install_targets_local_source(line) {
+            rewritten_lines.push(ensure_local_pip_install_no_build_isolation(line.to_string()));
         } else {
             rewritten_lines.push(line.to_string());
         }
@@ -4946,11 +5038,28 @@ fn extract_source_folder(source: Option<&Value>) -> Option<String> {
         Some(Value::Mapping(map)) => map
             .get(Value::String("folder".to_string()))
             .and_then(value_to_string),
-        Some(Value::Sequence(seq)) => seq.iter().find_map(|item| {
-            item.as_mapping()
-                .and_then(|m| m.get(Value::String("folder".to_string())))
-                .and_then(value_to_string)
-        }),
+        Some(Value::Sequence(seq)) => {
+            // Keep folder aligned with the primary source selected for Source0.
+            // Secondary source entries (for example vendored subtrees) must not
+            // override the patch/apply root for the main source archive.
+            for item in seq {
+                if extract_first_string_or_sequence_item(item).is_some() {
+                    return item
+                        .as_mapping()
+                        .and_then(|m| m.get(Value::String("folder".to_string())))
+                        .and_then(value_to_string);
+                }
+                if let Some(map) = item.as_mapping()
+                    && (map.contains_key(Value::String("url".to_string()))
+                        || map.contains_key(Value::String("git_url".to_string())))
+                {
+                    return map
+                        .get(Value::String("folder".to_string()))
+                        .and_then(value_to_string);
+                }
+            }
+            None
+        }
         _ => None,
     }
 }
@@ -5297,14 +5406,25 @@ mkdir -p %{bioconda_source_subdir}\n"
         build_requires.remove("java-11-openjdk");
         build_requires.insert("java-21-openjdk-devel".to_string());
     }
-    // HEURISTIC-TEMP(issue=HEUR-0005): SPAdes ExternalProject performs git clone at configure time.
-    if software_slug == "spades" {
-        // SPAdes pulls ncbi_vdb_ext via ExternalProject git clone at configure time.
-        build_requires.insert("git".to_string());
-    }
     build_requires.remove(PHOREUS_PYTHON_PACKAGE);
+    build_requires.remove(PHOREUS_PYTHON_PACKAGE_312);
     build_requires.remove(PHOREUS_PYTHON_PACKAGE_313);
     build_requires.insert(python_runtime.package.to_string());
+    // Core C dependencies may be provisioned in-prefix by the deterministic
+    // bootstrap block before build.sh executes; keep resolver churn out of
+    // BuildRequires for these tokens when bootstrap is active.
+    if needs_libdeflate {
+        build_requires.remove("libdeflate");
+        build_requires.remove("libdeflate-devel");
+    }
+    if needs_cereal {
+        build_requires.remove("cereal");
+        build_requires.remove("cereal-devel");
+    }
+    if needs_jemalloc {
+        build_requires.remove("jemalloc");
+        build_requires.remove("jemalloc-devel");
+    }
 
     let mut runtime_requires = BTreeSet::new();
     runtime_requires.insert("phoreus".to_string());
@@ -5345,6 +5465,7 @@ mkdir -p %{bioconda_source_subdir}\n"
     }
     if python_recipe {
         runtime_requires.remove(PHOREUS_PYTHON_PACKAGE);
+        runtime_requires.remove(PHOREUS_PYTHON_PACKAGE_312);
         runtime_requires.remove(PHOREUS_PYTHON_PACKAGE_313);
         runtime_requires.insert(python_runtime.package.to_string());
     }
@@ -5921,6 +6042,16 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     fi\n\
     fi\n\
     \n\
+    # SPAdes NCBI SDK support is optional upstream and disabled by default\n\
+    # due to compatibility issues. Bioconda patching can force it ON, which\n\
+    # pulls an external vdb-config toolchain path that requests static libstdc++.\n\
+    # Disable this integration for deterministic EL RPM builds.\n\
+    if [[ \"%{{tool}}\" == \"spades\" ]]; then\n\
+    if [[ -f spades_compile.sh ]]; then\n\
+      sed -i 's|-DSPADES_USE_NCBISDK=ON|-DSPADES_USE_NCBISDK=OFF|g' spades_compile.sh || true\n\
+    fi\n\
+    fi\n\
+    \n\
     # IGV Gradle builds require Java 21 toolchain resolution.
     # Prefer the packaged EL9 JDK location and make it explicit for Gradle.
     if [[ \"%{{tool}}\" == \"igv\" ]]; then\n\
@@ -6351,10 +6482,10 @@ echo \"bioconda2rpm metapackage fallback: no payload build steps required\"\n"
 }
 
 fn is_runtime_only_metapackage(parsed: &ParsedMeta) -> bool {
-    parsed.build_deps.is_empty()
-        && parsed.host_deps.is_empty()
-        && !parsed.run_deps.is_empty()
-        && parsed.source_url.trim().is_empty()
+    parsed.build_script.is_none()
+        && parsed.build_dep_specs_raw.is_empty()
+        && parsed.host_dep_specs_raw.is_empty()
+        && !parsed.run_dep_specs_raw.is_empty()
 }
 
 fn parse_git_source_descriptor(source_url: &str) -> Option<(String, String)> {
@@ -7101,9 +7232,10 @@ fn map_build_dependency(dep: &str) -> String {
         "cereal" => "cereal-devel".to_string(),
         "clangdev" => "clang-devel".to_string(),
         // Bioconda often models curl + openssl split differently than EL.
-        // Keep OpenSSL headers available for projects bundling HTSlib S3 code
-        // (for example canu) that includes <openssl/hmac.h>.
-        "curl" => "libcurl-devel openssl-devel".to_string(),
+        // Keep transitive headers/libs available for projects bundling HTSlib
+        // S3/compression code paths (for example canu), which require
+        // <openssl/hmac.h>, <lzma.h>, and bz2 linkage during local builds.
+        "curl" => "libcurl-devel openssl-devel xz-devel bzip2-devel".to_string(),
         "eigen" => "eigen3-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
@@ -7147,7 +7279,9 @@ fn map_build_dependency(dep: &str) -> String {
         "ninja" => "ninja-build".to_string(),
         "openssl" => "openssl-devel".to_string(),
         "openmpi" => "openmpi-devel".to_string(),
-        "sparsehash" => "sparsehash-devel".to_string(),
+        // Keep sparsehash as a Bioconda/Phoreus dependency so headers land
+        // under PREFIX for recipes using --with-sparsehash=$PREFIX (e.g. abyss).
+        "sparsehash" => "sparsehash".to_string(),
         "snappy" => "snappy-devel".to_string(),
         "sqlite" => "sqlite-devel".to_string(),
         "qt" => "qt5-qtbase-devel qt5-qtsvg-devel".to_string(),
@@ -7265,6 +7399,7 @@ fn is_phoreus_python_toolchain_dependency(dep: &str) -> bool {
             | "setuptools"
             | "wheel"
             | PHOREUS_PYTHON_PACKAGE
+            | PHOREUS_PYTHON_PACKAGE_312
             | PHOREUS_PYTHON_PACKAGE_313
     )
 }
@@ -7307,7 +7442,7 @@ fn is_nim_ecosystem_dependency_name(dep: &str) -> bool {
 }
 
 fn sync_reference_python_specs(specs_dir: &Path) -> Result<()> {
-    for runtime in [PHOREUS_PYTHON_RUNTIME_311, PHOREUS_PYTHON_RUNTIME_313] {
+    for runtime in PHOREUS_PYTHON_RUNTIMES {
         let spec_name = format!("{}.spec", runtime.package);
         let destination = specs_dir.join(spec_name);
         let spec_body = render_phoreus_python_bootstrap_spec(runtime);
@@ -9648,7 +9783,7 @@ mod tests {
         assert_eq!(map_build_dependency("libcurl"), "libcurl-devel".to_string());
         assert_eq!(
             map_build_dependency("curl"),
-            "libcurl-devel openssl-devel".to_string()
+            "libcurl-devel openssl-devel xz-devel bzip2-devel".to_string()
         );
         assert_eq!(map_build_dependency("libpng"), "libpng-devel".to_string());
         assert_eq!(map_build_dependency("liblzo2"), "lzo-devel".to_string());
@@ -9679,7 +9814,7 @@ mod tests {
         assert_eq!(map_build_dependency("ninja"), "ninja-build".to_string());
         assert_eq!(
             map_build_dependency("sparsehash"),
-            "sparsehash-devel".to_string()
+            "sparsehash".to_string()
         );
         assert_eq!(map_build_dependency("sqlite"), "sqlite-devel".to_string());
         assert_eq!(map_build_dependency("cereal"), "cereal-devel".to_string());
@@ -9889,6 +10024,58 @@ requirements:
         assert!(script.contains("USCiLab/cereal"));
         assert!(script.contains("bootstrapping jemalloc into $PREFIX"));
         assert!(script.contains("jemalloc/releases/download/5.3.0"));
+    }
+
+    #[test]
+    fn payload_spec_omits_bootstrap_managed_core_c_buildrequires() {
+        let mut host_deps = BTreeSet::new();
+        host_deps.insert("cereal".to_string());
+        host_deps.insert("jemalloc".to_string());
+        host_deps.insert("libdeflate".to_string());
+        host_deps.insert("zlib".to_string());
+        let parsed = ParsedMeta {
+            package_name: "salmon".to_string(),
+            version: "1.10.3".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/salmon-1.10.3.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/salmon".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "salmon".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("cmake -S . -B build\n".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec![
+                "cereal".to_string(),
+                "jemalloc".to_string(),
+                "libdeflate".to_string(),
+                "zlib".to_string(),
+            ],
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps,
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "salmon",
+            &parsed,
+            "bioconda-salmon-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(!spec.contains("BuildRequires:  cereal-devel"));
+        assert!(!spec.contains("BuildRequires:  jemalloc"));
+        assert!(!spec.contains("BuildRequires:  jemalloc-devel"));
+        assert!(!spec.contains("BuildRequires:  libdeflate"));
+        assert!(!spec.contains("BuildRequires:  libdeflate-devel"));
+        assert!(spec.contains("BuildRequires:  zlib-devel"));
     }
 
     #[test]
@@ -10143,6 +10330,28 @@ source:
             parsed.source_url,
             "https://bioconductor.org/packages/3.20/bioc/src/contrib/edgeR_4.4.0.tar.gz"
         );
+    }
+
+    #[test]
+    fn parse_meta_does_not_take_folder_from_secondary_source_entries() {
+        let rendered = r#"
+package:
+  name: tabixpp
+  version: "1.1.2"
+source:
+  - url: https://example.invalid/tabixpp-1.1.2.tar.gz
+    patches:
+      - shared_lib.patch
+  - url: https://example.invalid/htslib-1.20.tar.bz2
+    folder: htslib
+"#;
+        let parsed = parse_rendered_meta(rendered).expect("parse rendered meta");
+        assert_eq!(
+            parsed.source_url,
+            "https://example.invalid/tabixpp-1.1.2.tar.gz"
+        );
+        assert_eq!(parsed.source_folder, "");
+        assert_eq!(parsed.source_patches, vec!["shared_lib.patch".to_string()]);
     }
 
     #[test]
@@ -10443,6 +10652,16 @@ requirements:
     }
 
     #[test]
+    fn phoreus_python_312_bootstrap_spec_is_rendered_with_expected_name() {
+        let spec = render_phoreus_python_bootstrap_spec(PHOREUS_PYTHON_RUNTIME_312);
+        assert!(spec.contains("Name:           phoreus-python-3.12"));
+        assert!(spec.contains("Version:        3.12.11"));
+        assert!(spec.contains(
+            "Source0:        https://www.python.org/ftp/python/%{version}/Python-%{version}.tar.xz"
+        ));
+    }
+
+    #[test]
     fn phoreus_perl_bootstrap_spec_is_rendered_with_expected_name() {
         let spec = render_phoreus_perl_bootstrap_spec();
         assert!(spec.contains("Name:           phoreus-perl-5.32"));
@@ -10641,6 +10860,49 @@ requirements:
     }
 
     #[test]
+    fn python_runtime_selector_uses_312_for_python_ge_312_lt_313() {
+        let parsed = ParsedMeta {
+            package_name: "flair".to_string(),
+            version: "3.0.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/flair-3.0.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/flair".to_string(),
+            license: "BSD-3-Clause".to_string(),
+            summary: "flair".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            noarch_python: true,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["python >=3.12,<3.13".to_string(), "pip".to_string()],
+            run_dep_specs_raw: vec!["python >=3.12,<3.13".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let runtime = select_phoreus_python_runtime(&parsed, true);
+        assert_eq!(runtime.package, PHOREUS_PYTHON_PACKAGE_312);
+
+        let spec = render_payload_spec(
+            "flair",
+            &parsed,
+            "bioconda-flair-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            true,
+            false,
+            false,
+        );
+        assert!(spec.contains("BuildRequires:  phoreus-python-3.12"));
+        assert!(spec.contains("Requires:  phoreus-python-3.12"));
+        assert!(spec.contains("export PHOREUS_PYTHON_PREFIX=/usr/local/phoreus/python/3.12"));
+        assert!(spec.contains("python3.12"));
+    }
+
+    #[test]
     fn python_requirements_exclude_system_bio_tools() {
         let parsed = ParsedMeta {
             package_name: "ragtag".to_string(),
@@ -10714,6 +10976,57 @@ requirements:
     }
 
     #[test]
+    fn python_requirements_exclude_busco_external_tooling_dependencies() {
+        let parsed = ParsedMeta {
+            package_name: "busco".to_string(),
+            version: "6.0.0".to_string(),
+            build_number: "2".to_string(),
+            source_url: "https://example.invalid/busco-6.0.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://busco.ezlab.org".to_string(),
+            license: "MIT".to_string(),
+            summary: "busco".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps --no-build-isolation".to_string()),
+            noarch_python: true,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec![
+                "python >=3.3".to_string(),
+                "pip".to_string(),
+                "metaeuk >=6.a5d39d9".to_string(),
+                "hmmer >=3.1b2".to_string(),
+                "augustus >=3.3".to_string(),
+                "prodigal".to_string(),
+                "bbmap".to_string(),
+                "miniprot".to_string(),
+                "sepp ==4.5.5".to_string(),
+                "biopython >=1.79".to_string(),
+                "pandas".to_string(),
+                "requests".to_string(),
+                "matplotlib-base".to_string(),
+            ],
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let reqs = build_python_requirements(&parsed);
+        assert!(reqs.iter().any(|r| r.starts_with("biopython")));
+        assert!(reqs.iter().any(|r| r.starts_with("pandas")));
+        assert!(reqs.iter().any(|r| r.starts_with("requests")));
+        assert!(reqs.iter().any(|r| r.starts_with("matplotlib")));
+        assert!(!reqs.iter().any(|r| r.contains("metaeuk")));
+        assert!(!reqs.iter().any(|r| r.contains("hmmer")));
+        assert!(!reqs.iter().any(|r| r.contains("augustus")));
+        assert!(!reqs.iter().any(|r| r.contains("prodigal")));
+        assert!(!reqs.iter().any(|r| r.contains("bbmap")));
+        assert!(!reqs.iter().any(|r| r.contains("miniprot")));
+        assert!(!reqs.iter().any(|r| r.contains("sepp")));
+        assert!(should_keep_rpm_dependency_for_python("metaeuk"));
+    }
+
+    #[test]
     fn minimap2_arch_opts_sanitization_is_not_nested_under_samtools_block() {
         let parsed = ParsedMeta {
             package_name: "minimap2".to_string(),
@@ -10759,6 +11072,48 @@ requirements:
         );
         assert!(spec.contains("sed -i 's|[[:space:]]\"\"[[:space:]]| |g' ./build.sh || true"));
         assert!(spec.contains("sed -i \"s|[[:space:]]''[[:space:]]| |g\" ./build.sh || true"));
+    }
+
+    #[test]
+    fn spades_spec_disables_ncbi_sdk_in_patched_compile_script() {
+        let parsed = ParsedMeta {
+            package_name: "spades".to_string(),
+            version: "4.2.0".to_string(),
+            build_number: "2".to_string(),
+            source_url: "https://example.invalid/spades-4.2.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://github.com/ablab/spades".to_string(),
+            license: "GPL-2.0-only".to_string(),
+            summary: "spades".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("PREFIX=\"${PREFIX}\" ./spades_compile.sh -rj\"${CPU_COUNT}\"".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "spades",
+            &parsed,
+            "bioconda-spades-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"spades\" ]]; then"));
+        assert!(spec.contains(
+            "sed -i 's|-DSPADES_USE_NCBISDK=ON|-DSPADES_USE_NCBISDK=OFF|g' spades_compile.sh || true"
+        ));
+        assert!(!spec.contains("BuildRequires:  git"));
     }
 
     #[test]
@@ -10954,6 +11309,13 @@ requirements:
         let generated = synthesize_build_sh_from_meta_script(script);
         assert!(generated.contains("set -euxo pipefail"));
         assert!(generated.contains("$PYTHON -m pip install . --no-deps --no-build-isolation"));
+    }
+
+    #[test]
+    fn synthesized_build_script_adds_no_build_isolation_for_local_pip_install() {
+        let script = "{{ PYTHON }} -m pip install . --no-deps --ignore-installed -vv";
+        let generated = synthesize_build_sh_from_meta_script(script);
+        assert!(generated.contains("$PYTHON -m pip install . --no-deps --ignore-installed -vv --no-build-isolation"));
     }
 
     #[test]
@@ -11375,6 +11737,34 @@ requirements:
     }
 
     #[test]
+    fn fallback_build_script_supports_runtime_only_metapackages_with_git_sources() {
+        let mut run_deps = BTreeSet::new();
+        run_deps.insert("nanoplot".to_string());
+        let parsed = ParsedMeta {
+            package_name: "nanopack".to_string(),
+            version: "1.1.1".to_string(),
+            build_number: "0".to_string(),
+            source_url: "git+https://github.com/wdecoster/nanopack#4059a0afa4e5".to_string(),
+            source_folder: String::new(),
+            homepage: "https://github.com/wdecoster/nanopack".to_string(),
+            license: "GPL-3.0-only".to_string(),
+            summary: "meta package".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: vec!["nanoplot".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps,
+        };
+        assert!(is_runtime_only_metapackage(&parsed));
+        let generated = synthesize_fallback_build_sh(&parsed).expect("metapackage fallback");
+        assert!(generated.contains("metapackage fallback"));
+    }
+
+    #[test]
     fn runtime_only_metapackage_does_not_promote_run_deps_to_buildrequires() {
         let mut run_deps = BTreeSet::new();
         run_deps.insert("snakemake-minimal".to_string());
@@ -11441,6 +11831,13 @@ requirements:
         let hardened = harden_build_script_text(raw);
         assert!(hardened.contains("find . -maxdepth 2 -type f -name '*.R' -print0"));
         assert!(hardened.contains("find . -maxdepth 2 -type f -name '*.sh' -print0"));
+    }
+
+    #[test]
+    fn harden_build_script_adds_no_build_isolation_for_local_pip_install() {
+        let raw = "$PYTHON -m pip install . --no-deps --ignore-installed -vv\n";
+        let hardened = harden_build_script_text(raw);
+        assert!(hardened.contains("$PYTHON -m pip install . --no-deps --ignore-installed -vv --no-build-isolation"));
     }
 
     #[test]

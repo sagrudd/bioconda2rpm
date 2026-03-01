@@ -1,0 +1,668 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running `target/debug/bioconda2rpm build --recipe-root ../bioconda-recipes/recipes bioconductor-doubletrouble`
+build package=bioconductor-doubletrouble stage=Rpm with_deps=true policy=BuildHostRun recipe_root=../bioconda-recipes/recipes topdir=/Users/stephen/bioconda2rpm bad_spec_dir=/Users/stephen/bioconda2rpm/BAD_SPEC reports_dir=/Users/stephen/bioconda2rpm/reports container_mode=Ephemeral container_image=dropworm_dev_almalinux_9_5:0.1.2 container_engine=docker arch=Host target_arch=aarch64 deployment_profile=Development naming=Phoreus render=JinjaFull metadata_adapter=Auto effective_metadata_adapter=Auto kpi_gate=false kpi_min_success_rate=99.00 outputs=All missing_dependency=Quarantine phoreus_local_repo_count=0 phoreus_core_repo_count=0
+progress phase=build-start package=bioconductor-doubletrouble deps_enabled=true dependency_policy=BuildHostRun recipe_root=../bioconda-recipes/recipes topdir=/Users/stephen/bioconda2rpm target_arch=aarch64 deployment_profile=Development metadata_adapter=Auto
+progress phase=recipe-discovery status=completed recipe_count=10417 elapsed=0s
+progress phase=metadata-adapter status=fallback recipe=bioconductor-doubletrouble from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=metadata-adapter status=fallback recipe=bioconductor-doubletrouble from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-doubletrouble selected_count=10 policy=BuildHostRun is_root=true
+progress phase=dependency action=follow from=bioconductor-doubletrouble to=bioconductor-annotationdbi
+progress phase=metadata-adapter status=fallback recipe=bioconductor-annotationdbi from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-annotationdbi selected_count=8 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-annotationdbi to=bioconductor-biobase
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biobase from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-biobase selected_count=6 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-biobase to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-biocgenerics selected_count=2 policy=BuildHostRun is_root=false
+progress phase=dependency action=skip from=bioconductor-biocgenerics to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-biocgenerics to=r-generics
+progress phase=dependency action=unresolved from=bioconductor-biocgenerics to=r-generics
+progress phase=dependency action=follow from=bioconductor-biobase to=gcc
+progress phase=dependency action=unresolved from=bioconductor-biobase to=gcc
+progress phase=dependency action=follow from=bioconductor-biobase to=libblas
+progress phase=dependency action=unresolved from=bioconductor-biobase to=libblas
+progress phase=dependency action=follow from=bioconductor-biobase to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-biobase to=liblapack
+progress phase=dependency action=follow from=bioconductor-biobase to=make
+progress phase=dependency action=unresolved from=bioconductor-biobase to=make
+progress phase=dependency action=skip from=bioconductor-biobase to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-annotationdbi to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-annotationdbi to=bioconductor-iranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-iranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-iranges selected_count=7 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-iranges to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-iranges to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-s4vectors selected_count=6 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-s4vectors to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-s4vectors to=gcc
+progress phase=dependency action=unresolved from=bioconductor-s4vectors to=gcc
+progress phase=dependency action=follow from=bioconductor-s4vectors to=libblas
+progress phase=dependency action=unresolved from=bioconductor-s4vectors to=libblas
+progress phase=dependency action=follow from=bioconductor-s4vectors to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-s4vectors to=liblapack
+progress phase=dependency action=follow from=bioconductor-s4vectors to=make
+progress phase=dependency action=unresolved from=bioconductor-s4vectors to=make
+progress phase=dependency action=skip from=bioconductor-s4vectors to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-iranges to=gcc
+progress phase=dependency action=unresolved from=bioconductor-iranges to=gcc
+progress phase=dependency action=follow from=bioconductor-iranges to=libblas
+progress phase=dependency action=unresolved from=bioconductor-iranges to=libblas
+progress phase=dependency action=follow from=bioconductor-iranges to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-iranges to=liblapack
+progress phase=dependency action=follow from=bioconductor-iranges to=make
+progress phase=dependency action=unresolved from=bioconductor-iranges to=make
+progress phase=dependency action=skip from=bioconductor-iranges to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-annotationdbi to=bioconductor-keggrest
+progress phase=metadata-adapter status=fallback recipe=bioconductor-keggrest from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-keggrest selected_count=4 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-keggrest to=bioconductor-biostrings
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biostrings from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-biostrings selected_count=11 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-biostrings to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-biostrings to=bioconductor-genomeinfodb
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomeinfodb from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-genomeinfodb selected_count=6 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-genomeinfodb to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomeinfodb to=bioconductor-genomeinfodbdata
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomeinfodbdata from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-genomeinfodbdata selected_count=2 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-genomeinfodbdata to=curl
+progress phase=dependency action=unresolved from=bioconductor-genomeinfodbdata to=curl
+progress phase=dependency action=skip from=bioconductor-genomeinfodbdata to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-genomeinfodb to=bioconductor-iranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-iranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomeinfodb to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomeinfodb to=bioconductor-ucsc-utils
+progress phase=metadata-adapter status=fallback recipe=bioconductor-ucsc.utils from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-ucsc.utils selected_count=4 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-ucsc-utils to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=skip from=bioconductor-ucsc-utils to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-ucsc-utils to=r-httr
+progress phase=dependency action=unresolved from=bioconductor-ucsc-utils to=r-httr
+progress phase=dependency action=follow from=bioconductor-ucsc-utils to=r-jsonlite
+progress phase=dependency action=unresolved from=bioconductor-ucsc-utils to=r-jsonlite
+progress phase=dependency action=skip from=bioconductor-genomeinfodb to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-biostrings to=bioconductor-iranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-iranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-biostrings to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-biostrings to=bioconductor-xvector
+progress phase=metadata-adapter status=fallback recipe=bioconductor-xvector from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-xvector selected_count=10 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-xvector to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-xvector to=bioconductor-iranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-iranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-xvector to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-xvector to=bioconductor-zlibbioc
+progress phase=metadata-adapter status=fallback recipe=bioconductor-zlibbioc from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-zlibbioc selected_count=6 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-zlibbioc to=automake
+progress phase=dependency action=unresolved from=bioconductor-zlibbioc to=automake
+progress phase=dependency action=follow from=bioconductor-zlibbioc to=gcc
+progress phase=dependency action=unresolved from=bioconductor-zlibbioc to=gcc
+progress phase=dependency action=follow from=bioconductor-zlibbioc to=libblas
+progress phase=dependency action=unresolved from=bioconductor-zlibbioc to=libblas
+progress phase=dependency action=follow from=bioconductor-zlibbioc to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-zlibbioc to=liblapack
+progress phase=dependency action=follow from=bioconductor-zlibbioc to=make
+progress phase=dependency action=unresolved from=bioconductor-zlibbioc to=make
+progress phase=dependency action=skip from=bioconductor-zlibbioc to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-xvector to=gcc
+progress phase=dependency action=unresolved from=bioconductor-xvector to=gcc
+progress phase=dependency action=follow from=bioconductor-xvector to=libblas
+progress phase=dependency action=unresolved from=bioconductor-xvector to=libblas
+progress phase=dependency action=follow from=bioconductor-xvector to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-xvector to=liblapack
+progress phase=dependency action=follow from=bioconductor-xvector to=make
+progress phase=dependency action=unresolved from=bioconductor-xvector to=make
+progress phase=dependency action=skip from=bioconductor-xvector to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-xvector to=zlib
+progress phase=dependency action=unresolved from=bioconductor-xvector to=zlib
+progress phase=dependency action=follow from=bioconductor-biostrings to=gcc
+progress phase=dependency action=unresolved from=bioconductor-biostrings to=gcc
+progress phase=dependency action=follow from=bioconductor-biostrings to=libblas
+progress phase=dependency action=unresolved from=bioconductor-biostrings to=libblas
+progress phase=dependency action=follow from=bioconductor-biostrings to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-biostrings to=liblapack
+progress phase=dependency action=follow from=bioconductor-biostrings to=make
+progress phase=dependency action=unresolved from=bioconductor-biostrings to=make
+progress phase=dependency action=skip from=bioconductor-biostrings to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-biostrings to=r-crayon
+progress phase=dependency action=unresolved from=bioconductor-biostrings to=r-crayon
+progress phase=dependency action=skip from=bioconductor-keggrest to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-keggrest to=r-httr
+progress phase=dependency action=unresolved from=bioconductor-keggrest to=r-httr
+progress phase=dependency action=follow from=bioconductor-keggrest to=r-png
+progress phase=dependency action=unresolved from=bioconductor-keggrest to=r-png
+progress phase=dependency action=follow from=bioconductor-annotationdbi to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=skip from=bioconductor-annotationdbi to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-annotationdbi to=r-dbi
+progress phase=dependency action=unresolved from=bioconductor-annotationdbi to=r-dbi
+progress phase=dependency action=follow from=bioconductor-annotationdbi to=r-rsqlite
+progress phase=dependency action=unresolved from=bioconductor-annotationdbi to=r-rsqlite
+progress phase=dependency action=follow from=bioconductor-doubletrouble to=bioconductor-biostrings
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biostrings from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-doubletrouble to=bioconductor-genomicfeatures
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomicfeatures from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-genomicfeatures selected_count=11 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-genomicfeatures to=bioconductor-annotationdbi
+progress phase=metadata-adapter status=fallback recipe=bioconductor-annotationdbi from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicfeatures to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicfeatures to=bioconductor-biostrings
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biostrings from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicfeatures to=bioconductor-genomeinfodb
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomeinfodb from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicfeatures to=bioconductor-genomicranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomicranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-genomicranges selected_count=10 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-genomicranges to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicranges to=bioconductor-genomeinfodb
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomeinfodb from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicranges to=bioconductor-iranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-iranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicranges to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicranges to=bioconductor-xvector
+progress phase=metadata-adapter status=fallback recipe=bioconductor-xvector from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicranges to=gcc
+progress phase=dependency action=unresolved from=bioconductor-genomicranges to=gcc
+progress phase=dependency action=follow from=bioconductor-genomicranges to=libblas
+progress phase=dependency action=unresolved from=bioconductor-genomicranges to=libblas
+progress phase=dependency action=follow from=bioconductor-genomicranges to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-genomicranges to=liblapack
+progress phase=dependency action=follow from=bioconductor-genomicranges to=make
+progress phase=dependency action=unresolved from=bioconductor-genomicranges to=make
+progress phase=dependency action=skip from=bioconductor-genomicranges to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-genomicfeatures to=bioconductor-iranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-iranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicfeatures to=bioconductor-rtracklayer
+progress phase=metadata-adapter status=fallback recipe=bioconductor-rtracklayer from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-rtracklayer selected_count=22 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=automake
+progress phase=dependency action=unresolved from=bioconductor-rtracklayer to=automake
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=bioconductor-biocio
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocio from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-biocio selected_count=3 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-biocio to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-biocio to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=skip from=bioconductor-biocio to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=bioconductor-biostrings
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biostrings from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=bioconductor-genomeinfodb
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomeinfodb from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=bioconductor-genomicalignments
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomicalignments from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-genomicalignments selected_count=14 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-genomicalignments to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicalignments to=bioconductor-biocparallel
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocparallel from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-biocparallel selected_count=12 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-biocparallel to=automake
+progress phase=dependency action=unresolved from=bioconductor-biocparallel to=automake
+progress phase=dependency action=follow from=bioconductor-biocparallel to=gcc
+progress phase=dependency action=unresolved from=bioconductor-biocparallel to=gcc
+progress phase=dependency action=follow from=bioconductor-biocparallel to=gcc-c++
+progress phase=dependency action=unresolved from=bioconductor-biocparallel to=gcc-c++
+progress phase=dependency action=follow from=bioconductor-biocparallel to=libblas
+progress phase=dependency action=unresolved from=bioconductor-biocparallel to=libblas
+progress phase=dependency action=follow from=bioconductor-biocparallel to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-biocparallel to=liblapack
+progress phase=dependency action=follow from=bioconductor-biocparallel to=make
+progress phase=dependency action=unresolved from=bioconductor-biocparallel to=make
+progress phase=dependency action=skip from=bioconductor-biocparallel to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-biocparallel to=r-bh
+progress phase=dependency action=unresolved from=bioconductor-biocparallel to=r-bh
+progress phase=dependency action=follow from=bioconductor-biocparallel to=r-codetools
+progress phase=dependency action=unresolved from=bioconductor-biocparallel to=r-codetools
+progress phase=dependency action=follow from=bioconductor-biocparallel to=r-cpp11
+progress phase=dependency action=unresolved from=bioconductor-biocparallel to=r-cpp11
+progress phase=dependency action=follow from=bioconductor-biocparallel to=r-futile-logger
+progress phase=dependency action=unresolved from=bioconductor-biocparallel to=r-futile-logger
+progress phase=dependency action=follow from=bioconductor-biocparallel to=r-snow
+progress phase=dependency action=unresolved from=bioconductor-biocparallel to=r-snow
+progress phase=dependency action=follow from=bioconductor-genomicalignments to=bioconductor-biostrings
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biostrings from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicalignments to=bioconductor-genomeinfodb
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomeinfodb from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicalignments to=bioconductor-genomicranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomicranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicalignments to=bioconductor-iranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-iranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicalignments to=bioconductor-rsamtools
+progress phase=metadata-adapter status=fallback recipe=bioconductor-rsamtools from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-rsamtools selected_count=19 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-rsamtools to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rsamtools to=bioconductor-biocparallel
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocparallel from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rsamtools to=bioconductor-biostrings
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biostrings from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rsamtools to=bioconductor-genomeinfodb
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomeinfodb from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rsamtools to=bioconductor-genomicranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomicranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rsamtools to=bioconductor-iranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-iranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rsamtools to=bioconductor-rhtslib
+progress phase=metadata-adapter status=fallback recipe=bioconductor-rhtslib from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-rhtslib selected_count=9 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-rhtslib to=automake
+progress phase=dependency action=unresolved from=bioconductor-rhtslib to=automake
+progress phase=dependency action=follow from=bioconductor-rhtslib to=bioconductor-zlibbioc
+progress phase=metadata-adapter status=fallback recipe=bioconductor-zlibbioc from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rhtslib to=gcc
+progress phase=dependency action=unresolved from=bioconductor-rhtslib to=gcc
+progress phase=dependency action=follow from=bioconductor-rhtslib to=libblas
+progress phase=dependency action=unresolved from=bioconductor-rhtslib to=libblas
+progress phase=dependency action=follow from=bioconductor-rhtslib to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-rhtslib to=liblapack
+progress phase=dependency action=follow from=bioconductor-rhtslib to=liblzma-devel
+progress phase=dependency action=unresolved from=bioconductor-rhtslib to=liblzma-devel
+progress phase=dependency action=follow from=bioconductor-rhtslib to=make
+progress phase=dependency action=unresolved from=bioconductor-rhtslib to=make
+progress phase=dependency action=skip from=bioconductor-rhtslib to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-rhtslib to=zlib
+progress phase=dependency action=unresolved from=bioconductor-rhtslib to=zlib
+progress phase=dependency action=follow from=bioconductor-rsamtools to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rsamtools to=bioconductor-xvector
+progress phase=metadata-adapter status=fallback recipe=bioconductor-xvector from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rsamtools to=bioconductor-zlibbioc
+progress phase=metadata-adapter status=fallback recipe=bioconductor-zlibbioc from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rsamtools to=gcc
+progress phase=dependency action=unresolved from=bioconductor-rsamtools to=gcc
+progress phase=dependency action=follow from=bioconductor-rsamtools to=gcc-c++
+progress phase=dependency action=unresolved from=bioconductor-rsamtools to=gcc-c++
+progress phase=dependency action=follow from=bioconductor-rsamtools to=libblas
+progress phase=dependency action=unresolved from=bioconductor-rsamtools to=libblas
+progress phase=dependency action=follow from=bioconductor-rsamtools to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-rsamtools to=liblapack
+progress phase=dependency action=follow from=bioconductor-rsamtools to=liblzma-devel
+progress phase=dependency action=unresolved from=bioconductor-rsamtools to=liblzma-devel
+progress phase=dependency action=follow from=bioconductor-rsamtools to=make
+progress phase=dependency action=unresolved from=bioconductor-rsamtools to=make
+progress phase=dependency action=skip from=bioconductor-rsamtools to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-rsamtools to=r-bitops
+progress phase=dependency action=unresolved from=bioconductor-rsamtools to=r-bitops
+progress phase=dependency action=follow from=bioconductor-rsamtools to=zlib
+progress phase=dependency action=unresolved from=bioconductor-rsamtools to=zlib
+progress phase=dependency action=follow from=bioconductor-genomicalignments to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicalignments to=bioconductor-summarizedexperiment
+progress phase=metadata-adapter status=fallback recipe=bioconductor-summarizedexperiment from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-summarizedexperiment selected_count=11 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-summarizedexperiment to=bioconductor-biobase
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biobase from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-summarizedexperiment to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-summarizedexperiment to=bioconductor-delayedarray
+progress phase=metadata-adapter status=fallback recipe=bioconductor-delayedarray from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-delayedarray selected_count=12 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-delayedarray to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-delayedarray to=bioconductor-iranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-iranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-delayedarray to=bioconductor-matrixgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-matrixgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-matrixgenerics selected_count=2 policy=BuildHostRun is_root=false
+progress phase=dependency action=skip from=bioconductor-matrixgenerics to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-matrixgenerics to=r-matrixstats
+progress phase=dependency action=unresolved from=bioconductor-matrixgenerics to=r-matrixstats
+progress phase=dependency action=follow from=bioconductor-delayedarray to=bioconductor-s4arrays
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4arrays from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-s4arrays selected_count=11 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-s4arrays to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-s4arrays to=bioconductor-iranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-iranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-s4arrays to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-s4arrays to=gcc
+progress phase=dependency action=unresolved from=bioconductor-s4arrays to=gcc
+progress phase=dependency action=follow from=bioconductor-s4arrays to=libblas
+progress phase=dependency action=unresolved from=bioconductor-s4arrays to=libblas
+progress phase=dependency action=follow from=bioconductor-s4arrays to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-s4arrays to=liblapack
+progress phase=dependency action=follow from=bioconductor-s4arrays to=make
+progress phase=dependency action=unresolved from=bioconductor-s4arrays to=make
+progress phase=dependency action=follow from=bioconductor-s4arrays to=r-abind
+progress phase=dependency action=unresolved from=bioconductor-s4arrays to=r-abind
+progress phase=dependency action=skip from=bioconductor-s4arrays to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-s4arrays to=r-crayon
+progress phase=dependency action=unresolved from=bioconductor-s4arrays to=r-crayon
+progress phase=dependency action=follow from=bioconductor-s4arrays to=r-matrix
+progress phase=dependency action=unresolved from=bioconductor-s4arrays to=r-matrix
+progress phase=dependency action=follow from=bioconductor-delayedarray to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-delayedarray to=bioconductor-sparsearray
+progress phase=metadata-adapter status=fallback recipe=bioconductor-sparsearray from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-sparsearray selected_count=13 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-sparsearray to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-sparsearray to=bioconductor-iranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-iranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-sparsearray to=bioconductor-matrixgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-matrixgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-sparsearray to=bioconductor-s4arrays
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4arrays from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-sparsearray to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-sparsearray to=bioconductor-xvector
+progress phase=metadata-adapter status=fallback recipe=bioconductor-xvector from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-sparsearray to=gcc
+progress phase=dependency action=unresolved from=bioconductor-sparsearray to=gcc
+progress phase=dependency action=follow from=bioconductor-sparsearray to=libblas
+progress phase=dependency action=unresolved from=bioconductor-sparsearray to=libblas
+progress phase=dependency action=follow from=bioconductor-sparsearray to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-sparsearray to=liblapack
+progress phase=dependency action=follow from=bioconductor-sparsearray to=make
+progress phase=dependency action=unresolved from=bioconductor-sparsearray to=make
+progress phase=dependency action=skip from=bioconductor-sparsearray to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-sparsearray to=r-matrix
+progress phase=dependency action=unresolved from=bioconductor-sparsearray to=r-matrix
+progress phase=dependency action=follow from=bioconductor-sparsearray to=r-matrixstats
+progress phase=dependency action=unresolved from=bioconductor-sparsearray to=r-matrixstats
+progress phase=dependency action=follow from=bioconductor-delayedarray to=gcc
+progress phase=dependency action=unresolved from=bioconductor-delayedarray to=gcc
+progress phase=dependency action=follow from=bioconductor-delayedarray to=libblas
+progress phase=dependency action=unresolved from=bioconductor-delayedarray to=libblas
+progress phase=dependency action=follow from=bioconductor-delayedarray to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-delayedarray to=liblapack
+progress phase=dependency action=follow from=bioconductor-delayedarray to=make
+progress phase=dependency action=unresolved from=bioconductor-delayedarray to=make
+progress phase=dependency action=skip from=bioconductor-delayedarray to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-delayedarray to=r-matrix
+progress phase=dependency action=unresolved from=bioconductor-delayedarray to=r-matrix
+progress phase=dependency action=follow from=bioconductor-summarizedexperiment to=bioconductor-genomeinfodb
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomeinfodb from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-summarizedexperiment to=bioconductor-genomicranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomicranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-summarizedexperiment to=bioconductor-iranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-iranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-summarizedexperiment to=bioconductor-matrixgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-matrixgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-summarizedexperiment to=bioconductor-s4arrays
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4arrays from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-summarizedexperiment to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=skip from=bioconductor-summarizedexperiment to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-summarizedexperiment to=r-matrix
+progress phase=dependency action=unresolved from=bioconductor-summarizedexperiment to=r-matrix
+progress phase=dependency action=follow from=bioconductor-genomicalignments to=gcc
+progress phase=dependency action=unresolved from=bioconductor-genomicalignments to=gcc
+progress phase=dependency action=follow from=bioconductor-genomicalignments to=libblas
+progress phase=dependency action=unresolved from=bioconductor-genomicalignments to=libblas
+progress phase=dependency action=follow from=bioconductor-genomicalignments to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-genomicalignments to=liblapack
+progress phase=dependency action=follow from=bioconductor-genomicalignments to=make
+progress phase=dependency action=unresolved from=bioconductor-genomicalignments to=make
+progress phase=dependency action=skip from=bioconductor-genomicalignments to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=bioconductor-genomicranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomicranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=bioconductor-iranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-iranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=bioconductor-rsamtools
+progress phase=metadata-adapter status=fallback recipe=bioconductor-rsamtools from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=bioconductor-xvector
+progress phase=metadata-adapter status=fallback recipe=bioconductor-xvector from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=bioconductor-zlibbioc
+progress phase=metadata-adapter status=fallback recipe=bioconductor-zlibbioc from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=gcc
+progress phase=dependency action=unresolved from=bioconductor-rtracklayer to=gcc
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=libblas
+progress phase=dependency action=unresolved from=bioconductor-rtracklayer to=libblas
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-rtracklayer to=liblapack
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=make
+progress phase=dependency action=unresolved from=bioconductor-rtracklayer to=make
+progress phase=dependency action=skip from=bioconductor-rtracklayer to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=r-curl
+progress phase=dependency action=unresolved from=bioconductor-rtracklayer to=r-curl
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=r-httr
+progress phase=dependency action=unresolved from=bioconductor-rtracklayer to=r-httr
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=r-restfulr
+progress phase=metadata-adapter status=fallback recipe=r-restfulr from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=r-restfulr selected_count=7 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=r-restfulr to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=r-restfulr to=gcc
+progress phase=dependency action=unresolved from=r-restfulr to=gcc
+progress phase=dependency action=skip from=r-restfulr to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=r-restfulr to=r-rcurl
+progress phase=dependency action=unresolved from=r-restfulr to=r-rcurl
+progress phase=dependency action=follow from=r-restfulr to=r-rjson
+progress phase=dependency action=unresolved from=r-restfulr to=r-rjson
+progress phase=dependency action=follow from=r-restfulr to=r-xml
+progress phase=dependency action=unresolved from=r-restfulr to=r-xml
+progress phase=dependency action=follow from=r-restfulr to=r-yaml
+progress phase=dependency action=unresolved from=r-restfulr to=r-yaml
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=r-xml
+progress phase=dependency action=unresolved from=bioconductor-rtracklayer to=r-xml
+progress phase=dependency action=follow from=bioconductor-rtracklayer to=zlib
+progress phase=dependency action=unresolved from=bioconductor-rtracklayer to=zlib
+progress phase=dependency action=follow from=bioconductor-genomicfeatures to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-genomicfeatures to=bioconductor-xvector
+progress phase=metadata-adapter status=fallback recipe=bioconductor-xvector from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=skip from=bioconductor-genomicfeatures to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-genomicfeatures to=r-dbi
+progress phase=dependency action=unresolved from=bioconductor-genomicfeatures to=r-dbi
+progress phase=dependency action=follow from=bioconductor-doubletrouble to=bioconductor-genomicranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomicranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-doubletrouble to=bioconductor-msa2dist
+progress phase=metadata-adapter status=fallback recipe=bioconductor-msa2dist from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-msa2dist selected_count=22 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-msa2dist to=bioconductor-biostrings
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biostrings from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-msa2dist to=bioconductor-genomicranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomicranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-msa2dist to=bioconductor-iranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-iranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-msa2dist to=bioconductor-pwalign
+progress phase=metadata-adapter status=fallback recipe=bioconductor-pwalign from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-pwalign selected_count=10 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-pwalign to=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-pwalign to=bioconductor-biostrings
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biostrings from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-pwalign to=bioconductor-iranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-iranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-pwalign to=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-pwalign to=bioconductor-xvector
+progress phase=metadata-adapter status=fallback recipe=bioconductor-xvector from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-pwalign to=gcc
+progress phase=dependency action=unresolved from=bioconductor-pwalign to=gcc
+progress phase=dependency action=follow from=bioconductor-pwalign to=libblas
+progress phase=dependency action=unresolved from=bioconductor-pwalign to=libblas
+progress phase=dependency action=follow from=bioconductor-pwalign to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-pwalign to=liblapack
+progress phase=dependency action=follow from=bioconductor-pwalign to=make
+progress phase=dependency action=unresolved from=bioconductor-pwalign to=make
+progress phase=dependency action=skip from=bioconductor-pwalign to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-msa2dist to=gcc
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=gcc
+progress phase=dependency action=follow from=bioconductor-msa2dist to=gcc-c++
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=gcc-c++
+progress phase=dependency action=follow from=bioconductor-msa2dist to=libblas
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=libblas
+progress phase=dependency action=follow from=bioconductor-msa2dist to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=liblapack
+progress phase=dependency action=follow from=bioconductor-msa2dist to=make
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=make
+progress phase=dependency action=follow from=bioconductor-msa2dist to=r-ape
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=r-ape
+progress phase=dependency action=skip from=bioconductor-msa2dist to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-msa2dist to=r-doparallel
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=r-doparallel
+progress phase=dependency action=follow from=bioconductor-msa2dist to=r-dplyr
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=r-dplyr
+progress phase=dependency action=follow from=bioconductor-msa2dist to=r-foreach
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=r-foreach
+progress phase=dependency action=follow from=bioconductor-msa2dist to=r-rcpp
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=r-rcpp
+progress phase=dependency action=follow from=bioconductor-msa2dist to=r-rcppthread
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=r-rcppthread
+progress phase=dependency action=follow from=bioconductor-msa2dist to=r-rlang
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=r-rlang
+progress phase=dependency action=follow from=bioconductor-msa2dist to=r-seqinr
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=r-seqinr
+progress phase=dependency action=follow from=bioconductor-msa2dist to=r-stringi
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=r-stringi
+progress phase=dependency action=follow from=bioconductor-msa2dist to=r-stringr
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=r-stringr
+progress phase=dependency action=follow from=bioconductor-msa2dist to=r-tibble
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=r-tibble
+progress phase=dependency action=follow from=bioconductor-msa2dist to=r-tidyr
+progress phase=dependency action=unresolved from=bioconductor-msa2dist to=r-tidyr
+progress phase=dependency action=follow from=bioconductor-doubletrouble to=bioconductor-syntenet
+progress phase=metadata-adapter status=fallback recipe=bioconductor-syntenet from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=scan package=bioconductor-syntenet selected_count=19 policy=BuildHostRun is_root=false
+progress phase=dependency action=follow from=bioconductor-syntenet to=bioconductor-biocparallel
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocparallel from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-syntenet to=bioconductor-biostrings
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biostrings from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-syntenet to=bioconductor-genomicranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomicranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-syntenet to=bioconductor-rtracklayer
+progress phase=metadata-adapter status=fallback recipe=bioconductor-rtracklayer from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency action=follow from=bioconductor-syntenet to=gcc
+progress phase=dependency action=unresolved from=bioconductor-syntenet to=gcc
+progress phase=dependency action=follow from=bioconductor-syntenet to=gcc-c++
+progress phase=dependency action=unresolved from=bioconductor-syntenet to=gcc-c++
+progress phase=dependency action=follow from=bioconductor-syntenet to=libblas
+progress phase=dependency action=unresolved from=bioconductor-syntenet to=libblas
+progress phase=dependency action=follow from=bioconductor-syntenet to=liblapack
+progress phase=dependency action=unresolved from=bioconductor-syntenet to=liblapack
+progress phase=dependency action=follow from=bioconductor-syntenet to=make
+progress phase=dependency action=unresolved from=bioconductor-syntenet to=make
+progress phase=dependency action=skip from=bioconductor-syntenet to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-syntenet to=r-ggnetwork
+progress phase=dependency action=unresolved from=bioconductor-syntenet to=r-ggnetwork
+progress phase=dependency action=follow from=bioconductor-syntenet to=r-ggplot2
+progress phase=dependency action=unresolved from=bioconductor-syntenet to=r-ggplot2
+progress phase=dependency action=follow from=bioconductor-syntenet to=r-igraph
+progress phase=dependency action=unresolved from=bioconductor-syntenet to=r-igraph
+progress phase=dependency action=follow from=bioconductor-syntenet to=r-intergraph
+progress phase=dependency action=unresolved from=bioconductor-syntenet to=r-intergraph
+progress phase=dependency action=follow from=bioconductor-syntenet to=r-pheatmap
+progress phase=dependency action=unresolved from=bioconductor-syntenet to=r-pheatmap
+progress phase=dependency action=follow from=bioconductor-syntenet to=r-rcolorbrewer
+progress phase=dependency action=unresolved from=bioconductor-syntenet to=r-rcolorbrewer
+progress phase=dependency action=follow from=bioconductor-syntenet to=r-rcpp
+progress phase=dependency action=unresolved from=bioconductor-syntenet to=r-rcpp
+progress phase=dependency action=follow from=bioconductor-syntenet to=r-rlang
+progress phase=dependency action=unresolved from=bioconductor-syntenet to=r-rlang
+progress phase=dependency action=follow from=bioconductor-syntenet to=r-testthat
+progress phase=dependency action=unresolved from=bioconductor-syntenet to=r-testthat
+progress phase=dependency action=skip from=bioconductor-doubletrouble to=r-base reason=r-runtime-provided
+progress phase=dependency action=follow from=bioconductor-doubletrouble to=r-ggplot2
+progress phase=dependency action=unresolved from=bioconductor-doubletrouble to=r-ggplot2
+progress phase=dependency action=follow from=bioconductor-doubletrouble to=r-mclust
+progress phase=dependency action=unresolved from=bioconductor-doubletrouble to=r-mclust
+progress phase=dependency action=follow from=bioconductor-doubletrouble to=r-rlang
+progress phase=dependency action=unresolved from=bioconductor-doubletrouble to=r-rlang
+progress phase=dependency-plan status=completed package=bioconductor-doubletrouble planned_nodes=30 order=bioconductor-biocgenerics->bioconductor-biobase->bioconductor-s4vectors->bioconductor-iranges->bioconductor-genomeinfodbdata->bioconductor-ucsc.utils->bioconductor-genomeinfodb->bioconductor-zlibbioc->bioconductor-xvector->bioconductor-biostrings->bioconductor-keggrest->bioconductor-annotationdbi->bioconductor-genomicranges->bioconductor-biocio->bioconductor-biocparallel->bioconductor-rhtslib->bioconductor-rsamtools->bioconductor-matrixgenerics->bioconductor-s4arrays->bioconductor-sparsearray->bioconductor-delayedarray->bioconductor-summarizedexperiment->bioconductor-genomicalignments->r-restfulr->bioconductor-rtracklayer->bioconductor-genomicfeatures->bioconductor-pwalign->bioconductor-msa2dist->bioconductor-syntenet->bioconductor-doubletrouble
+progress phase=package status=started index=1/30 package=bioconductor-biocgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-biocgenerics elapsed=0s reason=already up-to-date: bioconda version 0.56.0 already built (latest local payload version 0.56.0)
+progress phase=package status=started index=2/30 package=bioconductor-biobase
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biobase from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-biobase elapsed=0s reason=already up-to-date: bioconda version 2.66.0 already built (latest local payload version 2.66.0)
+progress phase=package status=started index=3/30 package=bioconductor-s4vectors
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4vectors from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-s4vectors elapsed=0s reason=already up-to-date: bioconda version 0.48.0 already built (latest local payload version 0.48.0)
+progress phase=package status=started index=4/30 package=bioconductor-iranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-iranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-iranges elapsed=0s reason=already up-to-date: bioconda version 2.44.0 already built (latest local payload version 2.44.0)
+progress phase=package status=started index=5/30 package=bioconductor-genomeinfodbdata
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomeinfodbdata from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-genomeinfodbdata elapsed=0s reason=already up-to-date: bioconda version 1.2.13 already built (latest local payload version 1.2.13)
+progress phase=package status=started index=6/30 package=bioconductor-ucsc.utils
+progress phase=metadata-adapter status=fallback recipe=bioconductor-ucsc.utils from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-ucsc.utils elapsed=0s reason=already up-to-date: bioconda version 1.2.0 already built (latest local payload version 1.2.0)
+progress phase=package status=started index=7/30 package=bioconductor-genomeinfodb
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomeinfodb from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-genomeinfodb elapsed=0s reason=already up-to-date: bioconda version 1.42.0 already built (latest local payload version 1.42.0)
+progress phase=package status=started index=8/30 package=bioconductor-zlibbioc
+progress phase=metadata-adapter status=fallback recipe=bioconductor-zlibbioc from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-zlibbioc elapsed=0s reason=already up-to-date: bioconda version 1.52.0 already built (latest local payload version 1.52.0)
+progress phase=package status=started index=9/30 package=bioconductor-xvector
+progress phase=metadata-adapter status=fallback recipe=bioconductor-xvector from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-xvector elapsed=0s reason=already up-to-date: bioconda version 0.46.0 already built (latest local payload version 0.46.0)
+progress phase=package status=started index=10/30 package=bioconductor-biostrings
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biostrings from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-biostrings elapsed=0s reason=already up-to-date: bioconda version 2.74.0 already built (latest local payload version 2.74.0)
+progress phase=package status=started index=11/30 package=bioconductor-keggrest
+progress phase=metadata-adapter status=fallback recipe=bioconductor-keggrest from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-keggrest elapsed=0s reason=already up-to-date: bioconda version 1.46.0 already built (latest local payload version 1.46.0)
+progress phase=package status=started index=12/30 package=bioconductor-annotationdbi
+progress phase=metadata-adapter status=fallback recipe=bioconductor-annotationdbi from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-annotationdbi elapsed=0s reason=already up-to-date: bioconda version 1.68.0 already built (latest local payload version 1.68.0)
+progress phase=package status=started index=13/30 package=bioconductor-genomicranges
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomicranges from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-genomicranges elapsed=0s reason=already up-to-date: bioconda version 1.58.0 already built (latest local payload version 1.58.0)
+progress phase=package status=started index=14/30 package=bioconductor-biocio
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocio from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-biocio elapsed=0s reason=already up-to-date: bioconda version 1.16.0 already built (latest local payload version 1.16.0)
+progress phase=package status=started index=15/30 package=bioconductor-biocparallel
+progress phase=metadata-adapter status=fallback recipe=bioconductor-biocparallel from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-biocparallel elapsed=0s reason=already up-to-date: bioconda version 1.44.0 already built (latest local payload version 1.44.0)
+progress phase=package status=started index=16/30 package=bioconductor-rhtslib
+progress phase=metadata-adapter status=fallback recipe=bioconductor-rhtslib from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-rhtslib elapsed=0s reason=already up-to-date: bioconda version 3.2.0 already built (latest local payload version 3.2.0)
+progress phase=package status=started index=17/30 package=bioconductor-rsamtools
+progress phase=metadata-adapter status=fallback recipe=bioconductor-rsamtools from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-rsamtools elapsed=0s reason=already up-to-date: bioconda version 2.22.0 already built (latest local payload version 2.22.0)
+progress phase=package status=started index=18/30 package=bioconductor-matrixgenerics
+progress phase=metadata-adapter status=fallback recipe=bioconductor-matrixgenerics from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-matrixgenerics elapsed=0s reason=already up-to-date: bioconda version 1.22.0 already built (latest local payload version 1.22.0)
+progress phase=package status=started index=19/30 package=bioconductor-s4arrays
+progress phase=metadata-adapter status=fallback recipe=bioconductor-s4arrays from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-s4arrays elapsed=0s reason=already up-to-date: bioconda version 1.6.0 already built (latest local payload version 1.6.0)
+progress phase=package status=started index=20/30 package=bioconductor-sparsearray
+progress phase=metadata-adapter status=fallback recipe=bioconductor-sparsearray from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-sparsearray elapsed=0s reason=already up-to-date: bioconda version 1.6.0 already built (latest local payload version 1.6.0)
+progress phase=package status=started index=21/30 package=bioconductor-delayedarray
+progress phase=metadata-adapter status=fallback recipe=bioconductor-delayedarray from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-delayedarray elapsed=0s reason=already up-to-date: bioconda version 0.32.0 already built (latest local payload version 0.32.0)
+progress phase=package status=started index=22/30 package=bioconductor-summarizedexperiment
+progress phase=metadata-adapter status=fallback recipe=bioconductor-summarizedexperiment from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-summarizedexperiment elapsed=0s reason=already up-to-date: bioconda version 1.36.0 already built (latest local payload version 1.36.0)
+progress phase=package status=started index=23/30 package=bioconductor-genomicalignments
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomicalignments from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-genomicalignments elapsed=0s reason=already up-to-date: bioconda version 1.42.0 already built (latest local payload version 1.42.0)
+progress phase=package status=started index=24/30 package=r-restfulr
+progress phase=metadata-adapter status=fallback recipe=r-restfulr from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=r-restfulr elapsed=0s reason=already up-to-date: bioconda version 0.0.16 already built (latest local payload version 0.0.16)
+progress phase=package status=started index=25/30 package=bioconductor-rtracklayer
+progress phase=metadata-adapter status=fallback recipe=bioconductor-rtracklayer from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-rtracklayer elapsed=0s reason=already up-to-date: bioconda version 1.66.0 already built (latest local payload version 1.66.0)
+progress phase=package status=started index=26/30 package=bioconductor-genomicfeatures
+progress phase=metadata-adapter status=fallback recipe=bioconductor-genomicfeatures from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=package status=up-to-date package=bioconductor-genomicfeatures elapsed=0s reason=already up-to-date: bioconda version 1.58.0 already built (latest local payload version 1.58.0)
+progress phase=package status=started index=27/30 package=bioconductor-pwalign
+progress phase=metadata-adapter status=fallback recipe=bioconductor-pwalign from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=container-build status=queued label=bioconductor-pwalign spec=phoreus-bioconductor-pwalign.spec image=dropworm_dev_almalinux_9_5:0.1.2
+progress phase=container-build status=started label=bioconductor-pwalign spec=phoreus-bioconductor-pwalign.spec attempt=1 image=dropworm_dev_almalinux_9_5:0.1.2

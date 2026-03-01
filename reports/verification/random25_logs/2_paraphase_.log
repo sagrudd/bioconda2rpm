@@ -1,0 +1,27 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running `target/debug/bioconda2rpm build --recipe-root ../bioconda-recipes/recipes paraphase`
+build package=paraphase stage=Rpm with_deps=true policy=BuildHostRun recipe_root=../bioconda-recipes/recipes topdir=/Users/stephen/bioconda2rpm bad_spec_dir=/Users/stephen/bioconda2rpm/BAD_SPEC reports_dir=/Users/stephen/bioconda2rpm/reports container_mode=Ephemeral container_image=dropworm_dev_almalinux_9_5:0.1.2 container_engine=docker arch=Host target_arch=aarch64 deployment_profile=Development naming=Phoreus render=JinjaFull metadata_adapter=Auto effective_metadata_adapter=Auto kpi_gate=false kpi_min_success_rate=99.00 outputs=All missing_dependency=Quarantine phoreus_local_repo_count=0 phoreus_core_repo_count=0
+progress phase=build-start package=paraphase deps_enabled=true dependency_policy=BuildHostRun recipe_root=../bioconda-recipes/recipes topdir=/Users/stephen/bioconda2rpm target_arch=aarch64 deployment_profile=Development metadata_adapter=Auto
+progress phase=recipe-discovery status=completed recipe_count=10417 elapsed=0s
+progress phase=metadata-adapter status=fallback recipe=paraphase from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=metadata-adapter status=fallback recipe=paraphase from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=dependency-plan status=completed package=paraphase planned_nodes=1 order=paraphase
+progress phase=package status=started index=1/1 package=paraphase
+progress phase=metadata-adapter status=fallback recipe=paraphase from=conda to=native reason=conda render adapter failed (status: exit status: 2) stdout= stderr=conda-build import failed: No module named 'conda_build'
+progress phase=container-build status=queued label=paraphase spec=phoreus-paraphase.spec image=dropworm_dev_almalinux_9_5:0.1.2
+progress phase=container-build status=started label=paraphase spec=phoreus-paraphase.spec attempt=1 image=dropworm_dev_almalinux_9_5:0.1.2
+progress phase=container-build status=running label=paraphase spec=phoreus-paraphase.spec attempt=1 elapsed=1m00s
+progress phase=container-build status=running label=paraphase spec=phoreus-paraphase.spec attempt=1 elapsed=2m00s
+progress phase=container-build status=running label=paraphase spec=phoreus-paraphase.spec attempt=1 elapsed=3m00s
+progress phase=container-build status=finished label=paraphase spec=phoreus-paraphase.spec attempt=1 elapsed=3m20s exit=exit status: 0
+progress phase=dependency-resolution spec=phoreus-paraphase.spec total_events=2 unresolved=0 graph_md=/Users/stephen/bioconda2rpm/reports/dependency_graphs/paraphase.md graph_json=/Users/stephen/bioconda2rpm/reports/dependency_graphs/paraphase.json
+progress phase=container-build status=completed label=paraphase spec=phoreus-paraphase.spec elapsed=3m20s
+progress phase=container-build status=queued label=paraphase-default spec=phoreus-paraphase-default.spec image=dropworm_dev_almalinux_9_5:0.1.2
+progress phase=container-build status=started label=paraphase-default spec=phoreus-paraphase-default.spec attempt=1 image=dropworm_dev_almalinux_9_5:0.1.2
+progress phase=container-build status=finished label=paraphase-default spec=phoreus-paraphase-default.spec attempt=1 elapsed=10s exit=exit status: 0
+progress phase=container-build status=completed label=paraphase-default spec=phoreus-paraphase-default.spec elapsed=10s
+progress phase=package status=generated package=paraphase elapsed=3m30s reason=spec/srpm/rpm generated from bioconda metadata in container
+progress phase=report status=written report_json=/Users/stephen/bioconda2rpm/reports/build_paraphase.json report_csv=/Users/stephen/bioconda2rpm/reports/build_paraphase.csv report_md=/Users/stephen/bioconda2rpm/reports/build_paraphase.md
+progress phase=kpi status=computed scope_entries=1 excluded_arch=0 denominator=1 successes=1 success_rate=100.00
+progress phase=build status=completed requested=1 generated=1 up_to_date=0 skipped=0 quarantined=0 elapsed=3m30s
+build requested=1 generated=1 up_to_date=0 skipped=0 quarantined=0 kpi_scope_entries=1 kpi_excluded_arch=0 kpi_denominator=1 kpi_successes=1 kpi_success_rate=100.00% order=paraphase report_json=/Users/stephen/bioconda2rpm/reports/build_paraphase.json report_csv=/Users/stephen/bioconda2rpm/reports/build_paraphase.csv report_md=/Users/stephen/bioconda2rpm/reports/build_paraphase.md

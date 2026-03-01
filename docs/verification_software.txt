@@ -1,6 +1,12 @@
 abyss
+advntr
 alevin-fry
+annotsv
 any2fasta
+args_oap
+arriba
+ascat
+assembly-scan
 autocycler
 bakta
 bioconductor-bambu

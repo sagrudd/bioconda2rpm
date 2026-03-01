@@ -1,0 +1,4 @@
+package	run_status	exit_code	elapsed_s	note	log
+hap.py	success	0	0	built	reports/verification/random25_logs/1_hap.py_.log
+paraphase	success	0	211	built	reports/verification/random25_logs/2_paraphase_.log
+sra-tools	up_to_date	0	46	already-current	reports/verification/random25_logs/3_sra-tools_.log
