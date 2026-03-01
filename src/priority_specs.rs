@@ -5588,10 +5588,16 @@ fi\n\
 # so dependent recipes can resolve headers and link targets without conda-style\n\
 # shared PREFIX assumptions.\n\
 if [[ -d /usr/local/phoreus ]]; then\n\
+if [[ -d /usr/include ]]; then\n\
+  case \":${{CPATH:-}}:\" in\n\
+    *\":/usr/include:\"*) ;;\n\
+    *) export CPATH=\"/usr/include${{CPATH:+:$CPATH}}\" ;;\n\
+  esac\n\
+fi\n\
 while IFS= read -r -d '' dep_include; do\n\
   case \":${{CPATH:-}}:\" in\n\
     *\":$dep_include:\"*) ;;\n\
-    *) export CPATH=\"$dep_include${{CPATH:+:$CPATH}}\" ;;\n\
+    *) export CPATH=\"${{CPATH:+$CPATH:}}$dep_include\" ;;\n\
   esac\n\
 done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name include -print0 2>/dev/null)\n\
 while IFS= read -r -d '' dep_lib; do\n\
@@ -5640,6 +5646,10 @@ if [[ -d /usr/local/phoreus ]]; then\n\
 while IFS= read -r -d '' dep_include; do\n\
   for entry in \"$dep_include\"/*; do\n\
     [[ -e \"$entry\" ]] || continue\n\
+    entry_base=\"$(basename \"$entry\")\"\n\
+    case \"$entry_base\" in\n\
+      linux|asm|asm-generic) continue ;;\n\
+    esac\n\
     target=\"$PREFIX/include/$(basename \"$entry\")\"\n\
     [[ -e \"$target\" ]] && continue\n\
     ln -snf \"$entry\" \"$target\" || true\n\
@@ -9822,7 +9832,9 @@ requirements:
         assert!(
             spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name include")
         );
-        assert!(spec.contains("export CPATH=\"$dep_include${CPATH:+:$CPATH}\""));
+        assert!(spec.contains("export CPATH=\"/usr/include${CPATH:+:$CPATH}\""));
+        assert!(spec.contains("export CPATH=\"${CPATH:+$CPATH:}$dep_include\""));
+        assert!(spec.contains("linux|asm|asm-generic) continue ;;"));
         assert!(spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name bin"));
         assert!(spec.contains("export PATH=\"$dep_bin:$PATH\""));
         assert!(spec.contains("disabled by bioconda2rpm for EL9 compatibility"));
