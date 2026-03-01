@@ -5775,6 +5775,35 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     sed -i 's|[[:space:]]\"\"[[:space:]]| |g' ./build.sh || true\n\
     sed -i \"s|[[:space:]]''[[:space:]]| |g\" ./build.sh || true\n\
     fi\n\
+    \n\
+    # Kallisto enables zlib-ng in conda's merged-prefix model. In EL9 RPM\n\
+    # builds, prefer system zlib and provide explicit HDF5 hints so CMake can\n\
+    # resolve the serial HDF5 layout deterministically.\n\
+    if [[ \"%{{tool}}\" == \"kallisto\" ]]; then\n\
+    sed -i 's|export CONFIG_ARGS=\"-DZLIBNG=ON\"|export CONFIG_ARGS=\"-DZLIBNG=OFF -DHDF5_PREFER_PARALLEL=OFF\"|g' ./build.sh || true\n\
+    hdf5_inc=\"\"\n\
+    for cand in /usr/include/hdf5/serial /usr/include; do\n\
+      if [[ -d \"$cand\" ]]; then\n\
+        hdf5_inc=\"$cand\"\n\
+        break\n\
+      fi\n\
+    done\n\
+    hdf5_lib=\"\"\n\
+    for cand in /usr/lib64/libhdf5.so /usr/lib/libhdf5.so /usr/lib64/libhdf5_serial.so /usr/lib/libhdf5_serial.so; do\n\
+      if [[ -f \"$cand\" ]]; then\n\
+        hdf5_lib=\"$cand\"\n\
+        break\n\
+      fi\n\
+    done\n\
+    if [[ -n \"$hdf5_inc\" && -n \"$hdf5_lib\" ]]; then\n\
+      export HDF5_ROOT=/usr\n\
+      export HDF5_INCLUDE_DIRS=\"$hdf5_inc\"\n\
+      export HDF5_LIBRARIES=\"$hdf5_lib\"\n\
+      export CPPFLAGS=\"-I$hdf5_inc ${{CPPFLAGS:-}}\"\n\
+      export LDFLAGS=\"-L$(dirname \"$hdf5_lib\") ${{LDFLAGS:-}}\"\n\
+      sed -i 's|-DUSE_HDF5=ON -DUSE_BAM=ON|-DUSE_HDF5=ON -DHDF5_INCLUDE_DIRS=\"${{HDF5_INCLUDE_DIRS}}\" -DHDF5_LIBRARIES=\"${{HDF5_LIBRARIES}}\" -DUSE_BAM=ON|g' ./build.sh || true\n\
+    fi\n\
+    fi\n\
     # Ensure CURSES_LIB is passed as an environment assignment to configure.\n\
     # Use a set -u-safe default expansion so missing CURSES_LIB never aborts.\n\
     sed -i -E 's|^[[:space:]]*\\./configure[[:space:]]+|CURSES_LIB=\"${{CURSES_LIB:-}}\" ./configure |' ./build.sh || true\n\
@@ -7083,6 +7112,7 @@ fn map_build_dependency(dep: &str) -> String {
         "xorg-libxfixes" => "libXfixes-devel".to_string(),
         "xz" => "xz-devel".to_string(),
         "zlib" => "zlib-devel".to_string(),
+        "zlib-ng" | "zlibng" | "zlib-ng-compat" => "zlib-ng-compat-devel".to_string(),
         "zstd" => "libzstd-devel".to_string(),
         "zstd-static" => "libzstd-devel".to_string(),
         other => other.to_string(),
@@ -7168,6 +7198,9 @@ fn map_runtime_dependency(dep: &str) -> String {
         "zstd-static" => "zstd".to_string(),
         "xorg-libxext" => "libXext".to_string(),
         "xorg-libxfixes" => "libXfixes".to_string(),
+        "zlib-ng" | "zlibng" | "zlib-ng-compat" | "zlib-ng-compat-devel" => {
+            "zlib-ng-compat".to_string()
+        }
         other => other.to_string(),
     }
 }
@@ -9550,6 +9583,10 @@ mod tests {
             "mariadb-connector-c-devel".to_string()
         );
         assert_eq!(map_build_dependency("zlib"), "zlib-devel".to_string());
+        assert_eq!(
+            map_build_dependency("zlib-ng"),
+            "zlib-ng-compat-devel".to_string()
+        );
         assert_eq!(map_build_dependency("openssl"), "openssl-devel".to_string());
         assert_eq!(map_build_dependency("bzip2"), "bzip2-devel".to_string());
         assert_eq!(
@@ -9633,6 +9670,10 @@ mod tests {
             "fontconfig".to_string()
         );
         assert_eq!(map_runtime_dependency("ninja"), "ninja-build".to_string());
+        assert_eq!(
+            map_runtime_dependency("zlib-ng"),
+            "zlib-ng-compat".to_string()
+        );
         assert_eq!(map_build_dependency("nettle"), "nettle-devel".to_string());
         assert_eq!(map_runtime_dependency("nettle"), "nettle".to_string());
         assert_eq!(map_build_dependency("snappy"), "snappy-devel".to_string());
@@ -10648,6 +10689,50 @@ requirements:
         );
         assert!(spec.contains("sed -i 's|[[:space:]]\"\"[[:space:]]| |g' ./build.sh || true"));
         assert!(spec.contains("sed -i \"s|[[:space:]]''[[:space:]]| |g\" ./build.sh || true"));
+    }
+
+    #[test]
+    fn kallisto_spec_rewrites_force_hdf5_hints_and_disable_zlibng_mode() {
+        let parsed = ParsedMeta {
+            package_name: "kallisto".to_string(),
+            version: "0.51.1".to_string(),
+            build_number: "2".to_string(),
+            source_url: "https://example.invalid/kallisto-0.51.1.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/kallisto".to_string(),
+            license: "BSD-2-Clause".to_string(),
+            summary: "kallisto".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("cmake -S . -B build -DUSE_HDF5=ON -DUSE_BAM=ON".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "kallisto",
+            &parsed,
+            "bioconda-kallisto-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"kallisto\" ]]; then"));
+        assert!(spec.contains("ZLIBNG=OFF -DHDF5_PREFER_PARALLEL=OFF"));
+        assert!(spec.contains("export HDF5_INCLUDE_DIRS=\"$hdf5_inc\""));
+        assert!(spec.contains("export HDF5_LIBRARIES=\"$hdf5_lib\""));
+        assert!(spec.contains(
+            "sed -i 's|-DUSE_HDF5=ON -DUSE_BAM=ON|-DUSE_HDF5=ON -DHDF5_INCLUDE_DIRS=\"${HDF5_INCLUDE_DIRS}\" -DHDF5_LIBRARIES=\"${HDF5_LIBRARIES}\" -DUSE_BAM=ON|g' ./build.sh || true"
+        ));
     }
 
     #[test]
