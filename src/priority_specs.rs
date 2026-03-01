@@ -6208,6 +6208,17 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     if [[ \"%{{tool}}\" == \"advntr\" ]]; then\n\
     \"$PIP\" install --no-cache-dir \"cython<3\" \"numpy<2\" \"setuptools<81\" || true\n\
     fi\n\
+\n\
+    # poretools still ships Python 2 style setup.py print statements.\n\
+    if [[ \"%{{tool}}\" == \"poretools\" ]]; then\n\
+    if [[ -f setup.py ]]; then\n\
+      sed -i -E 's/^([[:space:]]*)print[[:space:]]+([^#].*)$/\\1print(\\2)/' setup.py || true\n\
+      if command -v 2to3 >/dev/null 2>&1; then\n\
+        2to3 -w -n setup.py >/dev/null 2>&1 || true\n\
+      fi\n\
+    fi\n\
+    \"$PIP\" install --no-cache-dir \"setuptools<81\" || true\n\
+    fi\n\
     \n\
     # pychopper imports pkg_resources during metadata build; setuptools>=81 can\n\
     # omit legacy pkg_resources behavior expected by older setup.py flows.\n\
@@ -12652,6 +12663,47 @@ requirements:
         assert!(spec.contains("BuildRequires:  libX11-devel"));
         assert!(spec.contains("Requires:  qt6-qtbase"));
         assert!(spec.contains("Requires:  qt6-qtsvg"));
+    }
+
+    #[test]
+    fn poretools_spec_normalizes_python2_setup_print_statements() {
+        let parsed = ParsedMeta {
+            package_name: "poretools".to_string(),
+            version: "0.6.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/poretools.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/poretools".to_string(),
+            license: "BSD-3-Clause".to_string(),
+            summary: "poretools".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON setup.py install".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["python".to_string()],
+            host_dep_specs_raw: vec!["python".to_string()],
+            run_dep_specs_raw: vec!["python".to_string()],
+            build_deps: BTreeSet::from(["python".to_string()]),
+            host_deps: BTreeSet::from(["python".to_string()]),
+            run_deps: BTreeSet::from(["python".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "poretools",
+            &parsed,
+            "bioconda-poretools-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"poretools\" ]]; then"));
+        assert!(spec.contains("sed -i -E 's/^([[:space:]]*)print[[:space:]]+([^#].*)$/\\1print(\\2)/' setup.py || true"));
+        assert!(spec.contains("2to3 -w -n setup.py >/dev/null 2>&1 || true"));
+        assert!(spec.contains("\"$PIP\" install --no-cache-dir \"setuptools<81\" || true"));
     }
 
     #[test]
