@@ -5994,6 +5994,11 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
       export CPPFLAGS=\"-I$hdf5_inc ${{CPPFLAGS:-}}\"\n\
       export LDFLAGS=\"-L$(dirname \"$hdf5_lib\") ${{LDFLAGS:-}}\"\n\
       sed -i 's|-DUSE_HDF5=ON -DUSE_BAM=ON|-DUSE_HDF5=ON -DHDF5_INCLUDE_DIRS=\"${{HDF5_INCLUDE_DIRS}}\" -DHDF5_LIBRARIES=\"${{HDF5_LIBRARIES}}\" -DUSE_BAM=ON|g' ./build.sh || true\n\
+    else\n\
+      # Some EL9 images do not expose HDF5 development packages through enabled\n\
+      # repos. Fall back to a deterministic no-HDF5/no-BAM configure path.\n\
+      sed -i 's|-DUSE_HDF5=ON|-DUSE_HDF5=OFF|g' ./build.sh || true\n\
+      sed -i 's|-DUSE_BAM=ON|-DUSE_BAM=OFF|g' ./build.sh || true\n\
     fi\n\
     fi\n\
     # Ensure CURSES_LIB is passed as an environment assignment to configure.\n\
@@ -11402,6 +11407,8 @@ requirements:
         assert!(spec.contains(
             "sed -i 's|-DUSE_HDF5=ON -DUSE_BAM=ON|-DUSE_HDF5=ON -DHDF5_INCLUDE_DIRS=\"${HDF5_INCLUDE_DIRS}\" -DHDF5_LIBRARIES=\"${HDF5_LIBRARIES}\" -DUSE_BAM=ON|g' ./build.sh || true"
         ));
+        assert!(spec.contains("sed -i 's|-DUSE_HDF5=ON|-DUSE_HDF5=OFF|g' ./build.sh || true"));
+        assert!(spec.contains("sed -i 's|-DUSE_BAM=ON|-DUSE_BAM=OFF|g' ./build.sh || true"));
     }
 
     #[test]
