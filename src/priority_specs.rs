@@ -5195,16 +5195,31 @@ fi\n\
     fi\n\
     rm -f \"$retry_snapshot\"\n\
     \n\
-    # Some Bioconda build scripts emit absolute symlinks into %{{buildroot}}.\n\
-    # Rewrite those targets so RPM payload validation does not see buildroot leaks.\n\
+    # Some Bioconda build scripts emit absolute symlinks (and occasionally\n\
+    # self-referential broken links) into %{{buildroot}}. Normalize those links\n\
+    # so RPM payload validation passes and install prefixes stay relocatable.\n\
     while IFS= read -r -d '' link_path; do\n\
     link_target=$(readlink \"$link_path\" || true)\n\
+    [[ -n \"$link_target\" ]] || continue\n\
+    link_base=$(basename \"$link_path\")\n\
+    if [[ \"$link_target\" == \"$link_base\" ]]; then\n\
+      rm -f \"$link_path\"\n\
+      continue\n\
+    fi\n\
+    fixed_target=\"\"\n\
     case \"$link_target\" in\n\
     %{{buildroot}}/*)\n\
       fixed_target=\"${{link_target#%{{buildroot}}}}\"\n\
-      ln -snf \"$fixed_target\" \"$link_path\"\n\
+      ;;\n\
+    /*)\n\
+      if command -v realpath >/dev/null 2>&1; then\n\
+        fixed_target=$(realpath -m --relative-to \"$(dirname \"$link_path\")\" \"$link_target\" 2>/dev/null || true)\n\
+      fi\n\
       ;;\n\
     esac\n\
+    if [[ -n \"$fixed_target\" ]]; then\n\
+      ln -snf \"$fixed_target\" \"$link_path\"\n\
+    fi\n\
     done < <(find %{{buildroot}}%{{phoreus_prefix}} -type l -print0 2>/dev/null)\n\
     \n\
     # Python virtualenv and some installers may record temporary buildroot prefixes\n\
