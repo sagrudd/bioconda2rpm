@@ -6548,6 +6548,30 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
       perl -0pi -e 's@if\\(CONDA_BUILD\\)\\n\\s*set\\(JEMALLOC_FLAGS .*?\\nelse\\(\\)\\n\\s*set\\(JEMALLOC_FLAGS .*?\\nendif\\(\\)@set(JEMALLOC_FLAGS \"CC=${{CMAKE_C_COMPILER}} CFLAGS=-fPIC CPPFLAGS=-fPIC\")@s' CMakeLists.txt || true\n\
     fi\n\
     fi\n\
+\n\
+    # Sambamba's build expects ldmd2 in PATH. EL9 commonly ships ldc2/ldc\n\
+    # binaries without the legacy ldmd2 alias.\n\
+    if [[ \"%{{tool}}\" == \"sambamba\" ]]; then\n\
+    if ! command -v ldmd2 >/dev/null 2>&1; then\n\
+      if command -v dnf >/dev/null 2>&1; then\n\
+        dnf -y install ldc >/dev/null 2>&1 || true\n\
+      fi\n\
+      if command -v microdnf >/dev/null 2>&1; then\n\
+        microdnf -y install ldc >/dev/null 2>&1 || true\n\
+      fi\n\
+    fi\n\
+    if ! command -v ldmd2 >/dev/null 2>&1; then\n\
+      if command -v ldc2 >/dev/null 2>&1; then\n\
+        mkdir -p /usr/local/bin\n\
+        ln -sf \"$(command -v ldc2)\" /usr/local/bin/ldmd2 || true\n\
+        export PATH=\"/usr/local/bin:$PATH\"\n\
+      elif command -v ldc >/dev/null 2>&1; then\n\
+        mkdir -p /usr/local/bin\n\
+        ln -sf \"$(command -v ldc)\" /usr/local/bin/ldmd2 || true\n\
+        export PATH=\"/usr/local/bin:$PATH\"\n\
+      fi\n\
+    fi\n\
+    fi\n\
     \n\
     # SPAdes NCBI SDK support is optional upstream and disabled by default\n\
     # due to compatibility issues. Bioconda patching can force it ON, which\n\
@@ -12670,6 +12694,47 @@ requirements:
         assert!(spec.contains("ln -sf /usr/lib64/liblzma.so.5 /usr/lib64/liblzma.so"));
         assert!(spec.contains("-idirafter /usr/include"));
         assert!(spec.contains("find . -type f -name flags.make | while IFS= read -r fm; do"));
+    }
+
+    #[test]
+    fn sambamba_spec_bootstraps_ldmd2_alias_when_missing() {
+        let parsed = ParsedMeta {
+            package_name: "sambamba".to_string(),
+            version: "1.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/sambamba.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/sambamba".to_string(),
+            license: "GPL-2.0-or-later".to_string(),
+            summary: "sambamba".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("make -j1 check CC=gcc".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["ldc".to_string()],
+            host_dep_specs_raw: vec!["zlib".to_string()],
+            run_dep_specs_raw: vec!["zlib".to_string()],
+            build_deps: BTreeSet::from(["ldc".to_string()]),
+            host_deps: BTreeSet::from(["zlib".to_string()]),
+            run_deps: BTreeSet::from(["zlib".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "sambamba",
+            &parsed,
+            "bioconda-sambamba-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"sambamba\" ]]; then"));
+        assert!(spec.contains("dnf -y install ldc"));
+        assert!(spec.contains("if command -v ldc2 >/dev/null 2>&1; then"));
+        assert!(spec.contains("ln -sf \"$(command -v ldc2)\" /usr/local/bin/ldmd2 || true"));
     }
 
     #[test]
