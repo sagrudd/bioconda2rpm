@@ -9451,8 +9451,15 @@ fi\n\
 declare -a pm_repo_args\n\
 pm_repo_args=()\n\
 mapfile -t pm_all_repos < <(\"$pm\" -q repolist all 2>/dev/null | awk 'NR > 1 {{print $1}}' | sed '/^$/d')\n\
+if ! printf '%s\\n' \"${{pm_all_repos[@]:-}}\" | grep -Eq '^epel($|-next$|-testing$)'; then\n\
+  \"$pm\" -y --setopt='*.skip_if_unavailable=true' --disablerepo=dropworm install epel-release >/dev/null 2>&1 || true\n\
+  mapfile -t pm_all_repos < <(\"$pm\" -q repolist all 2>/dev/null | awk 'NR > 1 {{print $1}}' | sed '/^$/d')\n\
+fi\n\
 for repo in \\\n\
   crb \\\n\
+  epel \\\n\
+  epel-next \\\n\
+  epel-testing \\\n\
   codeready-builder-for-rhel-9-$(arch)-rpms \\\n\
   codeready-builder-for-rhel-10-$(arch)-rpms; do\n\
   for known_repo in \"${{pm_all_repos[@]:-}}\"; do\n\
