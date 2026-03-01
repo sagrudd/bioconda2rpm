@@ -6967,7 +6967,8 @@ echo \"bioconda2rpm metapackage fallback: no payload build steps required\"\n"
 }
 
 fn is_runtime_only_metapackage(parsed: &ParsedMeta) -> bool {
-    parsed.build_script.is_none()
+    parsed.source_patches.is_empty()
+        && parsed.build_script.is_none()
         && parsed.build_dep_specs_raw.is_empty()
         && parsed.host_dep_specs_raw.is_empty()
         && !parsed.run_dep_specs_raw.is_empty()
@@ -13208,6 +13209,46 @@ requirements:
         assert!(spec.contains("Requires:  snakemake-minimal"));
         assert!(spec.contains("Requires:  pandas"));
         assert!(!spec.contains("Source0:"));
+    }
+
+    #[test]
+    fn patched_recipe_is_not_treated_as_runtime_only_metapackage() {
+        let mut run_deps = BTreeSet::new();
+        run_deps.insert("example-runtime".to_string());
+        let parsed = ParsedMeta {
+            package_name: "patched-tool".to_string(),
+            version: "1.0.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/patched-tool-1.0.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid".to_string(),
+            license: "MIT".to_string(),
+            summary: "patched recipe".to_string(),
+            source_patches: vec!["fix.patch".to_string()],
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: vec!["example-runtime".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps,
+        };
+        assert!(!is_runtime_only_metapackage(&parsed));
+        let spec = render_payload_spec(
+            "patched-tool",
+            &parsed,
+            "bioconda-patched-tool-build.sh",
+            &["https://example.invalid/fix.patch".to_string()],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains("Source0:"));
+        assert!(spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1"));
     }
 
     #[test]
