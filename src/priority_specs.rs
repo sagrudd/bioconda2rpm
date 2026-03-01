@@ -119,9 +119,35 @@ struct PrecompiledBinaryOverride {
     build_script: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PhoreusPythonRuntime {
+    major: u64,
+    minor: u64,
+    minor_str: &'static str,
+    full_version: &'static str,
+    package: &'static str,
+}
+
 const PHOREUS_PYTHON_VERSION: &str = "3.11";
 const PHOREUS_PYTHON_FULL_VERSION: &str = "3.11.14";
 const PHOREUS_PYTHON_PACKAGE: &str = "phoreus-python-3.11";
+const PHOREUS_PYTHON_VERSION_313: &str = "3.13";
+const PHOREUS_PYTHON_FULL_VERSION_313: &str = "3.13.2";
+const PHOREUS_PYTHON_PACKAGE_313: &str = "phoreus-python-3.13";
+const PHOREUS_PYTHON_RUNTIME_311: PhoreusPythonRuntime = PhoreusPythonRuntime {
+    major: 3,
+    minor: 11,
+    minor_str: PHOREUS_PYTHON_VERSION,
+    full_version: PHOREUS_PYTHON_FULL_VERSION,
+    package: PHOREUS_PYTHON_PACKAGE,
+};
+const PHOREUS_PYTHON_RUNTIME_313: PhoreusPythonRuntime = PhoreusPythonRuntime {
+    major: 3,
+    minor: 13,
+    minor_str: PHOREUS_PYTHON_VERSION_313,
+    full_version: PHOREUS_PYTHON_FULL_VERSION_313,
+    package: PHOREUS_PYTHON_PACKAGE_313,
+};
 const PHOREUS_PERL_VERSION: &str = "5.32";
 const PHOREUS_PERL_PACKAGE: &str = "phoreus-perl-5.32";
 static PHOREUS_PERL_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -448,7 +474,7 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
         build_jobs: args.effective_build_jobs(),
         force_rebuild: false,
     };
-    ensure_phoreus_python_bootstrap(&build_config, &specs_dir)
+    ensure_phoreus_python_bootstrap(&build_config, &specs_dir, PHOREUS_PYTHON_RUNTIME_311)
         .context("bootstrapping Phoreus Python runtime")?;
     ensure_phoreus_perl_bootstrap(&build_config, &specs_dir)
         .context("bootstrapping Phoreus Perl runtime")?;
@@ -619,7 +645,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         build_jobs: args.effective_build_jobs(),
         force_rebuild: args.force,
     };
-    ensure_phoreus_python_bootstrap(&build_config, &specs_dir)
+    ensure_phoreus_python_bootstrap(&build_config, &specs_dir, PHOREUS_PYTHON_RUNTIME_311)
         .context("bootstrapping Phoreus Python runtime")?;
     ensure_phoreus_perl_bootstrap(&build_config, &specs_dir)
         .context("bootstrapping Phoreus Perl runtime")?;
@@ -2476,6 +2502,26 @@ fn process_tool(
             };
         }
     };
+    let python_recipe = is_python_recipe(&parsed) || python_script_hint;
+    let python_runtime = select_phoreus_python_runtime(&parsed, python_recipe);
+    if let Err(err) = ensure_phoreus_python_bootstrap(build_config, specs_dir, python_runtime) {
+        let reason = format!("bootstrapping Phoreus Python runtime failed: {err}");
+        quarantine_note(bad_spec_dir, &software_slug, &reason);
+        return ReportEntry {
+            software: tool.software.clone(),
+            priority: tool.priority,
+            status: "quarantined".to_string(),
+            reason,
+            overlap_recipe: resolved.recipe_name,
+            overlap_reason: resolved.overlap_reason,
+            variant_dir: resolved.variant_dir.display().to_string(),
+            package_name: parsed.package_name,
+            version: parsed.version,
+            payload_spec_path: String::new(),
+            meta_spec_path: String::new(),
+            staged_build_sh: staged_build_sh.display().to_string(),
+        };
+    }
     if recipe_requires_r_runtime(&parsed) || is_r_project_recipe(&parsed) || r_script_hint {
         if let Err(err) = ensure_phoreus_r_bootstrap(build_config, specs_dir) {
             let reason = format!("bootstrapping Phoreus R runtime failed: {err}");
@@ -3573,8 +3619,22 @@ fn is_r_project_recipe(parsed: &ParsedMeta) -> bool {
             .unwrap_or(false)
 }
 
+#[allow(dead_code)]
 fn build_python_requirements(parsed: &ParsedMeta) -> Vec<String> {
-    let runtime_incompatible = recipe_python_runtime_incompatible(parsed);
+    build_python_requirements_for_runtime(
+        parsed,
+        PHOREUS_PYTHON_RUNTIME_311.major,
+        PHOREUS_PYTHON_RUNTIME_311.minor,
+    )
+}
+
+fn build_python_requirements_for_runtime(
+    parsed: &ParsedMeta,
+    runtime_major: u64,
+    runtime_minor: u64,
+) -> Vec<String> {
+    let runtime_incompatible =
+        recipe_python_runtime_incompatible_with(parsed, runtime_major, runtime_minor);
     let mut out = BTreeSet::new();
     for raw in &parsed.host_dep_specs_raw {
         if let Some(req) = conda_dep_to_pip_requirement(raw) {
@@ -3600,13 +3660,57 @@ fn build_python_requirements(parsed: &ParsedMeta) -> Vec<String> {
     out.into_iter().collect()
 }
 
+#[allow(dead_code)]
 fn recipe_python_runtime_incompatible(parsed: &ParsedMeta) -> bool {
+    recipe_python_runtime_incompatible_with(
+        parsed,
+        PHOREUS_PYTHON_RUNTIME_311.major,
+        PHOREUS_PYTHON_RUNTIME_311.minor,
+    )
+}
+
+fn recipe_python_runtime_incompatible_with(
+    parsed: &ParsedMeta,
+    runtime_major: u64,
+    runtime_minor: u64,
+) -> bool {
     parsed
         .build_dep_specs_raw
         .iter()
         .chain(parsed.host_dep_specs_raw.iter())
         .chain(parsed.run_dep_specs_raw.iter())
-        .any(|raw| python_dep_spec_conflicts_with_runtime(raw, 3, 11))
+        .any(|raw| python_dep_spec_conflicts_with_runtime(raw, runtime_major, runtime_minor))
+}
+
+fn select_phoreus_python_runtime(parsed: &ParsedMeta, python_recipe: bool) -> PhoreusPythonRuntime {
+    if !python_recipe {
+        return PHOREUS_PYTHON_RUNTIME_311;
+    }
+    if parsed
+        .build_deps
+        .iter()
+        .chain(parsed.host_deps.iter())
+        .chain(parsed.run_deps.iter())
+        .map(|dep| normalize_dependency_token(dep))
+        .any(|dep| dep == PHOREUS_PYTHON_PACKAGE_313)
+    {
+        return PHOREUS_PYTHON_RUNTIME_313;
+    }
+    let conflicts_311 = recipe_python_runtime_incompatible_with(
+        parsed,
+        PHOREUS_PYTHON_RUNTIME_311.major,
+        PHOREUS_PYTHON_RUNTIME_311.minor,
+    );
+    let conflicts_313 = recipe_python_runtime_incompatible_with(
+        parsed,
+        PHOREUS_PYTHON_RUNTIME_313.major,
+        PHOREUS_PYTHON_RUNTIME_313.minor,
+    );
+    if conflicts_311 && !conflicts_313 {
+        PHOREUS_PYTHON_RUNTIME_313
+    } else {
+        PHOREUS_PYTHON_RUNTIME_311
+    }
 }
 
 fn python_dep_spec_conflicts_with_runtime(
@@ -3668,6 +3772,16 @@ fn python_dep_spec_conflicts_with_runtime(
         } else if let Some(version) = token.strip_prefix('=')
             && let Some((major, minor)) = parse_major_minor(version)
             && (runtime_major, runtime_minor) != (major, minor)
+        {
+            return true;
+        } else if let Some(version) = token.strip_prefix(">=")
+            && let Some((major, minor)) = parse_major_minor(version)
+            && (runtime_major, runtime_minor) < (major, minor)
+        {
+            return true;
+        } else if let Some(version) = token.strip_prefix('>')
+            && let Some((major, minor)) = parse_major_minor(version)
+            && (runtime_major, runtime_minor) <= (major, minor)
         {
             return true;
         }
@@ -4445,6 +4559,7 @@ fn render_payload_spec(
     // Python policy is applied when either metadata or staged build script indicates
     // Python packaging/install semantics.
     let python_recipe = is_python_recipe(parsed) || python_script_hint;
+    let python_runtime = select_phoreus_python_runtime(parsed, python_recipe);
     let r_runtime_required = recipe_requires_r_runtime(parsed) || r_script_hint;
     let rust_runtime_required = recipe_requires_rust_runtime(parsed) || rust_script_hint;
     let nim_runtime_required = recipe_requires_nim_runtime(parsed);
@@ -4457,7 +4572,7 @@ fn render_payload_spec(
         Vec::new()
     };
     let python_requirements = if python_recipe {
-        build_python_requirements(parsed)
+        build_python_requirements_for_runtime(parsed, python_runtime.major, python_runtime.minor)
     } else {
         Vec::new()
     };
@@ -4545,7 +4660,7 @@ mkdir -p %{bioconda_source_subdir}\n"
     build_requires.insert("bash".to_string());
     // Enforce canonical builder policy: every payload build uses Phoreus Python,
     // never the system interpreter.
-    build_requires.insert(PHOREUS_PYTHON_PACKAGE.to_string());
+    build_requires.insert(python_runtime.package.to_string());
     if include_source0 && source_kind == SourceArchiveKind::Zip {
         build_requires.insert("unzip".to_string());
     }
@@ -4638,11 +4753,14 @@ mkdir -p %{bioconda_source_subdir}\n"
         // SPAdes pulls ncbi_vdb_ext via ExternalProject git clone at configure time.
         build_requires.insert("git".to_string());
     }
+    build_requires.remove(PHOREUS_PYTHON_PACKAGE);
+    build_requires.remove(PHOREUS_PYTHON_PACKAGE_313);
+    build_requires.insert(python_runtime.package.to_string());
 
     let mut runtime_requires = BTreeSet::new();
     runtime_requires.insert("phoreus".to_string());
     if python_recipe {
-        runtime_requires.insert(PHOREUS_PYTHON_PACKAGE.to_string());
+        runtime_requires.insert(python_runtime.package.to_string());
         if r_runtime_required {
             runtime_requires.insert(PHOREUS_R_PACKAGE.to_string());
         }
@@ -4675,6 +4793,11 @@ mkdir -p %{bioconda_source_subdir}\n"
     if software_slug == "igv" {
         runtime_requires.remove("java-11-openjdk");
         runtime_requires.insert("java-21-openjdk".to_string());
+    }
+    if python_recipe {
+        runtime_requires.remove(PHOREUS_PYTHON_PACKAGE);
+        runtime_requires.remove(PHOREUS_PYTHON_PACKAGE_313);
+        runtime_requires.insert(python_runtime.package.to_string());
     }
 
     let build_requires_lines = format_dep_lines("BuildRequires", &build_requires);
@@ -5321,7 +5444,7 @@ fi\n\
         changelog_date = changelog_date,
         meta_path = spec_escape(&meta_path.display().to_string()),
         variant_dir = spec_escape(&variant_dir.display().to_string()),
-        phoreus_python_version = PHOREUS_PYTHON_VERSION,
+        phoreus_python_version = python_runtime.minor_str,
         conda_pkg_name = spec_escape(&parsed.package_name),
         conda_pkg_version = spec_escape(&parsed.version),
         conda_pkg_build_number = spec_escape(&parsed.build_number),
@@ -6333,6 +6456,7 @@ fn is_phoreus_python_toolchain_dependency(dep: &str) -> bool {
             | "setuptools"
             | "wheel"
             | PHOREUS_PYTHON_PACKAGE
+            | PHOREUS_PYTHON_PACKAGE_313
     )
 }
 
@@ -6374,31 +6498,37 @@ fn is_nim_ecosystem_dependency_name(dep: &str) -> bool {
 }
 
 fn sync_reference_python_specs(specs_dir: &Path) -> Result<()> {
-    let spec_name = format!("{PHOREUS_PYTHON_PACKAGE}.spec");
-    let destination = specs_dir.join(spec_name);
-    let spec_body = render_phoreus_python_bootstrap_spec();
-    fs::write(&destination, spec_body).with_context(|| {
-        format!(
-            "writing bundled python bootstrap spec {}",
-            destination.display()
-        )
-    })?;
-    #[cfg(unix)]
-    fs::set_permissions(&destination, fs::Permissions::from_mode(0o644))
-        .with_context(|| format!("setting permissions on {}", destination.display()))?;
+    for runtime in [PHOREUS_PYTHON_RUNTIME_311, PHOREUS_PYTHON_RUNTIME_313] {
+        let spec_name = format!("{}.spec", runtime.package);
+        let destination = specs_dir.join(spec_name);
+        let spec_body = render_phoreus_python_bootstrap_spec(runtime);
+        fs::write(&destination, spec_body).with_context(|| {
+            format!(
+                "writing bundled python bootstrap spec {}",
+                destination.display()
+            )
+        })?;
+        #[cfg(unix)]
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o644))
+            .with_context(|| format!("setting permissions on {}", destination.display()))?;
+    }
     Ok(())
 }
 
-fn ensure_phoreus_python_bootstrap(build_config: &BuildConfig, specs_dir: &Path) -> Result<()> {
+fn ensure_phoreus_python_bootstrap(
+    build_config: &BuildConfig,
+    specs_dir: &Path,
+    runtime: PhoreusPythonRuntime,
+) -> Result<()> {
     if topdir_has_package_artifact(
         &build_config.topdir,
         &build_config.target_root,
-        PHOREUS_PYTHON_PACKAGE,
+        runtime.package,
     )? {
         return Ok(());
     }
 
-    let spec_name = format!("{}.spec", PHOREUS_PYTHON_PACKAGE);
+    let spec_name = format!("{}.spec", runtime.package);
     let spec_path = specs_dir.join(&spec_name);
     if !spec_path.exists() {
         anyhow::bail!(
@@ -6406,8 +6536,8 @@ fn ensure_phoreus_python_bootstrap(build_config: &BuildConfig, specs_dir: &Path)
             spec_path.display()
         );
     }
-    build_spec_chain_in_container(build_config, &spec_path, PHOREUS_PYTHON_PACKAGE)
-        .with_context(|| format!("building bootstrap package {}", PHOREUS_PYTHON_PACKAGE))?;
+    build_spec_chain_in_container(build_config, &spec_path, runtime.package)
+        .with_context(|| format!("building bootstrap package {}", runtime.package))?;
     Ok(())
 }
 
@@ -6523,7 +6653,7 @@ fn ensure_phoreus_nim_bootstrap(build_config: &BuildConfig, specs_dir: &Path) ->
     Ok(())
 }
 
-fn render_phoreus_python_bootstrap_spec() -> String {
+fn render_phoreus_python_bootstrap_spec(runtime: PhoreusPythonRuntime) -> String {
     format!(
         "%global py_minor {py_minor}\n\
 %global debug_package %{{nil}}\n\
@@ -6595,9 +6725,9 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{py_minor}}.lua\n\
 %changelog\n\
 * Thu Feb 26 2026 Phoreus Builder <packaging@phoreus.local> - {version}-1\n\
 - Build CPython {version} from upstream source under Phoreus prefix\n",
-        py_minor = PHOREUS_PYTHON_VERSION,
-        package = PHOREUS_PYTHON_PACKAGE,
-        version = PHOREUS_PYTHON_FULL_VERSION,
+        py_minor = runtime.minor_str,
+        package = runtime.package,
+        version = runtime.full_version,
     )
 }
 
@@ -9288,7 +9418,7 @@ requirements:
 
     #[test]
     fn phoreus_python_bootstrap_spec_is_rendered_with_expected_name() {
-        let spec = render_phoreus_python_bootstrap_spec();
+        let spec = render_phoreus_python_bootstrap_spec(PHOREUS_PYTHON_RUNTIME_311);
         assert!(spec.contains("Name:           phoreus-python-3.11"));
         assert!(spec.contains("Version:        3.11.14"));
         assert!(spec.contains(
@@ -9296,6 +9426,16 @@ requirements:
         ));
         assert!(spec.contains("BuildRequires:  openssl-devel"));
         assert!(spec.contains("BuildRequires:  sqlite-devel"));
+    }
+
+    #[test]
+    fn phoreus_python_313_bootstrap_spec_is_rendered_with_expected_name() {
+        let spec = render_phoreus_python_bootstrap_spec(PHOREUS_PYTHON_RUNTIME_313);
+        assert!(spec.contains("Name:           phoreus-python-3.13"));
+        assert!(spec.contains("Version:        3.13.2"));
+        assert!(spec.contains(
+            "Source0:        https://www.python.org/ftp/python/%{version}/Python-%{version}.tar.xz"
+        ));
     }
 
     #[test]
@@ -9451,6 +9591,49 @@ requirements:
         assert!(reqs.contains(&"jinja2>=3.0.0".to_string()));
         assert!(!reqs.contains(&"click>=8.0".to_string()));
         assert!(!reqs.iter().any(|r| r.contains("automake")));
+    }
+
+    #[test]
+    fn python_runtime_selector_prefers_313_for_python_ge_312() {
+        let parsed = ParsedMeta {
+            package_name: "fusion-report".to_string(),
+            version: "4.0.1".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/fusion-report-4.0.1.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/fusion-report".to_string(),
+            license: "GPL-3.0-only".to_string(),
+            summary: "fusion-report".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            noarch_python: true,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["python >=3.12".to_string(), "pip".to_string()],
+            run_dep_specs_raw: vec!["python >=3.12".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let runtime = select_phoreus_python_runtime(&parsed, true);
+        assert_eq!(runtime.package, PHOREUS_PYTHON_PACKAGE_313);
+
+        let spec = render_payload_spec(
+            "fusion-report",
+            &parsed,
+            "bioconda-fusion-report-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            true,
+            false,
+            false,
+        );
+        assert!(spec.contains("BuildRequires:  phoreus-python-3.13"));
+        assert!(spec.contains("Requires:  phoreus-python-3.13"));
+        assert!(spec.contains("export PHOREUS_PYTHON_PREFIX=/usr/local/phoreus/python/3.13"));
+        assert!(spec.contains("python3.13"));
     }
 
     #[test]
