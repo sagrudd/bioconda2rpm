@@ -7580,7 +7580,7 @@ for dep in \"${{build_requires[@]}}\"; do\n\
   fi\n\
 done\n\
 \n\
-rpmbuild --rebuild --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' \"${{rpm_smp_flags[@]}}\" \"${{srpm_path}}\"\n\
+rpmbuild --rebuild --nodeps --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' \"${{rpm_smp_flags[@]}}\" \"${{srpm_path}}\"\n\
 find \"$build_root/SRPMS\" -type f -name '*.src.rpm' -exec cp -f {{}} '{target_srpms_dir}'/ \\;\n\
 while IFS= read -r rpmf; do\n\
   rel=\"${{rpmf#$build_root/RPMS/}}\"\n\
