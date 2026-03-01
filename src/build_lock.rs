@@ -34,6 +34,14 @@ pub struct ForwardedBuildRequest {
     pub queued_packages: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ForwardedQueuedPackage {
+    pub package: String,
+    pub submitted_host: String,
+    pub submitted_pid: u32,
+    pub submitted_at_utc: String,
+}
+
 pub enum BuildAcquireOutcome {
     Owner(BuildSessionGuard),
     Forwarded(ForwardedBuildRequest),
@@ -48,6 +56,8 @@ struct ActiveBuildEntry {
     session_kind: String,
     #[serde(default)]
     force_rebuild: bool,
+    #[serde(default = "default_host_name")]
+    host: String,
     started_at_utc: String,
 }
 
@@ -61,6 +71,8 @@ struct BuildQueueRequest {
     pid: u32,
     target_id: String,
     packages: Vec<String>,
+    #[serde(default = "default_host_name")]
+    submitted_host: String,
     submitted_at_utc: String,
 }
 
@@ -74,6 +86,16 @@ pub struct BuildSessionGuard {
 
 fn default_session_kind() -> String {
     "build".to_string()
+}
+
+fn default_host_name() -> String {
+    std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "unknown-host".to_string())
+}
+
+pub fn current_host_name() -> String {
+    default_host_name()
 }
 
 impl BuildSessionGuard {
@@ -235,6 +257,7 @@ impl BuildSessionGuard {
             packages: packages.to_vec(),
             session_kind: session_kind.as_str().to_string(),
             force_rebuild,
+            host: current_host_name(),
             started_at_utc: chrono::Utc::now().to_rfc3339(),
         };
         let state = ActiveBuildState {
@@ -277,7 +300,10 @@ impl Drop for BuildSessionGuard {
     }
 }
 
-pub fn drain_forwarded_build_requests(topdir: &Path, target_id: &str) -> Result<Vec<String>> {
+pub fn drain_forwarded_build_requests(
+    topdir: &Path,
+    target_id: &str,
+) -> Result<Vec<ForwardedQueuedPackage>> {
     let requests_file = topdir.join(REQUESTS_FILE_NAME);
     if !requests_file.exists() {
         return Ok(Vec::new());
@@ -317,12 +343,18 @@ pub fn drain_forwarded_build_requests(topdir: &Path, target_id: &str) -> Result<
             continue;
         };
         if req.target_id == target_id {
-            queued.extend(
-                req.packages
-                    .into_iter()
-                    .map(|pkg| pkg.trim().to_string())
-                    .filter(|pkg| !pkg.is_empty()),
-            );
+            for package in req.packages {
+                let package = package.trim().to_string();
+                if package.is_empty() {
+                    continue;
+                }
+                queued.push(ForwardedQueuedPackage {
+                    package,
+                    submitted_host: req.submitted_host.clone(),
+                    submitted_pid: req.pid,
+                    submitted_at_utc: req.submitted_at_utc.clone(),
+                });
+            }
         } else {
             retained_lines.push(trimmed.to_string());
         }
@@ -383,6 +415,7 @@ fn append_build_request(topdir: &Path, target_id: &str, packages: &[String]) -> 
         pid: std::process::id(),
         target_id: target_id.to_string(),
         packages: packages.to_vec(),
+        submitted_host: current_host_name(),
         submitted_at_utc: chrono::Utc::now().to_rfc3339(),
     };
     let payload = serde_json::to_string(&request).context("serializing build queue request")?;
@@ -418,12 +451,14 @@ mod tests {
             pid: 1,
             target_id: "target-a".to_string(),
             packages: vec!["samtools".to_string(), "bcftools".to_string()],
+            submitted_host: "host-a".to_string(),
             submitted_at_utc: "2026-03-01T00:00:00Z".to_string(),
         };
         let req_b = BuildQueueRequest {
             pid: 2,
             target_id: "target-b".to_string(),
             packages: vec!["blast".to_string()],
+            submitted_host: "host-b".to_string(),
             submitted_at_utc: "2026-03-01T00:00:01Z".to_string(),
         };
         let payload = format!(
@@ -434,10 +469,11 @@ mod tests {
         fs::write(&requests, payload).expect("seed requests file");
 
         let drained = drain_forwarded_build_requests(&topdir, "target-a").expect("drain requests");
-        assert_eq!(
-            drained,
-            vec!["samtools".to_string(), "bcftools".to_string()]
-        );
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].package, "samtools");
+        assert_eq!(drained[0].submitted_host, "host-a");
+        assert_eq!(drained[1].package, "bcftools");
+        assert_eq!(drained[1].submitted_host, "host-a");
 
         let remainder = fs::read_to_string(&requests).expect("read remaining requests");
         assert!(remainder.contains("\"target_id\":\"target-b\""));
@@ -464,6 +500,24 @@ mod tests {
         let entry = &loaded.entries[0];
         assert_eq!(entry.session_kind, "build");
         assert!(!entry.force_rebuild);
+
+        let _ = fs::remove_dir_all(&topdir);
+    }
+
+    #[test]
+    fn drain_forwarded_build_requests_backfills_legacy_submit_host() {
+        let topdir = tempdir("legacy-queue-host");
+        let requests = topdir.join(REQUESTS_FILE_NAME);
+        fs::write(
+            &requests,
+            r#"{"pid":3,"target_id":"target-a","packages":["blast"],"submitted_at_utc":"2026-03-01T00:00:02Z"}"#,
+        )
+        .expect("write legacy request");
+
+        let drained = drain_forwarded_build_requests(&topdir, "target-a").expect("drain requests");
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].package, "blast");
+        assert!(!drained[0].submitted_host.is_empty());
 
         let _ = fs::remove_dir_all(&topdir);
     }

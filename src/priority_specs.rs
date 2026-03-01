@@ -1103,6 +1103,65 @@ fn merge_dynamic_plan_nodes(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn requeue_existing_node_for_rerun(
+    key: &str,
+    global_nodes: &BTreeMap<String, BuildPlanNode>,
+    pending_deps: &mut HashMap<String, usize>,
+    failed_by: &mut HashMap<String, BTreeSet<String>>,
+    finalized: &mut HashSet<String>,
+    succeeded: &mut HashSet<String>,
+    ready: &mut VecDeque<String>,
+    pending_fail_queue: &mut VecDeque<String>,
+    results: &mut Vec<ReportEntry>,
+    running_keys: &HashSet<String>,
+) -> bool {
+    if key.is_empty() || running_keys.contains(key) {
+        return false;
+    }
+    let Some(node) = global_nodes.get(key) else {
+        return false;
+    };
+
+    // Drop stale completion/quarantine entries for this node so rerun status is authoritative.
+    results.retain(|entry| normalize_name(&entry.software) != key);
+    ready.retain(|queued| queued != key);
+    pending_fail_queue.retain(|queued| queued != key);
+    finalized.remove(key);
+    succeeded.remove(key);
+
+    let mut pending = 0usize;
+    let mut failed_inputs = BTreeSet::new();
+    for dep in &node.direct_bioconda_deps {
+        if finalized.contains(dep) {
+            if !succeeded.contains(dep) {
+                failed_inputs.insert(dep.clone());
+            }
+        } else {
+            pending += 1;
+        }
+    }
+    pending_deps.insert(key.to_string(), pending);
+    if failed_inputs.is_empty() {
+        failed_by.remove(key);
+    } else {
+        failed_by.insert(key.to_string(), failed_inputs);
+    }
+
+    if pending == 0 {
+        if failed_by
+            .get(key)
+            .map(|deps| !deps.is_empty())
+            .unwrap_or(false)
+        {
+            pending_fail_queue.push_back(key.to_string());
+        } else {
+            ready.push_back(key.to_string());
+        }
+    }
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_build_batch_queue(
     args: &BuildArgs,
     requested_packages: &[String],
@@ -1230,6 +1289,7 @@ fn run_build_batch_queue(
 
     let (tx, rx) = mpsc::channel::<(String, ReportEntry, Duration)>();
     let mut running = 0usize;
+    let mut running_keys: HashSet<String> = HashSet::new();
     let mut finalized: HashSet<String> = HashSet::new();
     let mut succeeded: HashSet<String> = HashSet::new();
     let mut failed_by: HashMap<String, BTreeSet<String>> = HashMap::new();
@@ -1243,15 +1303,54 @@ fn run_build_batch_queue(
                 &build_config.target_id,
             ) {
                 Ok(forwarded_roots) => {
-                    for root in forwarded_roots {
+                    let local_host = build_lock::current_host_name();
+                    for forwarded in forwarded_roots {
+                        let root = forwarded.package;
                         let key = normalize_name(&root);
-                        if key.is_empty() || !requested_root_keys.insert(key.clone()) {
+                        if key.is_empty() {
+                            continue;
+                        }
+                        let is_remote_submitter = !forwarded.submitted_host.is_empty()
+                            && forwarded.submitted_host != local_host;
+                        if !requested_root_keys.insert(key.clone()) {
+                            if is_remote_submitter {
+                                let queued = requeue_existing_node_for_rerun(
+                                    &key,
+                                    &global_nodes,
+                                    &mut pending_deps,
+                                    &mut failed_by,
+                                    &mut finalized,
+                                    &mut succeeded,
+                                    &mut ready,
+                                    &mut pending_fail_queue,
+                                    &mut results,
+                                    &running_keys,
+                                );
+                                log_progress(format!(
+                                    "phase=workspace-lock status=forwarded-request-rerun package={} key={} submit_host={} submit_pid={} submit_ts={} queued={}",
+                                    root,
+                                    key,
+                                    forwarded.submitted_host,
+                                    forwarded.submitted_pid,
+                                    forwarded.submitted_at_utc,
+                                    queued
+                                ));
+                            } else {
+                                log_progress(format!(
+                                    "phase=workspace-lock status=forwarded-request-ignored package={} key={} submit_host={} reason=duplicate-same-host",
+                                    root, key, forwarded.submitted_host
+                                ));
+                            }
                             continue;
                         }
                         requested_roots.push(root.clone());
                         log_progress(format!(
-                            "phase=workspace-lock status=forwarded-request-received package={} target_id={}",
-                            root, build_config.target_id
+                            "phase=workspace-lock status=forwarded-request-received package={} target_id={} submit_host={} submit_pid={} submit_ts={}",
+                            root,
+                            build_config.target_id,
+                            forwarded.submitted_host,
+                            forwarded.submitted_pid,
+                            forwarded.submitted_at_utc
                         ));
                         match collect_build_plan(
                             &root,
@@ -1378,6 +1477,7 @@ fn run_build_batch_queue(
             let build_config_c = Arc::clone(&build_config);
             let metadata_adapter_c = Arc::clone(&metadata_adapter);
             running += 1;
+            running_keys.insert(key_for_thread.clone());
             log_progress(format!(
                 "phase=batch-queue status=dispatch key={} package={} running={} queued={}",
                 key_for_thread,
@@ -1424,6 +1524,7 @@ fn run_build_batch_queue(
             }
         };
         running = running.saturating_sub(1);
+        running_keys.remove(&done_key);
         if finalized.contains(&done_key) {
             continue;
         }
