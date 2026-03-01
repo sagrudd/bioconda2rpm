@@ -8,6 +8,15 @@ Status: Draft (decision-aligned baseline)
 
 Define the target architecture for `bioconda2rpm` as an enterprise-capable, dependency-aware Bioconda-to-RPM conversion system.
 
+## 1a. Normative Governance References
+
+This architecture is constrained by the following governance artifacts:
+- [Module Governance Charter](../MODULE_GOVERNANCE_CHARTER.md)
+- [RPM Charter](./RPM_charter.md)
+- [Python RPM Charter](./Python_RPM_charter.md)
+- [R RPM Charter](./R_RPM_charter.md)
+- [Rust RPM Charter](./Rust_RPM_charter.md)
+
 ## 2. Architecture Overview
 
 The product is structured as layered components:

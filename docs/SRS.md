@@ -22,6 +22,15 @@ Out of scope (initial baseline):
 - Repository publishing/signing.
 - Runtime functional validation beyond package build success.
 
+## 2a. Normative Governance References
+
+The following governance documents are normative for this SRS and shall be treated as binding policy inputs for implementation and release behavior:
+- [Module Governance Charter](../MODULE_GOVERNANCE_CHARTER.md)
+- [RPM Charter](./RPM_charter.md)
+- [Python RPM Charter](./Python_RPM_charter.md)
+- [R RPM Charter](./R_RPM_charter.md)
+- [Rust RPM Charter](./Rust_RPM_charter.md)
+
 ## 3. Functional Requirements
 
 FR-001 CLI entrypoint
