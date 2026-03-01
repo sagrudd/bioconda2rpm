@@ -4463,12 +4463,14 @@ fn render_payload_spec(
     };
     let needs_isal = recipe_dep_mentions(parsed, "isa-l");
     let needs_libdeflate = recipe_dep_mentions(parsed, "libdeflate");
+    let needs_libhwy = recipe_dep_mentions(parsed, "libhwy");
     let python_venv_setup = render_python_venv_setup_block(python_recipe, &python_requirements);
     let r_runtime_setup =
         render_r_runtime_setup_block(r_runtime_required, r_project_recipe, &r_cran_requirements);
     let rust_runtime_setup = render_rust_runtime_setup_block(rust_runtime_required);
     let nim_runtime_setup = render_nim_runtime_setup_block(nim_runtime_required);
-    let core_c_dep_bootstrap = render_core_c_dep_bootstrap_block(needs_isal, needs_libdeflate);
+    let core_c_dep_bootstrap =
+        render_core_c_dep_bootstrap_block(needs_isal, needs_libdeflate, needs_libhwy);
     let module_lua_env = render_module_lua_env_block(
         python_recipe,
         r_runtime_required,
@@ -5342,8 +5344,12 @@ fn recipe_dep_mentions(parsed: &ParsedMeta, dep_name: &str) -> bool {
         .any(|dep| dep == dep_name)
 }
 
-fn render_core_c_dep_bootstrap_block(needs_isal: bool, needs_libdeflate: bool) -> String {
-    if !needs_isal && !needs_libdeflate {
+fn render_core_c_dep_bootstrap_block(
+    needs_isal: bool,
+    needs_libdeflate: bool,
+    needs_libhwy: bool,
+) -> String {
+    if !needs_isal && !needs_libdeflate && !needs_libhwy {
         return String::new();
     }
 
@@ -5419,6 +5425,36 @@ fi\n\
         );
     }
 
+    if needs_libhwy {
+        out.push_str(
+            "if [[ ! -e \"$PREFIX/lib/libhwy.so\" && ! -e \"$PREFIX/lib/libhwy.a\" && ! -e \"$PREFIX/lib64/libhwy.so\" ]]; then\n\
+  echo \"bioconda2rpm: bootstrapping libhwy into $PREFIX\" >&2\n\
+  if ! command -v cmake >/dev/null 2>&1; then\n\
+    if command -v dnf >/dev/null 2>&1; then dnf -y install cmake >/dev/null 2>&1 || true; fi\n\
+    if command -v microdnf >/dev/null 2>&1; then microdnf -y install cmake >/dev/null 2>&1 || true; fi\n\
+  fi\n\
+  pushd \"$third_party_root\" >/dev/null\n\
+  rm -rf highway-1.2.0\n\
+  if command -v curl >/dev/null 2>&1; then\n\
+    curl -L --fail --output highway-1.2.0.tar.gz https://github.com/google/highway/archive/refs/tags/1.2.0.tar.gz\n\
+  elif command -v wget >/dev/null 2>&1; then\n\
+    wget -O highway-1.2.0.tar.gz https://github.com/google/highway/archive/refs/tags/1.2.0.tar.gz\n\
+  else\n\
+    echo \"missing curl/wget for libhwy bootstrap\" >&2\n\
+    exit 44\n\
+  fi\n\
+  tar -xf highway-1.2.0.tar.gz\n\
+  rm -rf highway-build\n\
+  mkdir -p highway-build\n\
+  cmake -S highway-1.2.0 -B highway-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"$PREFIX\" -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=ON -DHWY_ENABLE_TESTS=OFF\n\
+  cmake --build highway-build -j\"${CPU_COUNT:-1}\"\n\
+  cmake --install highway-build\n\
+  popd >/dev/null\n\
+fi\n\
+",
+        );
+    }
+
     out.push_str(
         "if [[ -d \"$PREFIX/lib64\" ]]; then\n\
   export LIBRARY_PATH=\"$PREFIX/lib64${LIBRARY_PATH:+:$LIBRARY_PATH}\"\n\
@@ -5429,6 +5465,11 @@ if [[ -d \"$PREFIX/lib\" ]]; then\n\
   export LIBRARY_PATH=\"$PREFIX/lib${LIBRARY_PATH:+:$LIBRARY_PATH}\"\n\
   export LD_LIBRARY_PATH=\"$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"\n\
   export LDFLAGS=\"-L$PREFIX/lib ${LDFLAGS:-}\"\n\
+fi\n\
+if [[ -d \"$PREFIX/include\" ]]; then\n\
+  export C_INCLUDE_PATH=\"$PREFIX/include${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}\"\n\
+  export CPLUS_INCLUDE_PATH=\"$PREFIX/include${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}\"\n\
+  export CPPFLAGS=\"-I$PREFIX/include ${CPPFLAGS:-}\"\n\
 fi\n\
 ",
     );
