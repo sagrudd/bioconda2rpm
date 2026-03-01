@@ -7025,6 +7025,7 @@ fn map_build_dependency(dep: &str) -> String {
         "eigen" => "eigen3-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
+        "gmp" => "gmp-devel".to_string(),
         "mscorefonts" => "dejavu-sans-fonts".to_string(),
         "glib" => "glib2-devel".to_string(),
         "hdf5" => "hdf5-devel".to_string(),
@@ -7059,10 +7060,12 @@ fn map_build_dependency(dep: &str) -> String {
         "lzo" | "lzo2" | "liblzo2" | "liblzo2-dev" | "liblzo2-devel" => "lzo-devel".to_string(),
         "mysql-connector-c" => "mariadb-connector-c-devel".to_string(),
         "ncurses" => "ncurses-devel".to_string(),
+        "nettle" => "nettle-devel".to_string(),
         "ninja" => "ninja-build".to_string(),
         "openssl" => "openssl-devel".to_string(),
         "openmpi" => "openmpi-devel".to_string(),
         "sparsehash" => "sparsehash-devel".to_string(),
+        "snappy" => "snappy-devel".to_string(),
         "sqlite" => "sqlite-devel".to_string(),
         "qt" => "qt5-qtbase-devel qt5-qtsvg-devel".to_string(),
         "llvmdev" => "llvm-devel".to_string(),
@@ -7126,6 +7129,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "eigen" => "eigen3-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
+        "gmp" => "gmp".to_string(),
         "mscorefonts" => "dejavu-sans-fonts".to_string(),
         "glib" => "glib2".to_string(),
         "gnuconfig" => "automake".to_string(),
@@ -7147,8 +7151,10 @@ fn map_runtime_dependency(dep: &str) -> String {
         "lzo" | "lzo2" | "liblzo2" | "liblzo2-dev" | "liblzo2-devel" => "lzo".to_string(),
         "qt" => "qt5-qtbase qt5-qtsvg".to_string(),
         "llvmdev" => "llvm".to_string(),
+        "nettle" => "nettle".to_string(),
         "sparsehash" => "sparsehash".to_string(),
         "ninja" => "ninja-build".to_string(),
+        "snappy" => "snappy".to_string(),
         "zstd-static" => "zstd".to_string(),
         "xorg-libxext" => "libXext".to_string(),
         "xorg-libxfixes" => "libXfixes".to_string(),
@@ -9597,10 +9603,12 @@ mod tests {
             map_build_dependency("font-ttf-dejavu-sans-mono"),
             "dejavu-sans-mono-fonts".to_string()
         );
+        assert_eq!(map_build_dependency("gmp"), "gmp-devel".to_string());
         assert_eq!(
             map_runtime_dependency("font-ttf-dejavu-sans-mono"),
             "dejavu-sans-mono-fonts".to_string()
         );
+        assert_eq!(map_runtime_dependency("gmp"), "gmp".to_string());
         assert_eq!(
             map_build_dependency("gsl"),
             "gsl-devel openblas-devel".to_string()
@@ -9615,6 +9623,10 @@ mod tests {
             "fontconfig".to_string()
         );
         assert_eq!(map_runtime_dependency("ninja"), "ninja-build".to_string());
+        assert_eq!(map_build_dependency("nettle"), "nettle-devel".to_string());
+        assert_eq!(map_runtime_dependency("nettle"), "nettle".to_string());
+        assert_eq!(map_build_dependency("snappy"), "snappy-devel".to_string());
+        assert_eq!(map_runtime_dependency("snappy"), "snappy".to_string());
         assert_eq!(
             map_runtime_dependency("sparsehash"),
             "sparsehash".to_string()
