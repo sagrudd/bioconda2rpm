@@ -6180,7 +6180,7 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
       echo \"bioconda2rpm: using Qt6 from $Qt6_DIR\" >&2\n\
     fi\n\
     if [[ -f ./build.sh ]]; then\n\
-      perl -0pi -e 's@(^\\s*cmake\\s+--build\\s+build\\b)@if [[ -d build ]]; then\\n  find build -type f -name flags.make | while IFS= read -r fm; do\\n    sed -i \"s# -isystem /usr/include##g; s# -I/usr/include##g\" \"$fm\" || true\\n  done\\nfi\\n$1@mg' ./build.sh || true\n\
+      perl -0pi -e 's@(^\\s*cmake\\s+--build\\s+build\\b)@if [[ -d build ]]; then\\n  find build -type f -name flags.make | while IFS= read -r fm; do\\n    sed -i \"s# -isystem /usr/include##g; s# -I/usr/include##g\" \"\\$fm\" || true\\n  done\\nfi\\n$1@mg' ./build.sh || true\n\
     fi\n\
     fi\n\
     \n\
@@ -12561,6 +12561,7 @@ requirements:
         assert!(spec.contains("find /usr/local/phoreus -maxdepth 8 -type f -name Qt6Config.cmake"));
         assert!(spec.contains("export Qt6_DIR=\"$(dirname \"$qt6_cfg\")\""));
         assert!(spec.contains("find build -type f -name flags.make | while IFS= read -r fm; do"));
+        assert!(spec.contains("sed -i \"s# -isystem /usr/include##g; s# -I/usr/include##g\" \"\\$fm\" || true"));
         assert!(spec.contains("BuildRequires:  qt6-qtbase-devel"));
         assert!(spec.contains("BuildRequires:  qt6-qtsvg-devel"));
         assert!(spec.contains("BuildRequires:  libX11-devel"));
