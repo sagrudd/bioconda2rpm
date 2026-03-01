@@ -6806,9 +6806,19 @@ fn render_patch_apply_lines(staged_patch_sources: &[String], source_dir: &str) -
         out.push_str(&format!("cd {source_dir}\n"));
         for (idx, _) in staged_patch_sources.iter().enumerate() {
             out.push_str(&format!(
-                "(patch --batch -p1 -i %{{SOURCE{}}} || patch --batch -p0 -i %{{SOURCE{}}})\n",
+                "patch_applied=0\n\
+for patch_strip in 1 0 2 3; do\n\
+  if patch --batch -p\"$patch_strip\" -i %{{SOURCE{}}}; then\n\
+    patch_applied=1\n\
+    break\n\
+  fi\n\
+done\n\
+if [[ \"$patch_applied\" -ne 1 ]]; then\n\
+  echo \"failed to apply patch %{{SOURCE{}}} with supported strip levels (1,0,2,3)\" >&2\n\
+  exit 1\n\
+fi\n",
                 idx + 2,
-                idx + 2
+                idx + 2,
             ));
         }
         out
@@ -9767,7 +9777,8 @@ requirements:
             false,
         );
         assert!(spec.contains("Source2:"));
-        assert!(spec.contains("patch --batch -p1 -i %{SOURCE2}"));
+        assert!(spec.contains("for patch_strip in 1 0 2 3; do"));
+        assert!(spec.contains("patch --batch -p\"$patch_strip\" -i %{SOURCE2}"));
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(spec.contains("retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\""));
         assert!(spec.contains("export CPU_COUNT=\"${BIOCONDA2RPM_CPU_COUNT:-1}\""));
