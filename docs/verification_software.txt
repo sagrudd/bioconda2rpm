@@ -150,8 +150,16 @@ toulligqc
 trim-galore
 truvari
 trycycler
+vcf-validator
+vcfanno
+vcfdist
+vcfexpress
 vcfkit
 vcflib
+vcftools
 velvet
+vg
+virmet
 wakhan
+wgatools
 whatshap
