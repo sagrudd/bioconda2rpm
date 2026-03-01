@@ -4497,6 +4497,7 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "golang"
             | "make"
             | "cmake"
+            | "meson"
             | "ninja"
             | "pkg-config"
             | "patch"
@@ -10614,6 +10615,54 @@ requirements:
         assert!(!spec.contains("BuildRequires:  setuptools-scm"));
         assert!(spec.contains("cython"));
         assert!(spec.contains("setuptools-scm"));
+    }
+
+    #[test]
+    fn python_payload_spec_keeps_meson_as_rpm_build_requirement() {
+        let mut build_deps = BTreeSet::new();
+        build_deps.insert("meson".to_string());
+        build_deps.insert("ninja".to_string());
+        let mut host_deps = BTreeSet::new();
+        host_deps.insert(PHOREUS_PYTHON_PACKAGE.to_string());
+
+        let parsed = ParsedMeta {
+            package_name: "btllib".to_string(),
+            version: "1.7.5".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/btllib-1.7.5.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/btllib".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "btllib".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "$PYTHON -m pip install ${PREFIX}/lib/btllib/python --no-deps --no-build-isolation"
+                    .to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["meson".to_string(), "ninja".to_string()],
+            host_dep_specs_raw: vec!["python".to_string(), "pip".to_string()],
+            run_dep_specs_raw: vec!["python".to_string()],
+            build_deps,
+            host_deps,
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "btllib",
+            &parsed,
+            "bioconda-btllib-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("BuildRequires:  meson"));
+        assert!(spec.contains("BuildRequires:  ninja-build"));
     }
 
     #[test]
