@@ -6178,6 +6178,23 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     if ! ldconfig -p 2>/dev/null | grep -q 'libncursesw\\\\.so'; then\n\
     sed -i 's|-lncursesw|-lncurses|g' ./build.sh || true\n\
     fi\n\
+    # ABySS can optionally use Google sparsehash. EL9 repositories may not ship\n\
+    # sparsehash headers, and the Bioconda build script hard-requires\n\
+    # --with-sparsehash when the dependency is declared. Fall back to\n\
+    # --without-sparsehash when headers are unavailable so payload builds proceed.\n\
+    if [[ \"%{{tool}}\" == \"abyss\" ]]; then\n\
+    sparsehash_header=\"\"\n\
+    for cand in \"$PREFIX/include/google/sparse_hash_map\" /usr/include/google/sparse_hash_map /usr/local/include/google/sparse_hash_map; do\n\
+      if [[ -f \"$cand\" ]]; then\n\
+        sparsehash_header=\"$cand\"\n\
+        break\n\
+      fi\n\
+    done\n\
+    if [[ -z \"$sparsehash_header\" ]]; then\n\
+      sed -E -i 's|--with-sparsehash(=[^[:space:]]+)?|--without-sparsehash|g' ./build.sh || true\n\
+      echo \"bioconda2rpm: sparsehash headers not found; forcing abyss --without-sparsehash\" >&2\n\
+    fi\n\
+    fi\n\
     \n\
     # STAR can hit container OOM/SIGKILL during final link on constrained hosts.\n\
     # Keep canonical single-core policy but also reduce memory pressure.\n\
@@ -9067,9 +9084,33 @@ if [[ -z \"${{BIOCONDA2RPM_CPU_COUNT}}\" || \"${{BIOCONDA2RPM_CPU_COUNT}}\" == \
 fi\n\
 export BIOCONDA2RPM_ADAPTIVE_RETRY={adaptive_retry}\n\
 rpm_smp_flags=(--define \"_smp_mflags -j${{BIOCONDA2RPM_CPU_COUNT}}\" --define \"_smp_build_ncpus ${{BIOCONDA2RPM_CPU_COUNT}}\")\n\
-source0_url=$(rpmspec -q --srpm --qf '%{{SOURCE0}}\\n' --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}' 2>/dev/null | head -n 1 | tr -d '\\r' || true)\n\
+build_sourcedir=\"$build_root/SOURCES\"\n\
+is_remote_source() {{\n\
+  [[ \"$1\" =~ ^https?:// || \"$1\" =~ ^ftp:// ]]\n\
+}}\n\
+mapfile -t declared_sources < <(rpmspec -P --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}' 2>/dev/null | awk '/^Source[0-9]+:[[:space:]]+/ {{print $2}}')\n\
+for declared in \"${{declared_sources[@]:-}}\"; do\n\
+  declared=\"${{declared%%$'\\r'}}\"\n\
+  if [[ -z \"$declared\" ]]; then\n\
+    continue\n\
+  fi\n\
+  if is_remote_source \"$declared\"; then\n\
+    continue\n\
+  fi\n\
+  declared_name=\"$declared\"\n\
+  declared_name=\"${{declared_name##*/}}\"\n\
+  if [[ -s \"/work/SOURCES/$declared_name\" ]]; then\n\
+    cp -f \"/work/SOURCES/$declared_name\" \"$build_sourcedir/$declared_name\"\n\
+  elif [[ -s \"/work/SOURCES/$declared\" ]]; then\n\
+    cp -f \"/work/SOURCES/$declared\" \"$build_sourcedir/$declared_name\"\n\
+  else\n\
+    echo \"missing staged source artifact in /work/SOURCES: $declared\" >&2\n\
+    exit 8\n\
+  fi\n\
+done\n\
+source0_url=$(rpmspec -q --srpm --qf '%{{SOURCE0}}\\n' --define \"_topdir $build_root\" --define \"_sourcedir $build_sourcedir\" '{spec}' 2>/dev/null | head -n 1 | tr -d '\\r' || true)\n\
 if [[ -z \"$source0_url\" || \"$source0_url\" == '(none)' ]]; then\n\
-  source0_url=$(rpmspec -P --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}' 2>/dev/null | awk '/^Source0:[[:space:]]+/ {{print $2; exit}}' || true)\n\
+  source0_url=$(rpmspec -P --define \"_topdir $build_root\" --define \"_sourcedir $build_sourcedir\" '{spec}' 2>/dev/null | awk '/^Source0:[[:space:]]+/ {{print $2; exit}}' || true)\n\
 fi\n\
 if [[ -z \"$source0_url\" ]]; then\n\
   source0_url=$(awk '/^Source0:[[:space:]]+/ {{print $2; exit}}' '{spec}' || true)\n\
@@ -9170,22 +9211,25 @@ else\n\
   for candidate in \"${{source_candidates[@]}}\"; do\n\
     escaped_candidate=$(printf '%s' \"$candidate\" | sed 's/[\\/&]/\\\\&/g')\n\
     sed -i \"s/^Source0:[[:space:]].*$/Source0:        $escaped_candidate/\" '{spec}'\n\
+    candidate_file=\"$candidate\"\n\
+    candidate_file=\"${{candidate_file%%\\#*}}\"\n\
+    candidate_file=\"${{candidate_file%%\\?*}}\"\n\
+    candidate_file=\"${{candidate_file##*/}}\"\n\
+    if [[ -n \"$candidate_file\" ]]; then\n\
+      rm -f \"$build_sourcedir/$candidate_file\" || true\n\
+    fi\n\
     echo \"Downloading: $candidate\"\n\
     for attempt in 1 2 3; do\n\
-      if spectool -g -R --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}'; then\n\
-        candidate_file=\"$candidate\"\n\
-        candidate_file=\"${{candidate_file%%\\#*}}\"\n\
-        candidate_file=\"${{candidate_file%%\\?*}}\"\n\
-        candidate_file=\"${{candidate_file##*/}}\"\n\
-        if [[ -n \"$candidate_file\" && -s \"/work/SOURCES/$candidate_file\" ]]; then\n\
-          if validate_source_file \"/work/SOURCES/$candidate_file\"; then\n\
+      if spectool -g -R --define \"_topdir $build_root\" --define \"_sourcedir $build_sourcedir\" '{spec}'; then\n\
+        if [[ -n \"$candidate_file\" && -s \"$build_sourcedir/$candidate_file\" ]]; then\n\
+          if validate_source_file \"$build_sourcedir/$candidate_file\"; then\n\
             spectool_ok=1\n\
             break 2\n\
           fi\n\
-          echo \"source archive validation failed for /work/SOURCES/$candidate_file; removing corrupt download\" >&2\n\
-          rm -f \"/work/SOURCES/$candidate_file\" || true\n\
+          echo \"source archive validation failed for $build_sourcedir/$candidate_file; removing corrupt download\" >&2\n\
+          rm -f \"$build_sourcedir/$candidate_file\" || true\n\
         fi\n\
-        echo \"source download did not produce /work/SOURCES/$candidate_file\" >&2\n\
+        echo \"source download did not produce $build_sourcedir/$candidate_file\" >&2\n\
       fi\n\
       sleep $((attempt * 2))\n\
     done\n\
@@ -9200,16 +9244,16 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
     if [[ -n \"$ftp_file\" ]]; then\n\
       echo \"Attempting FTP prefetch fallback: $source0_url\"\n\
       if command -v wget >/dev/null 2>&1; then\n\
-        wget -O \"/work/SOURCES/$ftp_file\" \"$source0_url\" || true\n\
+        wget -O \"$build_sourcedir/$ftp_file\" \"$source0_url\" || true\n\
       elif command -v curl >/dev/null 2>&1; then\n\
-        curl -L --fail --output \"/work/SOURCES/$ftp_file\" \"$source0_url\" || true\n\
+        curl -L --fail --output \"$build_sourcedir/$ftp_file\" \"$source0_url\" || true\n\
       fi\n\
-      if [[ -s \"/work/SOURCES/$ftp_file\" ]]; then\n\
-        if validate_source_file \"/work/SOURCES/$ftp_file\"; then\n\
+      if [[ -s \"$build_sourcedir/$ftp_file\" ]]; then\n\
+        if validate_source_file \"$build_sourcedir/$ftp_file\"; then\n\
           spectool_ok=1\n\
         else\n\
-          echo \"source archive validation failed for /work/SOURCES/$ftp_file; removing corrupt download\" >&2\n\
-          rm -f \"/work/SOURCES/$ftp_file\" || true\n\
+          echo \"source archive validation failed for $build_sourcedir/$ftp_file; removing corrupt download\" >&2\n\
+          rm -f \"$build_sourcedir/$ftp_file\" || true\n\
         fi\n\
       fi\n\
     fi\n\
@@ -9220,8 +9264,8 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
   exit 6\n\
 fi\n\
 find /work/SPECS -type f -name '*.spec' -exec chmod 0644 {{}} + || true\n\
-find /work/SOURCES -type f -exec chmod 0644 {{}} + || true\n\
-rpmbuild -bs --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' \"${{rpm_smp_flags[@]}}\" '{spec}'\n\
+find \"$build_sourcedir\" -type f -exec chmod 0644 {{}} + || true\n\
+rpmbuild -bs --define \"_topdir $build_root\" --define \"_sourcedir $build_sourcedir\" \"${{rpm_smp_flags[@]}}\" '{spec}'\n\
 srpm_path=$(find \"$build_root/SRPMS\" -type f -name '*.src.rpm' | sort | tail -n 1)\n\
 if [[ -z \"${{srpm_path}}\" ]]; then\n\
   echo 'no SRPM produced from spec build step' >&2\n\
@@ -9407,7 +9451,7 @@ install_local_with_hydration() {{\n\
   return 0\n\
 }}\n\
 \n\
-mapfile -t build_requires < <(rpmspec -q --buildrequires --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' --define \"_smp_build_ncpus ${{BIOCONDA2RPM_CPU_COUNT}}\" '{spec}' | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
+mapfile -t build_requires < <(rpmspec -q --buildrequires --define \"_topdir $build_root\" --define \"_sourcedir $build_sourcedir\" --define \"_smp_build_ncpus ${{BIOCONDA2RPM_CPU_COUNT}}\" '{spec}' | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
 dep_log=\"/tmp/bioconda2rpm-dep-{label}.log\"\n\
 for dep in \"${{build_requires[@]}}\"; do\n\
   if rpm -q --whatprovides \"$dep\" >/dev/null 2>&1; then\n\
@@ -9453,7 +9497,7 @@ for dep in \"${{build_requires[@]}}\"; do\n\
   fi\n\
 done\n\
 \n\
-rpmbuild --rebuild --nodeps --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' \"${{rpm_smp_flags[@]}}\" \"${{srpm_path}}\"\n\
+rpmbuild --rebuild --nodeps --define \"_topdir $build_root\" --define \"_sourcedir $build_sourcedir\" \"${{rpm_smp_flags[@]}}\" \"${{srpm_path}}\"\n\
 find \"$build_root/SRPMS\" -type f -name '*.src.rpm' -exec cp -f {{}} '{target_srpms_dir}'/ \\;\n\
 while IFS= read -r rpmf; do\n\
   rel=\"${{rpmf#$build_root/RPMS/}}\"\n\
@@ -11901,6 +11945,52 @@ requirements:
         assert!(spec.contains("if [[ \"%{tool}\" == \"hmmer\" ]]; then"));
         assert!(spec.contains("mpicc -x c - -fsyntax-only"));
         assert!(spec.contains("sed -i 's|--enable-mpi|--disable-mpi|g' ./build.sh || true"));
+    }
+
+    #[test]
+    fn payload_spec_abyss_can_fallback_without_sparsehash_when_headers_missing() {
+        let parsed = ParsedMeta {
+            package_name: "abyss".to_string(),
+            version: "2.3.10".to_string(),
+            build_number: "2".to_string(),
+            source_url: "https://example.invalid/abyss-2.3.10.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/abyss".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "abyss".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("./configure --with-sparsehash=$PREFIX".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["sparsehash".to_string()],
+            host_dep_specs_raw: vec!["sparsehash".to_string()],
+            run_dep_specs_raw: vec!["sparsehash".to_string()],
+            build_deps: BTreeSet::from(["sparsehash".to_string()]),
+            host_deps: BTreeSet::from(["sparsehash".to_string()]),
+            run_deps: BTreeSet::from(["sparsehash".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "abyss",
+            &parsed,
+            "bioconda-abyss-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"abyss\" ]]; then"));
+        assert!(spec.contains("sparsehash_header=\"\""));
+        assert!(spec.contains("for cand in \"$PREFIX/include/google/sparse_hash_map\""));
+        assert!(spec.contains(
+            "sed -E -i 's|--with-sparsehash(=[^[:space:]]+)?|--without-sparsehash|g' ./build.sh || true"
+        ));
+        assert!(spec.contains(
+            "sparsehash headers not found; forcing abyss --without-sparsehash"
+        ));
     }
 
     #[test]
