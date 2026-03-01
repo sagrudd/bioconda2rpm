@@ -4461,11 +4461,14 @@ fn render_payload_spec(
     } else {
         Vec::new()
     };
+    let needs_isal = recipe_dep_mentions(parsed, "isa-l");
+    let needs_libdeflate = recipe_dep_mentions(parsed, "libdeflate");
     let python_venv_setup = render_python_venv_setup_block(python_recipe, &python_requirements);
     let r_runtime_setup =
         render_r_runtime_setup_block(r_runtime_required, r_project_recipe, &r_cran_requirements);
     let rust_runtime_setup = render_rust_runtime_setup_block(rust_runtime_required);
     let nim_runtime_setup = render_nim_runtime_setup_block(nim_runtime_required);
+    let core_c_dep_bootstrap = render_core_c_dep_bootstrap_block(needs_isal, needs_libdeflate);
     let module_lua_env = render_module_lua_env_block(
         python_recipe,
         r_runtime_required,
@@ -5002,6 +5005,8 @@ fi\n\
 \n\
 {nim_runtime_setup}\
 \n\
+{core_c_dep_bootstrap}\
+\n\
     # BLAST recipes in Bioconda assume a conda-style shared prefix where ncbi-vdb\n\
     # lives under the same PREFIX. In Phoreus, ncbi-vdb is a separate payload.\n\
     # Retarget the generated build.sh argument to the newest installed ncbi-vdb prefix.\n\
@@ -5322,8 +5327,113 @@ fi\n\
         r_runtime_setup = r_runtime_setup,
         rust_runtime_setup = rust_runtime_setup,
         nim_runtime_setup = nim_runtime_setup,
+        core_c_dep_bootstrap = core_c_dep_bootstrap,
         module_prefix_path = module_prefix_path,
     )
+}
+
+fn recipe_dep_mentions(parsed: &ParsedMeta, dep_name: &str) -> bool {
+    parsed
+        .build_deps
+        .iter()
+        .chain(parsed.host_deps.iter())
+        .chain(parsed.run_deps.iter())
+        .map(|dep| normalize_dependency_token(dep))
+        .any(|dep| dep == dep_name)
+}
+
+fn render_core_c_dep_bootstrap_block(needs_isal: bool, needs_libdeflate: bool) -> String {
+    if !needs_isal && !needs_libdeflate {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    out.push_str(
+        "# Bootstrap selected low-level C libraries when distro repos do not\n\
+# provide matching RPMs and recipe build scripts require PREFIX linkage.\n\
+third_party_root=\"$(pwd)/.bioconda2rpm-thirdparty\"\n\
+mkdir -p \"$third_party_root\"\n\
+",
+    );
+
+    if needs_isal {
+        out.push_str(
+            "if [[ ! -e \"$PREFIX/lib/libisal.so\" && ! -e \"$PREFIX/lib/libisal.a\" && ! -e \"$PREFIX/lib64/libisal.so\" ]]; then\n\
+  echo \"bioconda2rpm: bootstrapping isa-l into $PREFIX\" >&2\n\
+  if ! command -v nasm >/dev/null 2>&1; then\n\
+    if command -v dnf >/dev/null 2>&1; then dnf -y install nasm >/dev/null 2>&1 || true; fi\n\
+    if command -v microdnf >/dev/null 2>&1; then microdnf -y install nasm >/dev/null 2>&1 || true; fi\n\
+  fi\n\
+  if ! command -v autoreconf >/dev/null 2>&1; then\n\
+    if command -v dnf >/dev/null 2>&1; then dnf -y install autoconf automake libtool >/dev/null 2>&1 || true; fi\n\
+    if command -v microdnf >/dev/null 2>&1; then microdnf -y install autoconf automake libtool >/dev/null 2>&1 || true; fi\n\
+  fi\n\
+  pushd \"$third_party_root\" >/dev/null\n\
+  rm -rf isa-l-2.31.1\n\
+  if command -v curl >/dev/null 2>&1; then\n\
+    curl -L --fail --output isa-l-2.31.1.tar.gz https://github.com/intel/isa-l/archive/refs/tags/v2.31.1.tar.gz\n\
+  elif command -v wget >/dev/null 2>&1; then\n\
+    wget -O isa-l-2.31.1.tar.gz https://github.com/intel/isa-l/archive/refs/tags/v2.31.1.tar.gz\n\
+  else\n\
+    echo \"missing curl/wget for isa-l bootstrap\" >&2\n\
+    exit 44\n\
+  fi\n\
+  tar -xf isa-l-2.31.1.tar.gz\n\
+  cd isa-l-2.31.1\n\
+  ./autogen.sh\n\
+  ./configure --prefix=\"$PREFIX\"\n\
+  make -j\"${CPU_COUNT:-1}\"\n\
+  make install\n\
+  popd >/dev/null\n\
+fi\n\
+",
+        );
+    }
+
+    if needs_libdeflate {
+        out.push_str(
+            "if [[ ! -e \"$PREFIX/lib/libdeflate.so\" && ! -e \"$PREFIX/lib/libdeflate.a\" && ! -e \"$PREFIX/lib64/libdeflate.so\" ]]; then\n\
+  echo \"bioconda2rpm: bootstrapping libdeflate into $PREFIX\" >&2\n\
+  if ! command -v cmake >/dev/null 2>&1; then\n\
+    if command -v dnf >/dev/null 2>&1; then dnf -y install cmake >/dev/null 2>&1 || true; fi\n\
+    if command -v microdnf >/dev/null 2>&1; then microdnf -y install cmake >/dev/null 2>&1 || true; fi\n\
+  fi\n\
+  pushd \"$third_party_root\" >/dev/null\n\
+  rm -rf libdeflate-1.23\n\
+  if command -v curl >/dev/null 2>&1; then\n\
+    curl -L --fail --output libdeflate-1.23.tar.gz https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.23.tar.gz\n\
+  elif command -v wget >/dev/null 2>&1; then\n\
+    wget -O libdeflate-1.23.tar.gz https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.23.tar.gz\n\
+  else\n\
+    echo \"missing curl/wget for libdeflate bootstrap\" >&2\n\
+    exit 44\n\
+  fi\n\
+  tar -xf libdeflate-1.23.tar.gz\n\
+  cd libdeflate-1.23\n\
+  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"$PREFIX\" -DCMAKE_INSTALL_LIBDIR=lib\n\
+  cmake --build build -j\"${CPU_COUNT:-1}\"\n\
+  cmake --install build\n\
+  popd >/dev/null\n\
+fi\n\
+",
+        );
+    }
+
+    out.push_str(
+        "if [[ -d \"$PREFIX/lib64\" ]]; then\n\
+  export LIBRARY_PATH=\"$PREFIX/lib64${LIBRARY_PATH:+:$LIBRARY_PATH}\"\n\
+  export LD_LIBRARY_PATH=\"$PREFIX/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"\n\
+  export LDFLAGS=\"-L$PREFIX/lib64 ${LDFLAGS:-}\"\n\
+fi\n\
+if [[ -d \"$PREFIX/lib\" ]]; then\n\
+  export LIBRARY_PATH=\"$PREFIX/lib${LIBRARY_PATH:+:$LIBRARY_PATH}\"\n\
+  export LD_LIBRARY_PATH=\"$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"\n\
+  export LDFLAGS=\"-L$PREFIX/lib ${LDFLAGS:-}\"\n\
+fi\n\
+",
+    );
+
+    out
 }
 
 fn synthesize_fallback_build_sh(parsed: &ParsedMeta) -> Option<String> {
@@ -6050,13 +6160,16 @@ fn map_build_dependency(dep: &str) -> String {
         "hdf5" => "hdf5-devel".to_string(),
         "go-compiler" => "golang".to_string(),
         "gnuconfig" => "automake".to_string(),
-        "isa-l" => "isa-l-devel".to_string(),
+        // Keep ISA-L as a Bioconda/Phoreus dependency so libraries are staged
+        // into the Phoreus prefix expected by fastp-style build scripts.
+        "isa-l" => "isa-l".to_string(),
         "jansson" => "jansson-devel".to_string(),
         "jsoncpp" => "jsoncpp-devel".to_string(),
         "libcurl" => "libcurl-devel".to_string(),
         "libgd" => "gd-devel".to_string(),
         "libblas" => "openblas-devel".to_string(),
-        "libdeflate" => "libdeflate-devel".to_string(),
+        // Keep libdeflate as a Bioconda/Phoreus dependency for prefix hydration.
+        "libdeflate" => "libdeflate".to_string(),
         "liblzma-devel" => "xz-devel".to_string(),
         "liblapack" => "lapack-devel".to_string(),
         "libhwy" => "highway-devel".to_string(),
@@ -8414,7 +8527,7 @@ mod tests {
         );
         assert_eq!(
             map_build_dependency("libdeflate"),
-            "libdeflate-devel".to_string()
+            "libdeflate".to_string()
         );
         assert_eq!(
             map_build_dependency("libopenssl-static"),
@@ -8431,7 +8544,7 @@ mod tests {
             map_build_dependency("xorg-libxfixes"),
             "libXfixes-devel".to_string()
         );
-        assert_eq!(map_build_dependency("isa-l"), "isa-l-devel".to_string());
+        assert_eq!(map_build_dependency("isa-l"), "isa-l".to_string());
         assert_eq!(map_build_dependency("xz"), "xz-devel".to_string());
         assert_eq!(map_build_dependency("libcurl"), "libcurl-devel".to_string());
         assert_eq!(map_build_dependency("libpng"), "libpng-devel".to_string());
