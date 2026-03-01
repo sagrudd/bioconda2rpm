@@ -6046,6 +6046,15 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     # Some libmaus2 builds expose unresolved SIMD symbols at link-test time;\n\
     # allow shared-library unresolveds during configure detection.\n\
     export LDFLAGS=\"${{LDFLAGS:-}} -Wl,--allow-shlib-undefined\"\n\
+    if [[ ! -f /usr/include/snappy-sinksource.h && ! -f /usr/local/include/snappy-sinksource.h ]]; then\n\
+      if command -v dnf >/dev/null 2>&1; then dnf -y install snappy-devel >/dev/null 2>&1 || true; fi\n\
+      if command -v microdnf >/dev/null 2>&1; then microdnf -y install snappy-devel >/dev/null 2>&1 || true; fi\n\
+    fi\n\
+    if [[ -f /usr/include/snappy-sinksource.h ]]; then\n\
+      export CPPFLAGS=\"-I/usr/include ${{CPPFLAGS:-}}\"\n\
+    elif [[ -f /usr/local/include/snappy-sinksource.h ]]; then\n\
+      export CPPFLAGS=\"-I/usr/local/include ${{CPPFLAGS:-}}\"\n\
+    fi\n\
     if ! pkg-config --exists libmaus2 2>/dev/null; then\n\
       libmaus2_prefix=$(find /usr/local/phoreus/libmaus2 -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1 || true)\n\
       if [[ -z \"$libmaus2_prefix\" && -d \"$PREFIX/include/libmaus2\" ]]; then\n\
@@ -12519,6 +12528,7 @@ requirements:
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"biobambam\" ]]; then"));
         assert!(spec.contains("export LDFLAGS=\"${LDFLAGS:-} -Wl,--allow-shlib-undefined\""));
+        assert!(spec.contains("if [[ ! -f /usr/include/snappy-sinksource.h && ! -f /usr/local/include/snappy-sinksource.h ]]; then"));
         assert!(spec.contains("if ! pkg-config --exists libmaus2 2>/dev/null; then"));
         assert!(spec.contains("export libmaus2_CFLAGS=\"-I$libmaus2_prefix/include\""));
         assert!(spec.contains("export libmaus2_LIBS=\"-L$libmaus2_prefix/lib -lmaus2\""));
