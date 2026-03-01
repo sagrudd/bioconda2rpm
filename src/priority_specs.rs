@@ -7464,7 +7464,9 @@ pm_install() {{\n\
 }}\n\
 \n\
 declare -A local_candidates\n\
+declare -A local_candidate_score\n\
 declare -A local_candidates_norm\n\
+declare -A local_candidates_norm_score\n\
 \n\
 normalize_lookup_key() {{\n\
   local key=\"$1\"\n\
@@ -7476,14 +7478,26 @@ normalize_lookup_key() {{\n\
 record_local_candidate() {{\n\
   local candidate_key=\"$1\"\n\
   local rpmf=\"$2\"\n\
-  if [[ -z \"$candidate_key\" || -n \"${{local_candidates[$candidate_key]:-}}\" ]]; then\n\
+  local candidate_score=\"${{3:-1}}\"\n\
+  if [[ -z \"$candidate_key\" ]]; then\n\
+    return 0\n\
+  fi\n\
+  local existing_score\n\
+  existing_score=\"${{local_candidate_score[$candidate_key]:--1}}\"\n\
+  if [[ -n \"${{local_candidates[$candidate_key]:-}}\" && \"$existing_score\" =~ ^[0-9]+$ && \"$candidate_score\" =~ ^[0-9]+$ && \"$existing_score\" -ge \"$candidate_score\" ]]; then\n\
     return 0\n\
   fi\n\
   local_candidates[\"$candidate_key\"]=\"$rpmf\"\n\
+  local_candidate_score[\"$candidate_key\"]=\"$candidate_score\"\n\
   local norm_key\n\
   norm_key=$(normalize_lookup_key \"$candidate_key\")\n\
-  if [[ -n \"$norm_key\" && -z \"${{local_candidates_norm[$norm_key]:-}}\" ]]; then\n\
-    local_candidates_norm[\"$norm_key\"]=\"$rpmf\"\n\
+  if [[ -n \"$norm_key\" ]]; then\n\
+    local norm_existing_score\n\
+    norm_existing_score=\"${{local_candidates_norm_score[$norm_key]:--1}}\"\n\
+    if [[ -z \"${{local_candidates_norm[$norm_key]:-}}\" || ! \"$norm_existing_score\" =~ ^[0-9]+$ || ! \"$candidate_score\" =~ ^[0-9]+$ || \"$candidate_score\" -gt \"$norm_existing_score\" ]]; then\n\
+      local_candidates_norm[\"$norm_key\"]=\"$rpmf\"\n\
+      local_candidates_norm_score[\"$norm_key\"]=\"$candidate_score\"\n\
+    fi\n\
   fi\n\
 }}\n\
 \n\
@@ -7493,15 +7507,20 @@ for rpm_dir in '{target_rpms_dir}' '{legacy_rpms_dir}'; do\n\
   fi\n\
   while IFS= read -r -d '' rpmf; do\n\
     name=$(rpm -qp --qf '%{{NAME}}\\n' \"$rpmf\" 2>/dev/null || true)\n\
-    record_local_candidate \"$name\" \"$rpmf\"\n\
+    mapfile -t rpm_provides < <(rpm -qp --provides \"$rpmf\" 2>/dev/null || true)\n\
+    provides_score=${{#rpm_provides[@]}}\n\
+    if [[ -z \"$provides_score\" || \"$provides_score\" == \"0\" ]]; then\n\
+      provides_score=1\n\
+    fi\n\
+    record_local_candidate \"$name\" \"$rpmf\" \"$provides_score\"\n\
     lower_name=$(printf '%s' \"$name\" | tr '[:upper:]' '[:lower:]')\n\
-    record_local_candidate \"$lower_name\" \"$rpmf\"\n\
-    while IFS= read -r provide; do\n\
+    record_local_candidate \"$lower_name\" \"$rpmf\" \"$provides_score\"\n\
+    for provide in \"${{rpm_provides[@]:-}}\"; do\n\
       key=$(printf '%s' \"$provide\" | awk '{{print $1}}')\n\
-      record_local_candidate \"$key\" \"$rpmf\"\n\
+      record_local_candidate \"$key\" \"$rpmf\" \"$provides_score\"\n\
       lower_key=$(printf '%s' \"$key\" | tr '[:upper:]' '[:lower:]')\n\
-      record_local_candidate \"$lower_key\" \"$rpmf\"\n\
-    done < <(rpm -qp --provides \"$rpmf\" 2>/dev/null || true)\n\
+      record_local_candidate \"$lower_key\" \"$rpmf\" \"$provides_score\"\n\
+    done\n\
   done < <(find \"$rpm_dir\" -type f -name '*.rpm' -print0 2>/dev/null)\n\
 done\n\
 \n\
