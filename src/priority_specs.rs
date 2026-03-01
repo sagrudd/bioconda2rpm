@@ -6534,6 +6534,9 @@ fn render_phoreus_rust_bootstrap_spec() -> String {
     format!(
         "%global rust_minor {rust_minor}\n\
 %global debug_package %{{nil}}\n\
+%global __strip /bin/true\n\
+%global __objdump /bin/true\n\
+%global __os_install_post %{{nil}}\n\
 %global __brp_mangle_shebangs %{{nil}}\n\
 \n\
 Name:           {name}\n\
@@ -7047,6 +7050,42 @@ fn container_image_exists(engine: &str, image: &str) -> Result<bool> {
     Ok(status.success())
 }
 
+fn normalize_container_arch(arch: &str) -> &str {
+    match arch {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    }
+}
+
+fn expected_container_arch_for_target(target_arch: &str) -> &'static str {
+    match target_arch {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        _ => "amd64",
+    }
+}
+
+fn inspect_container_image_arch(engine: &str, image: &str) -> Result<Option<String>> {
+    let output = Command::new(engine)
+        .arg("image")
+        .arg("inspect")
+        .arg("--format")
+        .arg("{{.Architecture}}")
+        .arg(image)
+        .output()
+        .with_context(|| format!("inspecting container image architecture for '{image}'"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let arch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if arch.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(arch))
+    }
+}
+
 fn container_platform_for_arch(target_arch: &str) -> &'static str {
     match target_arch {
         "aarch64" => "linux/arm64",
@@ -7061,12 +7100,31 @@ fn ensure_container_profile_available(
     target_arch: &str,
 ) -> Result<()> {
     let image = profile.image();
+    let platform = container_platform_for_arch(target_arch);
+    let expected_arch = expected_container_arch_for_target(target_arch);
     if container_image_exists(engine, image)? {
-        log_progress(format!(
-            "phase=container-profile status=ready profile={:?} image={} source=local",
-            profile, image
-        ));
-        return Ok(());
+        match inspect_container_image_arch(engine, image)? {
+            Some(actual_arch) => {
+                let normalized = normalize_container_arch(&actual_arch);
+                if normalized == expected_arch {
+                    log_progress(format!(
+                        "phase=container-profile status=ready profile={:?} image={} source=local arch={} platform={}",
+                        profile, image, actual_arch, platform
+                    ));
+                    return Ok(());
+                }
+                log_progress(format!(
+                    "phase=container-profile status=rebuild profile={:?} image={} reason=platform-mismatch image_arch={} expected_arch={} platform={}",
+                    profile, image, actual_arch, expected_arch, platform
+                ));
+            }
+            None => {
+                log_progress(format!(
+                    "phase=container-profile status=rebuild profile={:?} image={} reason=arch-inspect-unavailable expected_arch={} platform={}",
+                    profile, image, expected_arch, platform
+                ));
+            }
+        }
     }
 
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -7079,7 +7137,6 @@ fn ensure_container_profile_available(
         );
     }
 
-    let platform = container_platform_for_arch(target_arch);
     let started = Instant::now();
     log_progress(format!(
         "phase=container-profile status=building profile={:?} image={} platform={} dockerfile={}",
@@ -7156,6 +7213,7 @@ fn build_spec_chain_in_container(
     let target_srpms_in_container = format!("/work/targets/{}/SRPMS", build_config.target_id);
     let legacy_rpms_in_container = "/work/RPMS";
     let work_mount = format!("{}:/work", build_config.topdir.display());
+    let container_platform = container_platform_for_arch(&build_config.target_arch);
     let build_label = label.replace('\'', "_");
     let stage_started = Instant::now();
     log_progress(format!(
@@ -7545,8 +7603,8 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         }
         let step_started = Instant::now();
         log_progress(format!(
-            "phase=container-build status=started label={} spec={} attempt={} image={}",
-            build_label, spec_name, attempt, build_config.container_image
+            "phase=container-build status=started label={} spec={} attempt={} image={} platform={}",
+            build_label, spec_name, attempt, build_config.container_image, container_platform
         ));
         let attempt_log_path = logs_dir.join(format!(
             "{}.attempt{}.log",
@@ -7566,6 +7624,8 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         let mut cmd = Command::new(&build_config.container_engine);
         cmd.arg("run")
             .arg("--rm")
+            .arg("--platform")
+            .arg(container_platform)
             .arg("-v")
             .arg(&work_mount)
             .arg("-w")
