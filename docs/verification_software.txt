@@ -147,9 +147,18 @@ sra-tools
 stringtie
 # strkit
 toulligqc
+trackplot
+transannot
+trf
 trim-galore
+trinity
+trtools
 truvari
 trycycler
+umi_tools
+unicycler
+upd
+variant-extractor
 vcf-validator
 vcfanno
 vcfdist
