@@ -8000,6 +8000,13 @@ fn build_spec_chain_in_container(
 sanitize_field() {{\n\
   printf '%s' \"$1\" | tr '\\n' ' ' | tr '|' '/'\n\
 }}\n\
+normalize_arch() {{\n\
+  case \"$1\" in\n\
+    aarch64|arm64) printf 'aarch64' ;;\n\
+    x86_64|amd64) printf 'x86_64' ;;\n\
+    *) printf '%s' \"$1\" ;;\n\
+  esac\n\
+}}\n\
 emit_depgraph() {{\n\
   local dep status source provider detail\n\
   dep=$(sanitize_field \"$1\")\n\
@@ -8013,6 +8020,21 @@ build_root=/work/.build-work/{label}\n\
 rm -rf \"$build_root\"\n\
 mkdir -p \"$build_root\"/BUILD \"$build_root\"/BUILDROOT \"$build_root\"/RPMS \"$build_root\"/SOURCES \"$build_root\"/SPECS \"$build_root\"/SRPMS\n\
 mkdir -p '{target_rpms_dir}' '{target_srpms_dir}' /work/SOURCES /work/SPECS\n\
+expected_arch=$(normalize_arch '{target_arch}')\n\
+rpm_arch=$(normalize_arch \"$(rpm --eval '%{{_arch}}' 2>/dev/null || true)\")\n\
+uname_arch=$(normalize_arch \"$(uname -m 2>/dev/null || true)\")\n\
+actual_arch=\"$rpm_arch\"\n\
+if [[ -z \"$actual_arch\" ]]; then\n\
+  actual_arch=\"$uname_arch\"\n\
+fi\n\
+if [[ -z \"$actual_arch\" ]]; then\n\
+  echo \"unable to detect container architecture\" >&2\n\
+  exit 96\n\
+fi\n\
+if [[ \"$actual_arch\" != \"$expected_arch\" ]]; then\n\
+  echo \"bioconda2rpm architecture mismatch: target=$expected_arch container=$actual_arch (rpm_arch=$rpm_arch uname_arch=$uname_arch)\" >&2\n\
+  exit 97\n\
+fi\n\
 if ! command -v rpmbuild >/dev/null 2>&1; then\n\
   if command -v dnf >/dev/null 2>&1; then dnf -y install rpm-build rpmdevtools >/dev/null; \\\n\
   elif command -v microdnf >/dev/null 2>&1; then microdnf -y install rpm-build rpmdevtools >/dev/null; \\\n\
@@ -8368,6 +8390,12 @@ rpmbuild --rebuild --nodeps --define \"_topdir $build_root\" --define '_sourcedi
 find \"$build_root/SRPMS\" -type f -name '*.src.rpm' -exec cp -f {{}} '{target_srpms_dir}'/ \\;\n\
 while IFS= read -r rpmf; do\n\
   rel=\"${{rpmf#$build_root/RPMS/}}\"\n\
+  rpm_subarch=$(printf '%s' \"$rel\" | cut -d'/' -f1)\n\
+  rpm_subarch=$(normalize_arch \"$rpm_subarch\")\n\
+  if [[ \"$rpm_subarch\" != \"noarch\" && \"$rpm_subarch\" != \"$expected_arch\" ]]; then\n\
+    echo \"bioconda2rpm rpm arch path mismatch: rpm=$rpmf subarch=$rpm_subarch expected=$expected_arch\" >&2\n\
+    exit 98\n\
+  fi\n\
   dst=\"{target_rpms_dir}/$(dirname \"$rel\")\"\n\
   mkdir -p \"$dst\"\n\
   cp -f \"$rpmf\" \"$dst/\"\n\
@@ -8377,6 +8405,7 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         target_rpms_dir = target_rpms_in_container,
         target_srpms_dir = target_srpms_in_container,
         legacy_rpms_dir = legacy_rpms_in_container,
+        target_arch = build_config.target_arch,
         initial_jobs = initial_jobs,
         adaptive_retry = if adaptive_retry_enabled { 1 } else { 0 },
     );
