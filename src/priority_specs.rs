@@ -3791,9 +3791,10 @@ fn evaluate_selector_term(term: &str, ctx: &SelectorContext) -> bool {
         "unix" => ctx.linux || ctx.osx,
         "aarch64" => ctx.aarch64,
         "arm64" => ctx.arm64,
+        "linux64" | "linux-64" => ctx.linux && ctx.x86_64,
         "linux-aarch64" => ctx.linux && ctx.aarch64,
         "osx-arm64" => ctx.osx && ctx.arm64,
-        "x86_64" | "amd64" => ctx.x86_64,
+        "x86_64" | "amd64" | "osx64" | "osx-64" => ctx.x86_64,
         _ => evaluate_python_selector(term, ctx).unwrap_or(false),
     }
 }
@@ -11654,6 +11655,48 @@ dep: osx-arm64-only # [arm64]\n";
         assert!(filtered.contains("dep: nim"));
         assert!(filtered.contains("dep: linux-aarch64-only"));
         assert!(!filtered.contains("dep: osx-arm64-only"));
+    }
+
+    #[test]
+    fn selector_linux64_alias_matches_linux_x86_64() {
+        let ctx = SelectorContext {
+            linux: true,
+            osx: false,
+            win: false,
+            aarch64: false,
+            arm64: false,
+            x86_64: true,
+            py_major: 3,
+            py_minor: 11,
+        };
+
+        let text = "url: https://linux64.example # [linux64]\n\
+url: https://linux-aarch64.example # [aarch64]\n";
+        let filtered = apply_selectors(text, &ctx);
+        assert!(filtered.contains("linux64.example"));
+        assert!(!filtered.contains("linux-aarch64.example"));
+    }
+
+    #[test]
+    fn parse_meta_selects_source_url_from_linux64_selector_entries() {
+        let src = r#"
+package:
+  name: nextclade
+  version: 3.18.1
+source:
+  - url: https://example.invalid/nextclade-x86_64  # [linux64]
+  - url: https://example.invalid/nextclade-aarch64 # [aarch64]
+about:
+  license: MIT
+"#;
+
+        let ctx = SelectorContext::for_rpm_build("x86_64");
+        let rendered = apply_selectors(src, &ctx);
+        let parsed = parse_rendered_meta(&rendered).expect("parse rendered meta");
+        assert_eq!(
+            parsed.source_url,
+            "https://example.invalid/nextclade-x86_64".to_string()
+        );
     }
 
     #[test]
