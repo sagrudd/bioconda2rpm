@@ -5031,6 +5031,9 @@ fi\n\
     # BLAST passes --with-sqlite3=$PREFIX in conda builds where sqlite lives in\n\
     # that shared prefix. In RPM/container builds sqlite comes from system repos.\n\
     sed -i 's|--with-sqlite3=\\$PREFIX|--with-sqlite3=/usr|g' ./build.sh || true\n\
+    sed -i 's|--with-sqlite3=${{PREFIX}}|--with-sqlite3=/usr|g' ./build.sh || true\n\
+    sed -i 's|--with-sqlite3=\"\\$PREFIX\"|--with-sqlite3=/usr|g' ./build.sh || true\n\
+    sed -i 's|--with-sqlite3=\"${{PREFIX}}\"|--with-sqlite3=/usr|g' ./build.sh || true\n\
     fi\n\
     \n\
     # GMAP upstream release tarballs already ship generated configure scripts.\n\
@@ -7461,28 +7464,43 @@ pm_install() {{\n\
 }}\n\
 \n\
 declare -A local_candidates\n\
+declare -A local_candidates_norm\n\
+\n\
+normalize_lookup_key() {{\n\
+  local key=\"$1\"\n\
+  key=$(printf '%s' \"$key\" | tr '[:upper:]' '[:lower:]')\n\
+  key=$(printf '%s' \"$key\" | sed -E 's/[[:space:]]+//g; s/[()\\[\\]{{}}]//g; s/:://g; s/[-_.]//g')\n\
+  printf '%s' \"$key\"\n\
+}}\n\
+\n\
+record_local_candidate() {{\n\
+  local candidate_key=\"$1\"\n\
+  local rpmf=\"$2\"\n\
+  if [[ -z \"$candidate_key\" || -n \"${{local_candidates[$candidate_key]:-}}\" ]]; then\n\
+    return 0\n\
+  fi\n\
+  local_candidates[\"$candidate_key\"]=\"$rpmf\"\n\
+  local norm_key\n\
+  norm_key=$(normalize_lookup_key \"$candidate_key\")\n\
+  if [[ -n \"$norm_key\" && -z \"${{local_candidates_norm[$norm_key]:-}}\" ]]; then\n\
+    local_candidates_norm[\"$norm_key\"]=\"$rpmf\"\n\
+  fi\n\
+}}\n\
+\n\
 for rpm_dir in '{target_rpms_dir}' '{legacy_rpms_dir}'; do\n\
   if [[ ! -d \"$rpm_dir\" ]]; then\n\
     continue\n\
   fi\n\
   while IFS= read -r -d '' rpmf; do\n\
     name=$(rpm -qp --qf '%{{NAME}}\\n' \"$rpmf\" 2>/dev/null || true)\n\
-    if [[ -n \"$name\" && -z \"${{local_candidates[$name]:-}}\" ]]; then\n\
-      local_candidates[\"$name\"]=\"$rpmf\"\n\
-    fi\n\
+    record_local_candidate \"$name\" \"$rpmf\"\n\
     lower_name=$(printf '%s' \"$name\" | tr '[:upper:]' '[:lower:]')\n\
-    if [[ -n \"$lower_name\" && -z \"${{local_candidates[$lower_name]:-}}\" ]]; then\n\
-      local_candidates[\"$lower_name\"]=\"$rpmf\"\n\
-    fi\n\
+    record_local_candidate \"$lower_name\" \"$rpmf\"\n\
     while IFS= read -r provide; do\n\
       key=$(printf '%s' \"$provide\" | awk '{{print $1}}')\n\
-      if [[ -n \"$key\" && -z \"${{local_candidates[$key]:-}}\" ]]; then\n\
-        local_candidates[\"$key\"]=\"$rpmf\"\n\
-      fi\n\
+      record_local_candidate \"$key\" \"$rpmf\"\n\
       lower_key=$(printf '%s' \"$key\" | tr '[:upper:]' '[:lower:]')\n\
-      if [[ -n \"$lower_key\" && -z \"${{local_candidates[$lower_key]:-}}\" ]]; then\n\
-        local_candidates[\"$lower_key\"]=\"$rpmf\"\n\
-      fi\n\
+      record_local_candidate \"$lower_key\" \"$rpmf\"\n\
     done < <(rpm -qp --provides \"$rpmf\" 2>/dev/null || true)\n\
   done < <(find \"$rpm_dir\" -type f -name '*.rpm' -print0 2>/dev/null)\n\
 done\n\
@@ -7497,6 +7515,13 @@ lookup_local_candidate() {{\n\
   local req_lower\n\
   req_lower=$(printf '%s' \"$req_key\" | tr '[:upper:]' '[:lower:]')\n\
   found=\"${{local_candidates[$req_lower]:-}}\"\n\
+  if [[ -n \"$found\" ]]; then\n\
+    printf '%s' \"$found\"\n\
+    return 0\n\
+  fi\n\
+  local req_norm\n\
+  req_norm=$(normalize_lookup_key \"$req_key\")\n\
+  found=\"${{local_candidates_norm[$req_norm]:-}}\"\n\
   if [[ -n \"$found\" ]]; then\n\
     printf '%s' \"$found\"\n\
     return 0\n\
