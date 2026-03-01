@@ -6390,6 +6390,31 @@ install_from_cran_archive <- function(pkg, lib) {{\n\
   }}, error = function(e) FALSE)\n\
   ok\n\
 }}\n\
+install_from_local_phoreus_rpm <- function(pkg) {{\n\
+  key <- tolower(gsub(\"[._]\", \"-\", pkg))\n\
+  patterns <- c(\n\
+    sprintf(\"/work/targets/*/RPMS/*/phoreus-bioconductor-%s-*.rpm\", key),\n\
+    sprintf(\"/work/targets/*/RPMS/*/phoreus-r-%s-*.rpm\", key),\n\
+    sprintf(\"/work/targets/*/RPMS/*/phoreus-%s-*.rpm\", key)\n\
+  )\n\
+  files <- unique(unlist(lapply(patterns, Sys.glob), use.names = FALSE))\n\
+  if (!length(files)) return(FALSE)\n\
+  for (rpmf in files) {{\n\
+    status <- tryCatch(\n\
+      suppressWarnings(system2(\"rpm\", c(\"-Uvh\", \"--nodeps\", \"--force\", rpmf), stdout = FALSE, stderr = FALSE)),\n\
+      error = function(e) 1L\n\
+    )\n\
+    if (is.integer(status) && status == 0L) return(TRUE)\n\
+  }}\n\
+  FALSE\n\
+}}\n\
+if (length(still_missing)) {{\n\
+  for (pkg in still_missing) {{\n\
+    try(install_from_local_phoreus_rpm(pkg), silent = TRUE)\n\
+  }}\n\
+  installed_after <- rownames(installed.packages(lib.loc = unique(c(.libPaths(), lib))))\n\
+  still_missing <- dependency_diff(resolved, installed_after)\n\
+}}\n\
 if (length(still_missing)) {{\n\
   for (pkg in still_missing) {{\n\
     try(install.packages(pkg, repos = \"https://cloud.r-project.org\", lib = lib), silent = TRUE)\n\
@@ -9978,6 +10003,8 @@ requirements:
         assert!(spec.contains(&format!("Requires:  {}", PHOREUS_R_PACKAGE)));
         assert!(spec.contains("BuildRequires:  bioconductor-zlibbioc"));
         assert!(spec.contains("Requires:  bioconductor-zlibbioc"));
+        assert!(spec.contains("install_from_local_phoreus_rpm <- function(pkg)"));
+        assert!(spec.contains("/work/targets/*/RPMS/*/phoreus-bioconductor-%s-*.rpm"));
     }
 
     #[test]
