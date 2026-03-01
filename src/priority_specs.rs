@@ -6032,6 +6032,15 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     sed -i 's|GSL_LIBS=-lgsl|GSL_LIBS=\"-lgsl -lopenblas\"|g' ./build.sh || true\n\
     fi\n\
     \n\
+    # hifiasm can trip Linux scheduler header type resolution in constrained\n\
+    # buildroots (missing __u32/__u64 through include-order interaction).\n\
+    # Force linux/types.h into preprocessing for deterministic compilation.\n\
+    if [[ \"%{{tool}}\" == \"hifiasm\" ]]; then\n\
+    export CPPFLAGS=\"-include linux/types.h ${{CPPFLAGS:-}}\"\n\
+    export CFLAGS=\"-include linux/types.h ${{CFLAGS:-}}\"\n\
+    export CXXFLAGS=\"-include linux/types.h ${{CXXFLAGS:-}}\"\n\
+    fi\n\
+    \n\
     # Diamond's Bioconda script hard-pins static zstd under PREFIX, but RPM\n\
     # container builds should link system shared zstd.\n\
     if [[ \"%{{tool}}\" == \"diamond\" ]]; then\n\
@@ -11259,6 +11268,47 @@ requirements:
             "sed -i 's|-DSPADES_USE_NCBISDK=ON|-DSPADES_USE_NCBISDK=OFF|g' spades_compile.sh || true"
         ));
         assert!(!spec.contains("BuildRequires:  git"));
+    }
+
+    #[test]
+    fn hifiasm_spec_injects_linux_types_include_guard() {
+        let parsed = ParsedMeta {
+            package_name: "hifiasm".to_string(),
+            version: "0.25.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/hifiasm-0.25.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://github.com/chhylp123/hifiasm".to_string(),
+            license: "MIT".to_string(),
+            summary: "hifiasm".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("make INCLUDES=\"-I$PREFIX/include\" CXXFLAGS=\"${CXXFLAGS} -O3\"".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "hifiasm",
+            &parsed,
+            "bioconda-hifiasm-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"hifiasm\" ]]; then"));
+        assert!(spec.contains("export CPPFLAGS=\"-include linux/types.h ${CPPFLAGS:-}\""));
+        assert!(spec.contains("export CFLAGS=\"-include linux/types.h ${CFLAGS:-}\""));
+        assert!(spec.contains("export CXXFLAGS=\"-include linux/types.h ${CXXFLAGS:-}\""));
     }
 
     #[test]
