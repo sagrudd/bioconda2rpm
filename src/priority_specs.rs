@@ -6942,8 +6942,13 @@ if [[ -d \"$PREFIX/lib\" ]]; then\n\
   export LDFLAGS=\"-L$PREFIX/lib ${LDFLAGS:-}\"\n\
 fi\n\
 if [[ -d \"$PREFIX/include\" ]]; then\n\
-  export C_INCLUDE_PATH=\"$PREFIX/include${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}\"\n\
-  export CPLUS_INCLUDE_PATH=\"$PREFIX/include${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}\"\n\
+  if [[ -d /usr/include ]]; then\n\
+    export C_INCLUDE_PATH=\"/usr/include:$PREFIX/include${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}\"\n\
+    export CPLUS_INCLUDE_PATH=\"/usr/include:$PREFIX/include${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}\"\n\
+  else\n\
+    export C_INCLUDE_PATH=\"$PREFIX/include${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}\"\n\
+    export CPLUS_INCLUDE_PATH=\"$PREFIX/include${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}\"\n\
+  fi\n\
   export CPPFLAGS=\"-I$PREFIX/include ${CPPFLAGS:-}\"\n\
 fi\n\
 ",
