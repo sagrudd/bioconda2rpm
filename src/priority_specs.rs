@@ -6451,11 +6451,11 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
       export CPPFLAGS=\"-I$PREFIX/include ${{CPPFLAGS:-}}\"\n\
     fi\n\
     if [[ -n \"$cblas_header\" ]]; then\n\
+      cblas_inc_dir=\"$(dirname \"$cblas_header\")\"\n\
+      export CPPFLAGS=\"-I$cblas_inc_dir ${{CPPFLAGS:-}}\"\n\
+      export CFLAGS=\"-I$cblas_inc_dir ${{CFLAGS:-}}\"\n\
+      export CXXFLAGS=\"-I$cblas_inc_dir ${{CXXFLAGS:-}}\"\n\
       export LDFLAGS=\"-L/usr/lib64 -L/usr/lib ${{LDFLAGS:-}}\"\n\
-      if [[ -f ./build.sh ]]; then\n\
-        sed -i 's|CFLAGS= |CFLAGS= -I${{PREFIX}}/include |g' ./build.sh || true\n\
-        sed -i 's|CXXFLAGS= |CXXFLAGS= -I${{PREFIX}}/include |g' ./build.sh || true\n\
-      fi\n\
     fi\n\
     fi\n\
     \n\
@@ -12404,9 +12404,10 @@ requirements:
         assert!(spec.contains("cblas_header=\"\""));
         assert!(spec.contains("dnf -y install openblas-devel blas-devel"));
         assert!(spec.contains("ln -sf \"$cblas_header\" \"$PREFIX/include/cblas.h\""));
+        assert!(spec.contains("cblas_inc_dir=\"$(dirname \"$cblas_header\")\""));
+        assert!(spec.contains("export CFLAGS=\"-I$cblas_inc_dir ${CFLAGS:-}\""));
+        assert!(spec.contains("export CXXFLAGS=\"-I$cblas_inc_dir ${CXXFLAGS:-}\""));
         assert!(spec.contains("export LDFLAGS=\"-L/usr/lib64 -L/usr/lib ${LDFLAGS:-}\""));
-        assert!(spec.contains("sed -i 's|CFLAGS= |CFLAGS= -I${PREFIX}/include |g' ./build.sh || true"));
-        assert!(spec.contains("sed -i 's|CXXFLAGS= |CXXFLAGS= -I${PREFIX}/include |g' ./build.sh || true"));
     }
 
     #[test]
