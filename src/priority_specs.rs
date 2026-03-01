@@ -5369,7 +5369,7 @@ export PERL_MB_OPT=\"${PERL_MB_OPT:+$PERL_MB_OPT }--install_base $PREFIX\"\n"
     let source_kind = source_archive_kind(&parsed.source_url);
     let git_source = parse_git_source_descriptor(&parsed.source_url);
     let include_source0 = !runtime_only_metapackage && source_kind != SourceArchiveKind::Git;
-    let mut source_unpack_prep = if include_source0 {
+    let source_unpack_prep = if include_source0 {
         render_source_unpack_prep_block(source_kind)
     } else {
         if source_kind == SourceArchiveKind::Git {
@@ -5380,19 +5380,6 @@ mkdir -p %{bioconda_source_subdir}\n"
                 .to_string()
         }
     };
-    // UCSC userApps source archives contain an extra top-level `userApps/`
-    // directory after tar extraction. Strip two path components so patch paths
-    // rooted at `kent/src/...` resolve correctly.
-    // HEURISTIC-TEMP(issue=HEUR-0002): userApps archive layout requires extra strip depth.
-    if software_slug.starts_with("ucsc-")
-        && source_kind == SourceArchiveKind::Tar
-        && parsed.source_url.contains("userApps.")
-        && parsed.source_url.contains(".src.tgz")
-    {
-        source_unpack_prep =
-            source_unpack_prep.replace("--strip-components=1", "--strip-components=2");
-    }
-
     let mut build_requires = BTreeSet::new();
     build_requires.insert("bash".to_string());
     // Enforce canonical builder policy: every payload build uses Phoreus Python,
@@ -7369,12 +7356,6 @@ fn render_patch_apply_lines(staged_patch_sources: &[String], source_dir: &str) -
             out.push_str(&format!(
                 "patch_source=%{{SOURCE{}}}\n\
 patch_input=\"$patch_source\"\n\
-patch_tmp=\"\"\n\
-if grep -q $'\\r' \"$patch_source\" 2>/dev/null; then\n\
-  patch_tmp=\"$(mktemp)\"\n\
-  tr -d '\\r' < \"$patch_source\" > \"$patch_tmp\"\n\
-  patch_input=\"$patch_tmp\"\n\
-fi\n\
 patch_trim_tmp=\"\"\n\
 if grep -Eq '^(diff --git |--- |\\+\\+\\+ )' \"$patch_input\" 2>/dev/null; then\n\
   patch_trim_tmp=\"$(mktemp)\"\n\
@@ -7450,9 +7431,6 @@ for patch_dir in \"${{patch_dirs[@]}}\"; do\n\
     fi\n\
   done\n\
 done\n\
-if [[ -n \"$patch_tmp\" ]]; then\n\
-  rm -f \"$patch_tmp\"\n\
-fi\n\
 if [[ -n \"$patch_trim_tmp\" ]]; then\n\
   rm -f \"$patch_trim_tmp\"\n\
 fi\n\
@@ -10745,7 +10723,7 @@ requirements:
         assert!(spec.contains("patch_dirs=(.)"));
         assert!(spec.contains("for patch_strip in 1 0 2 3 4 5; do"));
         assert!(spec.contains("patch_input=\"$patch_source\""));
-        assert!(spec.contains("tr -d '\\r' < \"$patch_source\" > \"$patch_tmp\""));
+        assert!(!spec.contains("tr -d '\\r' < \"$patch_source\" > \"$patch_tmp\""));
         assert!(spec.contains("patch_trim_tmp=\"\""));
         assert!(spec.contains("awk 'BEGIN{emit=0}"));
         assert!(spec.contains("patch_rel=\"${patch_rel#b/}\""));
@@ -11846,7 +11824,7 @@ requirements:
     }
 
     #[test]
-    fn ucsc_userapps_archives_use_deeper_strip_components() {
+    fn ucsc_userapps_archives_keep_single_strip_component() {
         let parsed = ParsedMeta {
             package_name: "ucsc-fatotwobit".to_string(),
             version: "482".to_string(),
@@ -11880,7 +11858,7 @@ requirements:
             false,
         );
 
-        assert!(spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=2"));
+        assert!(spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1"));
         assert!(spec.contains("if [[ \"%{tool}\" == ucsc-* ]]; then"));
         assert!(spec.contains("cd userApps"));
     }

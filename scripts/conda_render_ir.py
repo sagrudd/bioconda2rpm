@@ -35,26 +35,25 @@ def first_url(source: Any) -> str:
     return ""
 
 
+def primary_source(source: Any) -> Any:
+    if isinstance(source, list):
+        return source[0] if source else {}
+    return source
+
+
 def source_folder(source: Any) -> str:
+    source = primary_source(source)
     if isinstance(source, dict):
         folder = source.get("folder")
         return str(folder).strip() if folder is not None else ""
-    if isinstance(source, list):
-        for item in source:
-            folder = source_folder(item)
-            if folder:
-                return folder
     return ""
 
 
 def source_patches(source: Any) -> list[str]:
-    patches: list[str] = []
+    source = primary_source(source)
     if isinstance(source, dict):
-        patches.extend(normalize_list(source.get("patches")))
-    elif isinstance(source, list):
-        for item in source:
-            patches.extend(source_patches(item))
-    return patches
+        return normalize_list(source.get("patches"))
+    return []
 
 
 def build_script(value: Any) -> str | None:
