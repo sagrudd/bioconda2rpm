@@ -5537,6 +5537,12 @@ while IFS= read -r -d '' dep_pc; do\n\
     *) export PKG_CONFIG_PATH=\"$dep_pc${{PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}}\" ;;\n\
   esac\n\
 done < <(find /usr/local/phoreus -maxdepth 6 -type d -name pkgconfig -print0 2>/dev/null)\n\
+while IFS= read -r -d '' dep_bin; do\n\
+  case \":${{PATH:-}}:\" in\n\
+    *\":$dep_bin:\"*) ;;\n\
+    *) export PATH=\"$dep_bin:$PATH\" ;;\n\
+  esac\n\
+done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name bin -print0 2>/dev/null)\n\
 fi\n\
 \n\
 # Ensure common install subdirectories exist for build.sh scripts that assume them.\n\
@@ -9648,6 +9654,8 @@ requirements:
             spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name include")
         );
         assert!(spec.contains("export CPATH=\"$dep_include${CPATH:+:$CPATH}\""));
+        assert!(spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name bin"));
+        assert!(spec.contains("export PATH=\"$dep_bin:$PATH\""));
         assert!(spec.contains("disabled by bioconda2rpm for EL9 compatibility"));
         assert!(spec.contains("if [[ \"${CONFIG_SITE:-}\" == \"NONE\" ]]; then"));
         assert!(spec.contains("export PKG_NAME=\"${PKG_NAME:-blast}\""));
