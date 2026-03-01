@@ -5644,9 +5644,14 @@ mkdir -p %{bioconda_source_subdir}\n"
     # and accidentally erase the compiler command token.\n\
     export GCC=${{GCC:-$CC}}\n\
     export GXX=${{GXX:-$CXX}}\n\
-    # Some Bioconda R recipes write FC/F77 directly into ~/.R/Makevars.\n\
+    # Some Bioconda R recipes compile Fortran code (e.g. statmod, mclust).\n\
+    # Ensure gfortran is present even if upstream metadata omitted it.\n\
+    if ! command -v gfortran >/dev/null 2>&1; then\n\
+    if command -v dnf >/dev/null 2>&1; then dnf -y install gcc-gfortran >/dev/null 2>&1 || true; fi\n\
+    if command -v microdnf >/dev/null 2>&1; then microdnf -y install gcc-gfortran >/dev/null 2>&1 || true; fi\n\
+    fi\n\
     # Keep deterministic defaults so Fortran compilation never falls back to\n\
-    # an empty command token when gcc-gfortran is present in dependencies.\n\
+    # an empty command token when gfortran is available.\n\
     if command -v gfortran >/dev/null 2>&1; then\n\
     export FC=\"${{FC:-gfortran}}\"\n\
     export F77=\"${{F77:-gfortran}}\"\n\
@@ -10573,6 +10578,7 @@ requirements:
         assert!(spec.contains(&format!("BuildRequires:  {}", PHOREUS_R_PACKAGE)));
         assert!(spec.contains("BuildRequires:  gcc-gfortran"));
         assert!(spec.contains(&format!("Requires:  {}", PHOREUS_R_PACKAGE)));
+        assert!(spec.contains("dnf -y install gcc-gfortran"));
         assert!(!spec.contains("BuildRequires:  r-rcurl"));
         assert!(!spec.contains("BuildRequires:  r-yaml"));
         assert!(!spec.contains("Requires:  r-rcurl"));
@@ -10618,6 +10624,7 @@ requirements:
         assert!(spec.contains(&format!("BuildRequires:  {}", PHOREUS_R_PACKAGE)));
         assert!(spec.contains("BuildRequires:  gcc-gfortran"));
         assert!(spec.contains(&format!("Requires:  {}", PHOREUS_R_PACKAGE)));
+        assert!(spec.contains("dnf -y install gcc-gfortran"));
         assert!(spec.contains("BuildRequires:  bioconductor-zlibbioc"));
         assert!(spec.contains("Requires:  bioconductor-zlibbioc"));
         assert!(spec.contains("install_from_local_phoreus_rpm <- function(pkg)"));
