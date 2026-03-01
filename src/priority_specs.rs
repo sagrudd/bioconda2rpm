@@ -6934,6 +6934,7 @@ fn map_build_dependency(dep: &str) -> String {
         "bzip2" => "bzip2-devel".to_string(),
         "cereal" => "cereal-devel".to_string(),
         "clangdev" => "clang-devel".to_string(),
+        "curl" => "libcurl-devel".to_string(),
         "eigen" => "eigen3-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
@@ -9453,6 +9454,7 @@ mod tests {
         assert_eq!(map_build_dependency("isa-l"), "isa-l".to_string());
         assert_eq!(map_build_dependency("xz"), "xz-devel".to_string());
         assert_eq!(map_build_dependency("libcurl"), "libcurl-devel".to_string());
+        assert_eq!(map_build_dependency("curl"), "libcurl-devel".to_string());
         assert_eq!(map_build_dependency("libpng"), "libpng-devel".to_string());
         assert_eq!(map_build_dependency("liblzo2"), "lzo-devel".to_string());
         assert_eq!(map_build_dependency("liblzo2-dev"), "lzo-devel".to_string());
