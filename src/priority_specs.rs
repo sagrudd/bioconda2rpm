@@ -5384,7 +5384,7 @@ mkdir -p %{bioconda_source_subdir}\n"
     // directory after tar extraction. Strip two path components so patch paths
     // rooted at `kent/src/...` resolve correctly.
     // HEURISTIC-TEMP(issue=HEUR-0002): userApps archive layout requires extra strip depth.
-    if software_slug == "ucsc-bigwigsummary"
+    if software_slug.starts_with("ucsc-")
         && source_kind == SourceArchiveKind::Tar
         && parsed.source_url.contains("userApps.")
         && parsed.source_url.contains(".src.tgz")
@@ -5986,6 +5986,11 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     find kent/src -type f \\( -name '*.mk' -o -name makefile \\) | while read -r mk; do\n\
       sed -i 's/[[:space:]]-liconv//g' \"$mk\" || true\n\
     done\n\
+    fi\n\
+    if [[ \"%{{tool}}\" == ucsc-* ]]; then\n\
+    # userApps archives can unpack as ./userApps/kent/... depending on tar path\n\
+    # prefixing; normalize build.sh working directory for both layouts.\n\
+    perl -0pi -e 's@^#![^\\n]*\\n@$&if [[ -d userApps/kent && ! -d kent ]]; then\\n  cd userApps\\nfi\\n\\n@' ./build.sh || true\n\
     fi\n\
     \n\
     # Samtools recipes often request --with-htslib=system, but in this workflow\n\
@@ -7330,6 +7335,17 @@ if grep -q $'\\r' \"$patch_source\" 2>/dev/null; then\n\
   tr -d '\\r' < \"$patch_source\" > \"$patch_tmp\"\n\
   patch_input=\"$patch_tmp\"\n\
 fi\n\
+patch_trim_tmp=\"\"\n\
+if grep -Eq '^(diff --git |--- |\\+\\+\\+ )' \"$patch_input\" 2>/dev/null; then\n\
+  patch_trim_tmp=\"$(mktemp)\"\n\
+  awk 'BEGIN{{emit=0}} /^diff --git / || /^--- / || /^\\+\\+\\+ /{{emit=1}} emit{{print}}' \"$patch_input\" > \"$patch_trim_tmp\"\n\
+  if [[ -s \"$patch_trim_tmp\" ]]; then\n\
+    patch_input=\"$patch_trim_tmp\"\n\
+  else\n\
+    rm -f \"$patch_trim_tmp\"\n\
+    patch_trim_tmp=\"\"\n\
+  fi\n\
+fi\n\
 patch_applied=0\n\
 patch_dirs=(.)\n\
 while IFS= read -r patch_rel; do\n\
@@ -7372,6 +7388,20 @@ for maybe_dir in userApps Source_code_including_submodules source src; do\n\
     fi\n\
   fi\n\
 done\n\
+while IFS= read -r top_dir; do\n\
+  top_dir=\"${{top_dir#./}}\"\n\
+  [[ -z \"$top_dir\" ]] && continue\n\
+  already=0\n\
+  for seen in \"${{patch_dirs[@]}}\"; do\n\
+    if [[ \"$seen\" == \"$top_dir\" ]]; then\n\
+      already=1\n\
+      break\n\
+    fi\n\
+  done\n\
+  if [[ \"$already\" -eq 0 ]]; then\n\
+    patch_dirs+=(\"$top_dir\")\n\
+  fi\n\
+done < <(find . -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null || true)\n\
 for patch_dir in \"${{patch_dirs[@]}}\"; do\n\
   for patch_strip in 1 0 2 3 4 5; do\n\
     if (cd \"$patch_dir\" && patch --batch -p\"$patch_strip\" -i \"$patch_input\"); then\n\
@@ -7382,6 +7412,9 @@ for patch_dir in \"${{patch_dirs[@]}}\"; do\n\
 done\n\
 if [[ -n \"$patch_tmp\" ]]; then\n\
   rm -f \"$patch_tmp\"\n\
+fi\n\
+if [[ -n \"$patch_trim_tmp\" ]]; then\n\
+  rm -f \"$patch_trim_tmp\"\n\
 fi\n\
 if [[ \"$patch_applied\" -ne 1 ]]; then\n\
   echo \"failed to apply patch %{{SOURCE{}}} with supported strip levels (1,0,2,3,4,5) and candidate dirs: ${{patch_dirs[*]}}\" >&2\n\
@@ -10672,8 +10705,11 @@ requirements:
         assert!(spec.contains("for patch_strip in 1 0 2 3 4 5; do"));
         assert!(spec.contains("patch_input=\"$patch_source\""));
         assert!(spec.contains("tr -d '\\r' < \"$patch_source\" > \"$patch_tmp\""));
+        assert!(spec.contains("patch_trim_tmp=\"\""));
+        assert!(spec.contains("awk 'BEGIN{emit=0}"));
         assert!(spec.contains("patch_rel=\"${patch_rel#b/}\""));
         assert!(spec.contains("for maybe_dir in userApps Source_code_including_submodules source src; do"));
+        assert!(spec.contains("find . -mindepth 1 -maxdepth 1 -type d -print"));
         assert!(spec.contains("patch --batch -p\"$patch_strip\" -i \"$patch_input\""));
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(spec.contains("retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\""));
@@ -11766,6 +11802,46 @@ requirements:
         assert!(spec.contains("if [[ \"%{tool}\" == \"clair3\" ]]; then"));
         assert!(spec.contains("\"$PYTHON\" -c 'import cffi'"));
         assert!(spec.contains("\"$PYTHON\" -m pip install --no-cache-dir cffi"));
+    }
+
+    #[test]
+    fn ucsc_userapps_archives_use_deeper_strip_components() {
+        let parsed = ParsedMeta {
+            package_name: "ucsc-fatotwobit".to_string(),
+            version: "482".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://hgdownload.cse.ucsc.edu/admin/exe/userApps.archive/userApps.v482.src.tgz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/ucsc-fatotwobit".to_string(),
+            license: "custom".to_string(),
+            summary: "ucsc-fatotwobit".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("cd kent/src/lib && make".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "ucsc-fatotwobit",
+            &parsed,
+            "bioconda-ucsc-fatotwobit-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=2"));
+        assert!(spec.contains("if [[ \"%{tool}\" == ucsc-* ]]; then"));
+        assert!(spec.contains("cd userApps"));
     }
 
     #[test]
