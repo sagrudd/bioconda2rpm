@@ -143,7 +143,7 @@ impl UiState {
                 self.seq = self.seq.saturating_add(1);
                 self.packages.entry(dep.clone()).or_insert(PackageState {
                     status: dep_status.to_string(),
-                    detail: "dependency-edge".to_string(),
+                    detail: "dependency".to_string(),
                     seq: self.seq,
                 });
             }
