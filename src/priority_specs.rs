@@ -5038,6 +5038,8 @@ fn render_payload_spec(
     let needs_isal = recipe_dep_mentions(parsed, "isa-l");
     let needs_libdeflate = recipe_dep_mentions(parsed, "libdeflate")
         || recipe_dep_mentions(parsed, "libdeflate-devel");
+    let needs_cereal = recipe_dep_mentions(parsed, "cereal");
+    let needs_jemalloc = recipe_dep_mentions(parsed, "jemalloc");
     let needs_libhwy = recipe_dep_mentions(parsed, "libhwy");
     let needs_jsoncpp =
         recipe_dep_mentions(parsed, "jsoncpp") || recipe_dep_mentions(parsed, "jsoncpp-devel");
@@ -5049,6 +5051,8 @@ fn render_payload_spec(
     let core_c_dep_bootstrap = render_core_c_dep_bootstrap_block(
         needs_isal,
         needs_libdeflate,
+        needs_cereal,
+        needs_jemalloc,
         needs_libhwy,
         needs_jsoncpp,
     );
@@ -5950,10 +5954,18 @@ fn recipe_dep_mentions(parsed: &ParsedMeta, dep_name: &str) -> bool {
 fn render_core_c_dep_bootstrap_block(
     needs_isal: bool,
     needs_libdeflate: bool,
+    needs_cereal: bool,
+    needs_jemalloc: bool,
     needs_libhwy: bool,
     needs_jsoncpp: bool,
 ) -> String {
-    if !needs_isal && !needs_libdeflate && !needs_libhwy && !needs_jsoncpp {
+    if !needs_isal
+        && !needs_libdeflate
+        && !needs_cereal
+        && !needs_jemalloc
+        && !needs_libhwy
+        && !needs_jsoncpp
+    {
         return String::new();
     }
 
@@ -6024,6 +6036,62 @@ fi\n\
   cmake --build build -j\"${CPU_COUNT:-1}\"\n\
   cmake --install build\n\
   popd >/dev/null\n\
+fi\n\
+",
+        );
+    }
+
+    if needs_cereal {
+        out.push_str(
+            "if [[ ! -e \"$PREFIX/include/cereal/cereal.hpp\" ]]; then\n\
+  echo \"bioconda2rpm: bootstrapping cereal into $PREFIX\" >&2\n\
+  if command -v dnf >/dev/null 2>&1; then dnf -y install cereal-devel >/dev/null 2>&1 || dnf -y install cereal >/dev/null 2>&1 || true; fi\n\
+  if command -v microdnf >/dev/null 2>&1; then microdnf -y install cereal-devel >/dev/null 2>&1 || microdnf -y install cereal >/dev/null 2>&1 || true; fi\n\
+  if [[ ! -e \"$PREFIX/include/cereal/cereal.hpp\" ]]; then\n\
+    pushd \"$third_party_root\" >/dev/null\n\
+    rm -rf cereal-1.3.2\n\
+    if command -v curl >/dev/null 2>&1; then\n\
+      curl -L --fail --output cereal-1.3.2.tar.gz https://github.com/USCiLab/cereal/archive/refs/tags/v1.3.2.tar.gz\n\
+    elif command -v wget >/dev/null 2>&1; then\n\
+      wget -O cereal-1.3.2.tar.gz https://github.com/USCiLab/cereal/archive/refs/tags/v1.3.2.tar.gz\n\
+    else\n\
+      echo \"missing curl/wget for cereal bootstrap\" >&2\n\
+      exit 44\n\
+    fi\n\
+    tar -xf cereal-1.3.2.tar.gz\n\
+    mkdir -p \"$PREFIX/include\"\n\
+    cp -a cereal-1.3.2/include/cereal \"$PREFIX/include/\"\n\
+    popd >/dev/null\n\
+  fi\n\
+fi\n\
+",
+        );
+    }
+
+    if needs_jemalloc {
+        out.push_str(
+            "if [[ ( ! -e \"$PREFIX/lib/libjemalloc.so\" && ! -e \"$PREFIX/lib/libjemalloc.a\" && ! -e \"$PREFIX/lib64/libjemalloc.so\" ) || ! -e \"$PREFIX/include/jemalloc/jemalloc.h\" ]]; then\n\
+  echo \"bioconda2rpm: bootstrapping jemalloc into $PREFIX\" >&2\n\
+  if command -v dnf >/dev/null 2>&1; then dnf -y install jemalloc-devel jemalloc >/dev/null 2>&1 || dnf -y install jemalloc >/dev/null 2>&1 || true; fi\n\
+  if command -v microdnf >/dev/null 2>&1; then microdnf -y install jemalloc-devel jemalloc >/dev/null 2>&1 || microdnf -y install jemalloc >/dev/null 2>&1 || true; fi\n\
+  if [[ ( ! -e \"$PREFIX/lib/libjemalloc.so\" && ! -e \"$PREFIX/lib/libjemalloc.a\" && ! -e \"$PREFIX/lib64/libjemalloc.so\" ) || ! -e \"$PREFIX/include/jemalloc/jemalloc.h\" ]]; then\n\
+    pushd \"$third_party_root\" >/dev/null\n\
+    rm -rf jemalloc-5.3.0\n\
+    if command -v curl >/dev/null 2>&1; then\n\
+      curl -L --fail --output jemalloc-5.3.0.tar.bz2 https://github.com/jemalloc/jemalloc/releases/download/5.3.0/jemalloc-5.3.0.tar.bz2\n\
+    elif command -v wget >/dev/null 2>&1; then\n\
+      wget -O jemalloc-5.3.0.tar.bz2 https://github.com/jemalloc/jemalloc/releases/download/5.3.0/jemalloc-5.3.0.tar.bz2\n\
+    else\n\
+      echo \"missing curl/wget for jemalloc bootstrap\" >&2\n\
+      exit 44\n\
+    fi\n\
+    tar -xf jemalloc-5.3.0.tar.bz2\n\
+    cd jemalloc-5.3.0\n\
+    ./configure --prefix=\"$PREFIX\" --libdir=\"$PREFIX/lib\"\n\
+    make -j\"${CPU_COUNT:-1}\"\n\
+    make install\n\
+    popd >/dev/null\n\
+  fi\n\
 fi\n\
 ",
         );
@@ -9518,6 +9586,21 @@ requirements:
             parsed.source_patches,
             vec!["boost_106400.patch".to_string()]
         );
+    }
+
+    #[test]
+    fn core_c_bootstrap_empty_when_no_deps_requested() {
+        let script = render_core_c_dep_bootstrap_block(false, false, false, false, false, false);
+        assert!(script.is_empty());
+    }
+
+    #[test]
+    fn core_c_bootstrap_includes_cereal_and_jemalloc() {
+        let script = render_core_c_dep_bootstrap_block(false, false, true, true, false, false);
+        assert!(script.contains("bootstrapping cereal into $PREFIX"));
+        assert!(script.contains("USCiLab/cereal"));
+        assert!(script.contains("bootstrapping jemalloc into $PREFIX"));
+        assert!(script.contains("jemalloc/releases/download/5.3.0"));
     }
 
     #[test]
