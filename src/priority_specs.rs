@@ -4226,6 +4226,10 @@ fn select_phoreus_python_runtime(parsed: &ParsedMeta, python_recipe: bool) -> Ph
     if !python_recipe {
         return PHOREUS_PYTHON_RUNTIME_311;
     }
+    if normalize_name(&parsed.package_name) == "flair" {
+        // flair-brookslab currently requires Python >=3.12.
+        return PHOREUS_PYTHON_RUNTIME_312;
+    }
     if let Some(explicit_runtime) = parsed
         .build_deps
         .iter()
@@ -4590,8 +4594,12 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "samtools"
             | "bcftools"
             | "htslib"
+            | "tabixpp"
             | "bwa"
             | "blast"
+            | "clustalw"
+            | "glimmerhmm"
+            | "hdf5"
             | "metaeuk"
             | "hmmer"
             | "augustus"
@@ -5494,6 +5502,21 @@ mkdir -p %{bioconda_source_subdir}\n"
         // Bioconda's shared-lib patch links tabix++ with -lcurl.
         build_requires.insert("libcurl-devel".to_string());
     }
+    // HEURISTIC-TEMP(issue=HEUR-0014): medaka links htslib with -lcrypto and needs openssl headers/libs.
+    if software_slug == "medaka" {
+        build_requires.insert("openssl-devel".to_string());
+    }
+    // HEURISTIC-TEMP(issue=HEUR-0015): Perl Alien::* recipes commonly need these transport/TLS helper modules.
+    if software_slug.starts_with("perl-alien-") {
+        build_requires.insert("perl(Alien::Build)".to_string());
+        build_requires.insert("perl(Mozilla::CA)".to_string());
+        build_requires.insert("perl(Net::SSLeay)".to_string());
+    }
+    // HEURISTIC-TEMP(issue=HEUR-0016): perl-http-daemon test harness loads Test::Needs even when upstream deps are incomplete.
+    if software_slug == "perl-http-daemon" {
+        build_requires.insert("perl(Test::Needs)".to_string());
+        build_requires.insert("perl(Module::Build::Tiny)".to_string());
+    }
     build_requires.remove(PHOREUS_PYTHON_PACKAGE);
     build_requires.remove(PHOREUS_PYTHON_PACKAGE_312);
     build_requires.remove(PHOREUS_PYTHON_PACKAGE_313);
@@ -6158,6 +6181,83 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     fi\n\
     fi\n\
     \n\
+    # advntr vendors legacy pomegranate/Cython code that is incompatible with\n\
+    # Cython 3 and NumPy 2 metadata-generation defaults.\n\
+    if [[ \"%{{tool}}\" == \"advntr\" ]]; then\n\
+    \"$PIP\" install --no-cache-dir \"cython<3\" \"numpy<2\" \"setuptools<81\" || true\n\
+    fi\n\
+    \n\
+    # pychopper imports pkg_resources during metadata build; setuptools>=81 can\n\
+    # omit legacy pkg_resources behavior expected by older setup.py flows.\n\
+    if [[ \"%{{tool}}\" == \"pychopper\" ]]; then\n\
+    \"$PIP\" install --no-cache-dir \"setuptools<81\" || true\n\
+    fi\n\
+    \n\
+    # umi-tools ships an ez_setup bootstrap path that tries to download very old\n\
+    # setuptools releases incompatible with Python 3.11+ (uses removed symbol module).\n\
+    if [[ \"%{{tool}}\" == \"umi-tools\" ]]; then\n\
+    \"$PIP\" install --no-cache-dir \"setuptools<81\" || true\n\
+    if [[ -f setup.py ]]; then\n\
+      perl -0pi -e 's@^\\s*(import|from)\\s+ez_setup.*\\n@@mg; s@^\\s*ez_setup\\.use_setuptools\\(\\)\\s*\\n@@mg; s@^\\s*use_setuptools\\(\\)\\s*\\n@@mg' setup.py || true\n\
+    fi\n\
+    fi\n\
+    \n\
+    # Augustus expects lp_solve headers as lp_lib.h in an include search path.\n\
+    # Normalize discovered header locations into PREFIX/include for deterministic builds.\n\
+    if [[ \"%{{tool}}\" == \"augustus\" ]]; then\n\
+    lp_header=\"\"\n\
+    for cand in /usr/include/lp_lib.h /usr/include/lpsolve/lp_lib.h /usr/local/include/lpsolve/lp_lib.h \"$PREFIX/include/lpsolve/lp_lib.h\"; do\n\
+      if [[ -f \"$cand\" ]]; then\n\
+        lp_header=\"$cand\"\n\
+        break\n\
+      fi\n\
+    done\n\
+    if [[ -n \"$lp_header\" ]]; then\n\
+      mkdir -p \"$PREFIX/include/lpsolve\" \"$PREFIX/include\"\n\
+      ln -snf \"$lp_header\" \"$PREFIX/include/lpsolve/lp_lib.h\"\n\
+      ln -snf \"$lp_header\" \"$PREFIX/include/lp_lib.h\"\n\
+      export CPPFLAGS=\"-I$PREFIX/include -I$PREFIX/include/lpsolve ${{CPPFLAGS:-}}\"\n\
+    fi\n\
+    fi\n\
+    \n\
+    # medaka links against libcrypto via bundled htslib flags; ensure a stable\n\
+    # libcrypto soname is discoverable by the linker in PREFIX/lib.\n\
+    if [[ \"%{{tool}}\" == \"medaka\" ]]; then\n\
+    crypto_lib=\"\"\n\
+    for cand in /usr/lib64/libcrypto.so /usr/lib64/libcrypto.so.3 /usr/lib/libcrypto.so /usr/lib/libcrypto.so.3; do\n\
+      if [[ -e \"$cand\" ]]; then\n\
+        crypto_lib=\"$cand\"\n\
+        break\n\
+      fi\n\
+    done\n\
+    if [[ -n \"$crypto_lib\" ]]; then\n\
+      mkdir -p \"$PREFIX/lib\"\n\
+      if [[ ! -e \"$PREFIX/lib/libcrypto.so\" ]]; then\n\
+        ln -snf \"$crypto_lib\" \"$PREFIX/lib/libcrypto.so\"\n\
+      fi\n\
+      export LDFLAGS=\"-L$PREFIX/lib ${{LDFLAGS:-}}\"\n\
+    fi\n\
+    fi\n\
+    \n\
+    # vcflib can hard-fail CMake configure when zig is missing; this feature is\n\
+    # optional for RPM payloads, so disable it and tighten pkg-config discovery.\n\
+    if [[ \"%{{tool}}\" == \"vcflib\" ]]; then\n\
+    sed -i 's|-DZIG=ON|-DZIG=OFF|g' ./build.sh || true\n\
+    export CMAKE_ARGS=\"${{CMAKE_ARGS:-}} -DZIG=OFF\"\n\
+    hts_prefix=$(find /usr/local/phoreus/htslib -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1 || true)\n\
+    tabixpp_prefix=$(find /usr/local/phoreus/tabixpp -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1 || true)\n\
+    if [[ -n \"$hts_prefix\" ]]; then\n\
+      export PKG_CONFIG_PATH=\"$hts_prefix/lib/pkgconfig${{PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}}\"\n\
+      export CPPFLAGS=\"-I$hts_prefix/include ${{CPPFLAGS:-}}\"\n\
+      export LDFLAGS=\"-L$hts_prefix/lib ${{LDFLAGS:-}}\"\n\
+    fi\n\
+    if [[ -n \"$tabixpp_prefix\" ]]; then\n\
+      export PKG_CONFIG_PATH=\"$tabixpp_prefix/lib/pkgconfig${{PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}}\"\n\
+      export CPPFLAGS=\"-I$tabixpp_prefix/include ${{CPPFLAGS:-}}\"\n\
+      export LDFLAGS=\"-L$tabixpp_prefix/lib ${{LDFLAGS:-}}\"\n\
+    fi\n\
+    fi\n\
+    \n\
     # Kallisto enables zlib-ng in conda's merged-prefix model. In EL9 RPM\n\
     # builds, prefer system zlib and provide explicit HDF5 hints so CMake can\n\
     # resolve the serial HDF5 layout deterministically.\n\
@@ -6277,12 +6377,15 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     \n\
     if [[ \"%{{tool}}\" == \"plink\" ]]; then\n\
     cblas_header=\"\"\n\
-    for cand in /usr/include/cblas.h /usr/include/openblas/cblas.h /usr/include/blas/cblas.h; do\n\
+    for cand in /usr/include/cblas.h /usr/include/openblas/cblas.h /usr/include/blas/cblas.h /usr/include/openblas-pthread/cblas.h /usr/include/openblas-openmp/cblas.h; do\n\
       if [[ -f \"$cand\" ]]; then\n\
         cblas_header=\"$cand\"\n\
         break\n\
       fi\n\
     done\n\
+    if [[ -z \"$cblas_header\" ]]; then\n\
+      cblas_header=$(find /usr/include -maxdepth 4 -type f -name cblas.h 2>/dev/null | head -n 1 || true)\n\
+    fi\n\
     if [[ -n \"$cblas_header\" && ! -f \"$PREFIX/include/cblas.h\" ]]; then\n\
       mkdir -p \"$PREFIX/include\"\n\
       ln -sf \"$cblas_header\" \"$PREFIX/include/cblas.h\"\n\
@@ -7011,7 +7114,7 @@ export PYTHON=\"$VIRTUAL_ENV/bin/python\"\n\
 export PYTHON3=\"$VIRTUAL_ENV/bin/python\"\n\
 export PIP=\"$VIRTUAL_ENV/bin/pip\"\n\
 export PIP_DISABLE_PIP_VERSION_CHECK=1\n\
-\"$PIP\" install --upgrade pip setuptools wheel\n\
+\"$PIP\" install --upgrade pip \"setuptools<81\" wheel\n\
 {requirements_install}",
         requirements_install = requirements_install
     )
@@ -7434,6 +7537,24 @@ while IFS= read -r patch_rel; do\n\
       patch_dirs+=(\"$candidate\")\n\
     fi\n\
   done < <(find . -type f -path \"*/$patch_rel\" -print 2>/dev/null || true)\n\
+  patch_base=\"${{patch_rel##*/}}\"\n\
+  if [[ -n \"$patch_base\" ]]; then\n\
+    while IFS= read -r hit; do\n\
+      candidate=\"$(dirname \"$hit\")\"\n\
+      candidate=\"${{candidate#./}}\"\n\
+      [[ -z \"$candidate\" || \"$candidate\" == \".\" ]] && candidate=\".\"\n\
+      already=0\n\
+      for seen in \"${{patch_dirs[@]}}\"; do\n\
+        if [[ \"$seen\" == \"$candidate\" ]]; then\n\
+          already=1\n\
+          break\n\
+        fi\n\
+      done\n\
+      if [[ \"$already\" -eq 0 ]]; then\n\
+        patch_dirs+=(\"$candidate\")\n\
+      fi\n\
+    done < <(find . -type f -name \"$patch_base\" -print 2>/dev/null || true)\n\
+  fi\n\
 done < <(awk '/^diff --git /{{old=$3; new=$4; sub(/^[ab]\\//, \"\", old); sub(/^[ab]\\//, \"\", new); if (old != \"/dev/null\") print old; if (new != \"/dev/null\") print new; next}} /^\\+\\+\\+ / || /^--- /{{p=$2; sub(/^[ab]\\//, \"\", p); sub(/\\r$/, \"\", p); if (p != \"/dev/null\") print p;}}' \"$patch_input\" | sed '/^$/d' | sort -u)\n\
 for maybe_dir in userApps Source_code_including_submodules source src; do\n\
   if [[ -d \"$maybe_dir\" ]]; then\n\
@@ -7724,7 +7845,7 @@ fn map_build_dependency(dep: &str) -> String {
         "gmp" => "gmp-devel".to_string(),
         "mscorefonts" => "dejavu-sans-fonts".to_string(),
         "glib" => "glib2-devel".to_string(),
-        "hdf5" => "hdf5-devel".to_string(),
+        "hdf5" | "hdf5-devel" => "hdf5".to_string(),
         "go-compiler" => "golang".to_string(),
         "gnuconfig" => "automake".to_string(),
         // Keep ISA-L as a Bioconda/Phoreus dependency so libraries are staged
@@ -7743,7 +7864,8 @@ fn map_build_dependency(dep: &str) -> String {
         "libdeflate-devel" => "libdeflate".to_string(),
         "liblzma-devel" => "xz-devel".to_string(),
         "liblapack" => "lapack-devel".to_string(),
-        "lp-solve" | "lpsolve" => "lpsolve-devel".to_string(),
+        "lp-solve" | "lpsolve" => "lpsolve".to_string(),
+        "libboost" | "libboost-devel" => "boost-devel".to_string(),
         "libhwy" => "highway-devel".to_string(),
         "libiconv" => "glibc-devel".to_string(),
         "libxau" => "libXau-devel".to_string(),
@@ -7773,8 +7895,8 @@ fn map_build_dependency(dep: &str) -> String {
         "snappy" => "snappy-devel".to_string(),
         "sqlite" => "sqlite-devel".to_string(),
         "qt" => "qt5-qtbase-devel qt5-qtsvg-devel".to_string(),
-        // Keep qt6-main as a logical dependency so local/Phoreus providers can satisfy it.
-        "qt6-main" => "qt6-main".to_string(),
+        "qt6-main" => "qt6-qtbase-devel qt6-qtsvg-devel".to_string(),
+        "pybind11" => "pybind11-devel".to_string(),
         "llvmdev" => "llvm-devel".to_string(),
         "libvulkan-headers" => "vulkan-headers".to_string(),
         "libvulkan-loader" => "vulkan-loader-devel".to_string(),
@@ -7787,7 +7909,7 @@ fn map_build_dependency(dep: &str) -> String {
         "xorg-xf86vidmodeproto" => "libXxf86vm-devel".to_string(),
         "xorg-libxext" => "libXext-devel".to_string(),
         "xorg-libxfixes" => "libXfixes-devel".to_string(),
-        "xerces-c" => "xerces-c".to_string(),
+        "xerces-c" => "xerces-c-devel".to_string(),
         "xz" => "xz-devel".to_string(),
         "zlib" => "zlib-devel".to_string(),
         "libzlib" => "zlib-devel".to_string(),
@@ -7842,6 +7964,7 @@ fn map_runtime_dependency(dep: &str) -> String {
     match dep {
         "k8" => "nodejs".to_string(),
         "boost-cpp" => "boost".to_string(),
+        "libboost" | "libboost-devel" => "boost".to_string(),
         "biopython" => "python3-biopython".to_string(),
         "capnproto" | "capnp" => "capnproto".to_string(),
         "cffi" => "python3-cffi".to_string(),
@@ -7875,7 +7998,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "mysql-connector-c" => "mariadb-connector-c".to_string(),
         "lzo" | "lzo2" | "liblzo2" | "liblzo2-dev" | "liblzo2-devel" => "lzo".to_string(),
         "qt" => "qt5-qtbase qt5-qtsvg".to_string(),
-        "qt6-main" => "qt6-main".to_string(),
+        "qt6-main" => "qt6-qtbase qt6-qtsvg".to_string(),
         "llvmdev" => "llvm".to_string(),
         "nettle" => "nettle".to_string(),
         "sparsehash" => "sparsehash-devel".to_string(),
@@ -8593,6 +8716,7 @@ fn canonicalize_perl_module_name(module: &str) -> String {
 fn canonicalize_perl_module_segment(segment: &str) -> String {
     match segment {
         "api" => "API".to_string(),
+        "ca" => "CA".to_string(),
         "cgi" => "CGI".to_string(),
         "cpan" => "CPAN".to_string(),
         "dbd" => "DBD".to_string(),
@@ -8607,6 +8731,7 @@ fn canonicalize_perl_module_segment(segment: &str) -> String {
         "mime" => "MIME".to_string(),
         "moreutils" => "MoreUtils".to_string(),
         "ssl" => "SSL".to_string(),
+        "ssleay" => "SSLeay".to_string(),
         "uri" => "URI".to_string(),
         "utf8" => "UTF8".to_string(),
         "www" => "WWW".to_string(),
@@ -8648,6 +8773,7 @@ fn perl_module_name_from_conda(dep: &str) -> Option<String> {
         .filter(|p| !p.is_empty())
         .map(|part| match part {
             "api" => "API".to_string(),
+            "ca" => "CA".to_string(),
             "cgi" => "CGI".to_string(),
             "cpan" => "CPAN".to_string(),
             "dbi" => "DBI".to_string(),
@@ -8660,6 +8786,7 @@ fn perl_module_name_from_conda(dep: &str) -> Option<String> {
             "lwp" => "LWP".to_string(),
             "mime" => "MIME".to_string(),
             "ssl" => "SSL".to_string(),
+            "ssleay" => "SSLeay".to_string(),
             "uri" => "URI".to_string(),
             "utf8" => "UTF8".to_string(),
             "www" => "WWW".to_string(),
@@ -10297,7 +10424,8 @@ mod tests {
     fn dependency_mapping_handles_conda_aliases() {
         assert_eq!(map_build_dependency("boost-cpp"), "boost-devel".to_string());
         assert_eq!(map_build_dependency("autoconf"), "autoconf271".to_string());
-        assert_eq!(map_build_dependency("hdf5"), "hdf5-devel".to_string());
+        assert_eq!(map_build_dependency("hdf5"), "hdf5".to_string());
+        assert_eq!(map_build_dependency("hdf5-devel"), "hdf5".to_string());
         assert_eq!(
             map_build_dependency("capnproto"),
             "capnproto".to_string()
@@ -10306,13 +10434,10 @@ mod tests {
             map_build_dependency("cffi"),
             "python3-cffi".to_string()
         );
-        assert_eq!(
-            map_build_dependency("xerces-c"),
-            "xerces-c".to_string()
-        );
+        assert_eq!(map_build_dependency("xerces-c"), "xerces-c-devel".to_string());
         assert_eq!(
             map_build_dependency("qt6-main"),
-            "qt6-main".to_string()
+            "qt6-qtbase-devel qt6-qtsvg-devel".to_string()
         );
         assert_eq!(
             map_build_dependency("xorg-libx11"),
@@ -10322,7 +10447,10 @@ mod tests {
         assert_eq!(map_runtime_dependency("capnproto"), "capnproto".to_string());
         assert_eq!(map_runtime_dependency("cffi"), "python3-cffi".to_string());
         assert_eq!(map_runtime_dependency("xerces-c"), "xerces-c".to_string());
-        assert_eq!(map_runtime_dependency("qt6-main"), "qt6-main".to_string());
+        assert_eq!(
+            map_runtime_dependency("qt6-main"),
+            "qt6-qtbase qt6-qtsvg".to_string()
+        );
         assert_eq!(map_runtime_dependency("xorg-libx11"), "libX11".to_string());
         assert_eq!(map_build_dependency("eigen"), "eigen3-devel".to_string());
         assert_eq!(
@@ -10371,6 +10499,7 @@ mod tests {
         );
         assert_eq!(map_build_dependency("libuuid"), "libuuid-devel".to_string());
         assert_eq!(map_build_dependency("libhwy"), "highway-devel".to_string());
+        assert_eq!(map_build_dependency("libboost-devel"), "boost-devel".to_string());
         assert_eq!(
             map_build_dependency("libblas"),
             "openblas-devel".to_string()
@@ -10477,7 +10606,7 @@ mod tests {
         assert_eq!(map_runtime_dependency("jsoncpp"), "jsoncpp".to_string());
         assert_eq!(map_runtime_dependency("glib"), "glib2".to_string());
         assert_eq!(map_runtime_dependency("liblapack"), "lapack".to_string());
-        assert_eq!(map_build_dependency("lp-solve"), "lpsolve-devel".to_string());
+        assert_eq!(map_build_dependency("lp-solve"), "lpsolve".to_string());
         assert_eq!(map_runtime_dependency("lp-solve"), "lpsolve".to_string());
         assert_eq!(map_runtime_dependency("liblzma-devel"), "xz".to_string());
         assert_eq!(map_runtime_dependency("zstd-static"), "zstd".to_string());
@@ -10535,6 +10664,14 @@ mod tests {
         assert_eq!(
             map_build_dependency("perl(common::sense)"),
             "perl-common-sense".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl-net-ssleay"),
+            "perl(Net::SSLeay)".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl(mozilla::ca)"),
+            "perl(Mozilla::CA)".to_string()
         );
         assert_eq!(
             map_build_dependency("python"),
@@ -11726,6 +11863,42 @@ requirements:
     }
 
     #[test]
+    fn python_requirements_exclude_non_pypi_bio_cli_dependencies() {
+        let parsed = ParsedMeta {
+            package_name: "quast".to_string(),
+            version: "5.3.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/quast-5.3.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/quast".to_string(),
+            license: "GPL-2.0-or-later".to_string(),
+            summary: "quast".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec![
+                "python".to_string(),
+                "pip".to_string(),
+                "clustalw".to_string(),
+                "glimmerhmm".to_string(),
+                "hdf5".to_string(),
+                "numpy".to_string(),
+            ],
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let reqs = build_python_requirements(&parsed);
+        assert!(reqs.iter().any(|r| r == "numpy"));
+        assert!(!reqs.iter().any(|r| r == "clustalw"));
+        assert!(!reqs.iter().any(|r| r == "glimmerhmm"));
+        assert!(!reqs.iter().any(|r| r == "hdf5"));
+    }
+
+    #[test]
     fn minimap2_arch_opts_sanitization_is_not_nested_under_samtools_block() {
         let parsed = ParsedMeta {
             package_name: "minimap2".to_string(),
@@ -12318,7 +12491,7 @@ requirements:
         assert!(spec.contains("if ! pkg-config --exists libmaus2 2>/dev/null; then"));
         assert!(spec.contains("export libmaus2_CFLAGS=\"-I$libmaus2_prefix/include\""));
         assert!(spec.contains("export libmaus2_LIBS=\"-L$libmaus2_prefix/lib -lmaus2\""));
-        assert!(spec.contains("BuildRequires:  xerces-c"));
+        assert!(spec.contains("BuildRequires:  xerces-c-devel"));
     }
 
     #[test]
@@ -12361,9 +12534,11 @@ requirements:
         assert!(spec.contains("cmake-${cmake_bootstrap_ver}-linux-x86_64.tar.gz"));
         assert!(spec.contains("find /usr/local/phoreus -maxdepth 8 -type f -name Qt6Config.cmake"));
         assert!(spec.contains("export Qt6_DIR=\"$(dirname \"$qt6_cfg\")\""));
-        assert!(spec.contains("BuildRequires:  qt6-main"));
+        assert!(spec.contains("BuildRequires:  qt6-qtbase-devel"));
+        assert!(spec.contains("BuildRequires:  qt6-qtsvg-devel"));
         assert!(spec.contains("BuildRequires:  libX11-devel"));
-        assert!(spec.contains("Requires:  qt6-main"));
+        assert!(spec.contains("Requires:  qt6-qtbase"));
+        assert!(spec.contains("Requires:  qt6-qtsvg"));
     }
 
     #[test]
@@ -13579,10 +13754,10 @@ about:
         );
     }
 
-    fn has_heuristic_policy_marker(lines: &[&str], idx: usize) -> bool {
-        let start = idx.saturating_sub(3);
-        lines[start..=idx]
-            .iter()
-            .any(|line| line.contains("HEURISTIC-TEMP(issue="))
-    }
+fn has_heuristic_policy_marker(lines: &[&str], idx: usize) -> bool {
+    let start = idx.saturating_sub(3);
+    lines[start..=idx]
+        .iter()
+        .any(|line| line.contains("HEURISTIC-TEMP(issue="))
+}
 }
