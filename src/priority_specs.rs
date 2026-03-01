@@ -7470,7 +7470,7 @@ declare -A local_candidates_norm_score\n\
 normalize_lookup_key() {{\n\
   local key=\"$1\"\n\
   key=$(printf '%s' \"$key\" | tr '[:upper:]' '[:lower:]')\n\
-  key=$(printf '%s' \"$key\" | sed -E 's/[[:space:]]+//g; s/[()\\[\\]{{}}]//g; s/:://g; s/[-_.]//g')\n\
+  key=$(printf '%s' \"$key\" | sed -E 's/[[:space:]]+//g; s/[()\\[\\]]//g; s/:://g; s/[-_.]//g')\n\
   printf '%s' \"$key\"\n\
 }}\n\
 \n\
