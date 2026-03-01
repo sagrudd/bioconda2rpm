@@ -6225,7 +6225,8 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
       ln -snf \"$lp_header\" \"$PREFIX/include/lp_lib.h\"\n\
       export CPPFLAGS=\"-I$PREFIX/include -I$PREFIX/include/lpsolve ${{CPPFLAGS:-}}\"\n\
     else\n\
-      sed -i 's/COMPGENPRED=true/COMPGENPRED=false/g' ./build.sh || true\n\
+      export COMPGENEPRED=false\n\
+      sed -i 's/COMPGENPRED=true/COMPGENEPRED=false/g; s/COMPGENPRED=false/COMPGENEPRED=false/g' ./build.sh || true\n\
       echo \"bioconda2rpm: lp_lib.h unavailable; disabling COMPGENPRED for augustus\" >&2\n\
     fi\n\
     fi\n\
