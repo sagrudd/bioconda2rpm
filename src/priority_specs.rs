@@ -4984,7 +4984,20 @@ fi\n\
 if [[ -f /usr/include/H5pubconf-32.h && ! -e \"$PREFIX/include/H5pubconf.h\" ]]; then\n\
   ln -snf /usr/include/H5pubconf-32.h \"$PREFIX/include/H5pubconf.h\"\n\
 fi\n\
-    \n\
+\n\
+# Some recipes call `yacc` explicitly while only `bison` is present.\n\
+# Provide a deterministic shim instead of per-package overrides.\n\
+if ! command -v yacc >/dev/null 2>&1 && command -v bison >/dev/null 2>&1; then\n\
+  shim_dir=\"$(pwd)/.bioconda2rpm-shims\"\n\
+  mkdir -p \"$shim_dir\"\n\
+  cat > \"$shim_dir/yacc\" <<'SHIMEOF'\n\
+#!/usr/bin/env bash\n\
+exec bison -y \"$@\"\n\
+SHIMEOF\n\
+  chmod 0755 \"$shim_dir/yacc\"\n\
+  export PATH=\"$shim_dir:$PATH\"\n\
+fi\n\
+\n\
 {python_venv_setup}\
 \n\
 {r_runtime_setup}\
