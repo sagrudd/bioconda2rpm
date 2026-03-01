@@ -1161,6 +1161,44 @@ fn requeue_existing_node_for_rerun(
     true
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DuplicateForwardedRequestAction {
+    Rerun,
+    Ignore(&'static str),
+}
+
+fn classify_duplicate_forwarded_request(
+    key: &str,
+    node_present: bool,
+    finalized: &HashSet<String>,
+    succeeded: &HashSet<String>,
+    running_keys: &HashSet<String>,
+    ready: &VecDeque<String>,
+    pending_fail_queue: &VecDeque<String>,
+) -> DuplicateForwardedRequestAction {
+    if key.is_empty() {
+        return DuplicateForwardedRequestAction::Ignore("invalid-package-key");
+    }
+    if running_keys.contains(key) {
+        return DuplicateForwardedRequestAction::Ignore("already-running");
+    }
+    if succeeded.contains(key) {
+        // Never rerun successful packages within the same active session,
+        // even when the owning session was started with --force.
+        return DuplicateForwardedRequestAction::Ignore("already-successful-session");
+    }
+    if !node_present {
+        return DuplicateForwardedRequestAction::Ignore("not-in-build-graph");
+    }
+    if !finalized.contains(key) {
+        if ready.iter().any(|queued| queued == key) || pending_fail_queue.iter().any(|q| q == key) {
+            return DuplicateForwardedRequestAction::Ignore("already-queued");
+        }
+        return DuplicateForwardedRequestAction::Ignore("waiting-dependencies");
+    }
+    DuplicateForwardedRequestAction::Rerun
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_build_batch_queue(
     args: &BuildArgs,
@@ -1310,36 +1348,67 @@ fn run_build_batch_queue(
                         if key.is_empty() {
                             continue;
                         }
-                        let is_remote_submitter = !forwarded.submitted_host.is_empty()
-                            && forwarded.submitted_host != local_host;
                         if !requested_root_keys.insert(key.clone()) {
-                            if is_remote_submitter {
-                                let queued = requeue_existing_node_for_rerun(
-                                    &key,
-                                    &global_nodes,
-                                    &mut pending_deps,
-                                    &mut failed_by,
-                                    &mut finalized,
-                                    &mut succeeded,
-                                    &mut ready,
-                                    &mut pending_fail_queue,
-                                    &mut results,
-                                    &running_keys,
-                                );
-                                log_progress(format!(
-                                    "phase=workspace-lock status=forwarded-request-rerun package={} key={} submit_host={} submit_pid={} submit_ts={} queued={}",
-                                    root,
-                                    key,
-                                    forwarded.submitted_host,
-                                    forwarded.submitted_pid,
-                                    forwarded.submitted_at_utc,
-                                    queued
-                                ));
-                            } else {
-                                log_progress(format!(
-                                    "phase=workspace-lock status=forwarded-request-ignored package={} key={} submit_host={} reason=duplicate-same-host",
-                                    root, key, forwarded.submitted_host
-                                ));
+                            match classify_duplicate_forwarded_request(
+                                &key,
+                                global_nodes.contains_key(&key),
+                                &finalized,
+                                &succeeded,
+                                &running_keys,
+                                &ready,
+                                &pending_fail_queue,
+                            ) {
+                                DuplicateForwardedRequestAction::Rerun => {
+                                    let queued = requeue_existing_node_for_rerun(
+                                        &key,
+                                        &global_nodes,
+                                        &mut pending_deps,
+                                        &mut failed_by,
+                                        &mut finalized,
+                                        &mut succeeded,
+                                        &mut ready,
+                                        &mut pending_fail_queue,
+                                        &mut results,
+                                        &running_keys,
+                                    );
+                                    if queued {
+                                        log_progress(format!(
+                                            "phase=workspace-lock status=forwarded-request-rerun package={} key={} submit_host={} submit_pid={} submit_ts={} queued={} reason=previous-attempt-not-successful",
+                                            root,
+                                            key,
+                                            forwarded.submitted_host,
+                                            forwarded.submitted_pid,
+                                            forwarded.submitted_at_utc,
+                                            queued
+                                        ));
+                                    } else {
+                                        log_progress(format!(
+                                            "phase=workspace-lock status=forwarded-request-ignored package={} key={} submit_host={} submit_pid={} submit_ts={} reason=rerun-not-queued",
+                                            root,
+                                            key,
+                                            forwarded.submitted_host,
+                                            forwarded.submitted_pid,
+                                            forwarded.submitted_at_utc
+                                        ));
+                                    }
+                                }
+                                DuplicateForwardedRequestAction::Ignore(reason) => {
+                                    let host_scope = if forwarded.submitted_host == local_host {
+                                        "same-host"
+                                    } else {
+                                        "remote-host"
+                                    };
+                                    log_progress(format!(
+                                        "phase=workspace-lock status=forwarded-request-ignored package={} key={} submit_host={} submit_pid={} submit_ts={} scope={} reason={}",
+                                        root,
+                                        key,
+                                        forwarded.submitted_host,
+                                        forwarded.submitted_pid,
+                                        forwarded.submitted_at_utc,
+                                        host_scope,
+                                        reason
+                                    ));
+                                }
                             }
                             continue;
                         }
@@ -11409,6 +11478,87 @@ dep: osx-arm64-only # [arm64]\n";
         assert!(filtered.contains("dep: nim"));
         assert!(filtered.contains("dep: linux-aarch64-only"));
         assert!(!filtered.contains("dep: osx-arm64-only"));
+    }
+
+    #[test]
+    fn duplicate_forwarded_request_reruns_only_failed_finalized_nodes() {
+        let key = "blast".to_string();
+        let finalized = HashSet::from([key.clone()]);
+        let succeeded = HashSet::new();
+        let running = HashSet::new();
+        let ready = VecDeque::new();
+        let pending_fail = VecDeque::new();
+
+        let action = classify_duplicate_forwarded_request(
+            &key,
+            true,
+            &finalized,
+            &succeeded,
+            &running,
+            &ready,
+            &pending_fail,
+        );
+        assert_eq!(action, DuplicateForwardedRequestAction::Rerun);
+    }
+
+    #[test]
+    fn duplicate_forwarded_request_ignores_successful_nodes_in_session() {
+        let key = "samtools".to_string();
+        let finalized = HashSet::from([key.clone()]);
+        let succeeded = HashSet::from([key.clone()]);
+        let running = HashSet::new();
+        let ready = VecDeque::new();
+        let pending_fail = VecDeque::new();
+
+        let action = classify_duplicate_forwarded_request(
+            &key,
+            true,
+            &finalized,
+            &succeeded,
+            &running,
+            &ready,
+            &pending_fail,
+        );
+        assert_eq!(
+            action,
+            DuplicateForwardedRequestAction::Ignore("already-successful-session")
+        );
+    }
+
+    #[test]
+    fn duplicate_forwarded_request_ignores_already_running_or_queued_nodes() {
+        let key = "bcftools".to_string();
+        let mut running = HashSet::new();
+        running.insert(key.clone());
+        let action_running = classify_duplicate_forwarded_request(
+            &key,
+            true,
+            &HashSet::new(),
+            &HashSet::new(),
+            &running,
+            &VecDeque::new(),
+            &VecDeque::new(),
+        );
+        assert_eq!(
+            action_running,
+            DuplicateForwardedRequestAction::Ignore("already-running")
+        );
+
+        let mut ready = VecDeque::new();
+        ready.push_back(key.clone());
+        let action_ready = classify_duplicate_forwarded_request(
+            &key,
+            true,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &ready,
+            &VecDeque::new(),
+        );
+        assert_eq!(
+            action_ready,
+            DuplicateForwardedRequestAction::Ignore("already-queued")
+        );
     }
 
     #[test]
