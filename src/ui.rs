@@ -130,25 +130,14 @@ impl UiState {
                 }
             }
         }
-        if kv.get("phase").map(|v| v.as_str()) == Some("dependency") {
-            if let Some(dep) = kv.get("to") {
-                let action = kv.get("action").map(|s| s.as_str()).unwrap_or_default();
-                let dep_status = match action {
-                    "follow" => "waiting",
-                    "scan" => "queued",
-                    "unresolved" => "blocked",
-                    "skip" => "skipped",
-                    _ => "queued",
-                };
-                self.seq = self.seq.saturating_add(1);
-                self.packages.entry(dep.clone()).or_insert(PackageState {
-                    status: dep_status.to_string(),
-                    detail: "dependency".to_string(),
-                    seq: self.seq,
-                });
-            }
-        }
         if let Some(pkg) = kv.get("package") {
+            // Keep dependency discovery chatter out of the Packages table.
+            // The dependency scanner reports both Bioconda and OS-level deps
+            // (for example make/cmake/autoconf), but the package list should
+            // reflect only buildable/planned package units.
+            if kv.get("phase").map(|v| v.as_str()) == Some("dependency") {
+                return;
+            }
             self.seq = self.seq.saturating_add(1);
             let phase = kv.get("phase").map(|s| s.as_str()).unwrap_or_default();
             let action = kv.get("action").map(|s| s.as_str()).unwrap_or_default();
