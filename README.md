@@ -75,6 +75,7 @@ Defaults when omitted:
 - `docs/Python_RPM_charter.md`
 - `docs/R_RPM_charter.md`
 - `docs/Rust_RPM_charter.md`
+- `docs/LAUNCH_PACKAGING_CONSTITUTION.md`
 - `docs/USERGUIDE.md`
 - `docs/SRS.md`
 - `docs/ARD.md`

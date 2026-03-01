@@ -12,6 +12,7 @@ Define the target architecture for `bioconda2rpm` as an enterprise-capable, depe
 
 This architecture is constrained by the following governance artifacts:
 - [Module Governance Charter](../MODULE_GOVERNANCE_CHARTER.md)
+- [Launch Packaging Constitution](./LAUNCH_PACKAGING_CONSTITUTION.md)
 - [RPM Charter](./RPM_charter.md)
 - [Python RPM Charter](./Python_RPM_charter.md)
 - [R RPM Charter](./R_RPM_charter.md)
