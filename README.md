@@ -81,6 +81,7 @@ Defaults when omitted:
 - `docs/CLI_contract.md`
 - `docs/dependency_policy.md`
 - `docs/decision_log.md`
+- `docs/STAGE_ISOLATION_AND_SAMPLING_BLUEPRINT.md`
 
 ## Container Build Images
 
