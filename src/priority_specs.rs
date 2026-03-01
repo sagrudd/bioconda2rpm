@@ -5476,6 +5476,11 @@ mkdir -p %{bioconda_source_subdir}\n"
         build_requires.remove("java-11-openjdk");
         build_requires.insert("java-21-openjdk-devel".to_string());
     }
+    // HEURISTIC-TEMP(issue=HEUR-0007): tabixpp shared-lib patch links with -lcurl.
+    if software_slug == "tabixpp" {
+        // Bioconda's shared-lib patch links tabix++ with -lcurl.
+        build_requires.insert("libcurl-devel".to_string());
+    }
     build_requires.remove(PHOREUS_PYTHON_PACKAGE);
     build_requires.remove(PHOREUS_PYTHON_PACKAGE_312);
     build_requires.remove(PHOREUS_PYTHON_PACKAGE_313);
@@ -5747,6 +5752,11 @@ mkdir -p %{bioconda_source_subdir}\n"
     export PIP=\"$PHOREUS_PYTHON_PREFIX/bin/pip{phoreus_python_version}\"\n\
     export PYTHONNOUSERSITE=1\n\
     export RECIPE_DIR=/work/SOURCES\n\
+    # Keep helper scripts from recipe sources executable. Some Bioconda build\n\
+    # scripts invoke RECIPE_DIR helper .sh files directly rather than via bash.\n\
+    if [[ -d \"$RECIPE_DIR\" ]]; then\n\
+    find \"$RECIPE_DIR\" -maxdepth 1 -type f -name '*.sh' -exec chmod 0755 {{}} + || true\n\
+    fi\n\
     export PKG_NAME=\"${{PKG_NAME:-{conda_pkg_name}}}\"\n\
     export PKG_VERSION=\"${{PKG_VERSION:-{conda_pkg_version}}}\"\n\
     export PKG_BUILDNUM=\"${{PKG_BUILDNUM:-{conda_pkg_build_number}}}\"\n\
@@ -10798,6 +10808,7 @@ requirements:
         assert!(spec.contains("if [[ \"${CONFIG_SITE:-}\" == \"NONE\" ]]; then"));
         assert!(spec.contains("cat config.log; exit 1;"));
         assert!(spec.contains("CURSES_LIB=\"${CURSES_LIB:-}\" ./configure"));
+        assert!(spec.contains("find \"$RECIPE_DIR\" -maxdepth 1 -type f -name '*.sh' -exec chmod 0755"));
         assert!(spec.contains("export PKG_NAME=\"${PKG_NAME:-blast}\""));
         assert!(spec.contains("export PKG_VERSION=\"${PKG_VERSION:-2.5.0}\""));
         assert!(spec.contains("export PKG_BUILDNUM=\"${PKG_BUILDNUM:-0}\""));
@@ -11991,6 +12002,54 @@ requirements:
         assert!(spec.contains(
             "sparsehash headers not found; forcing abyss --without-sparsehash"
         ));
+    }
+
+    #[test]
+    fn payload_spec_tabixpp_adds_libcurl_build_requirement() {
+        let parsed = ParsedMeta {
+            package_name: "tabixpp".to_string(),
+            version: "1.1.2".to_string(),
+            build_number: "4".to_string(),
+            source_url: "https://example.invalid/tabixpp-1.1.2.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/tabixpp".to_string(),
+            license: "MIT".to_string(),
+            summary: "tabixpp".to_string(),
+            source_patches: vec!["shared_lib.patch".to_string()],
+            build_script: Some("make prefix=\"${PREFIX}\" -j\"${CPU_COUNT}\"\nmake install".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["make".to_string()],
+            host_dep_specs_raw: vec![
+                "zlib".to_string(),
+                "bzip2".to_string(),
+                "xz".to_string(),
+                "htslib".to_string(),
+            ],
+            run_dep_specs_raw: vec!["samtools".to_string()],
+            build_deps: BTreeSet::from(["make".to_string()]),
+            host_deps: BTreeSet::from([
+                "zlib".to_string(),
+                "bzip2".to_string(),
+                "xz".to_string(),
+                "htslib".to_string(),
+            ]),
+            run_deps: BTreeSet::from(["samtools".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "tabixpp",
+            &parsed,
+            "bioconda-tabixpp-build.sh",
+            &["bioconda-tabixpp-patch-1-shared_lib.patch".to_string()],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("BuildRequires:  libcurl-devel"));
     }
 
     #[test]
