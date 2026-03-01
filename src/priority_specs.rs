@@ -4503,9 +4503,16 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "sed"
             | "tar"
             | "gzip"
+            | "pigz"
             | "bzip2"
             | "xz"
             | "unzip"
+            | "zip"
+            | "lrzip"
+            | "wget"
+            | "curl"
+            | "swig"
+            | "doxygen"
             | "which"
             | "findutils"
             | "coreutils"
@@ -10377,6 +10384,46 @@ requirements:
         assert!(reqs.contains(&"numpy".to_string()));
         assert!(!reqs.iter().any(|r| r == "mummer"));
         assert!(!reqs.iter().any(|r| r == "minimap2"));
+    }
+
+    #[test]
+    fn python_requirements_exclude_host_system_tools_for_mixed_cpp_python_recipes() {
+        let parsed = ParsedMeta {
+            package_name: "btllib".to_string(),
+            version: "1.7.5".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/btllib-1.7.5.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/btllib".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "btllib".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install $PREFIX/lib/btllib/python".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["cmake".to_string(), "ninja".to_string()],
+            host_dep_specs_raw: vec![
+                "python".to_string(),
+                "pip".to_string(),
+                "samtools".to_string(),
+                "swig".to_string(),
+                "doxygen".to_string(),
+                "pigz".to_string(),
+                "gzip".to_string(),
+                "tar".to_string(),
+                "bzip2".to_string(),
+                "xz".to_string(),
+                "lrzip".to_string(),
+                "zip".to_string(),
+                "wget".to_string(),
+            ],
+            run_dep_specs_raw: vec!["python".to_string(), "samtools".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let reqs = build_python_requirements(&parsed);
+        assert!(reqs.is_empty());
     }
 
     #[test]
