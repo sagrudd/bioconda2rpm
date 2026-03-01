@@ -6179,6 +6179,9 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
       fi\n\
       echo \"bioconda2rpm: using Qt6 from $Qt6_DIR\" >&2\n\
     fi\n\
+    if [[ -f ./build.sh ]]; then\n\
+      perl -0pi -e 's@(^\\s*cmake\\s+--build\\s+build\\b)@if [[ -d build ]]; then\\n  while IFS= read -r -d '\\''\\'' fm; do\\n    sed -i '\\''s# -isystem /usr/include##g; s# -I/usr/include##g'\\'' \"$fm\" || true\\n  done < <(find build -type f -name flags.make -print0)\\nfi\\n$1@mg' ./build.sh || true\n\
+    fi\n\
     fi\n\
     \n\
     # advntr vendors legacy pomegranate/Cython code that is incompatible with\n\
@@ -6942,13 +6945,10 @@ if [[ -d \"$PREFIX/lib\" ]]; then\n\
   export LDFLAGS=\"-L$PREFIX/lib ${LDFLAGS:-}\"\n\
 fi\n\
 if [[ -d \"$PREFIX/include\" ]]; then\n\
-  if [[ -d /usr/include ]]; then\n\
-    export C_INCLUDE_PATH=\"/usr/include:$PREFIX/include${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}\"\n\
-    export CPLUS_INCLUDE_PATH=\"/usr/include:$PREFIX/include${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}\"\n\
-  else\n\
-    export C_INCLUDE_PATH=\"$PREFIX/include${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}\"\n\
-    export CPLUS_INCLUDE_PATH=\"$PREFIX/include${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}\"\n\
-  fi\n\
+  # Keep injected include roots prefix-local only; prepending /usr/include can\n\
+  # break libstdc++ include_next resolution in C++ builds.\n\
+  export C_INCLUDE_PATH=\"$PREFIX/include${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}\"\n\
+  export CPLUS_INCLUDE_PATH=\"$PREFIX/include${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}\"\n\
   export CPPFLAGS=\"-I$PREFIX/include ${CPPFLAGS:-}\"\n\
 fi\n\
 ",
