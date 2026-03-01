@@ -6039,6 +6039,52 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     sed -i \"s|[[:space:]]''[[:space:]]| |g\" ./build.sh || true\n\
     fi\n\
     \n\
+    # Bandage-NG requires CMake >= 3.28. EL9 base images can be older.\n\
+    # Bootstrap a newer CMake binary in-place when needed.\n\
+    if [[ \"%{{tool}}\" == \"bandage-ng\" ]]; then\n\
+    cmake_ok=0\n\
+    if command -v cmake >/dev/null 2>&1; then\n\
+      cmake_ver=$(cmake --version 2>/dev/null | awk 'NR==1 {{print $3}}')\n\
+      cmake_major=${{cmake_ver%%.*}}\n\
+      cmake_rest=${{cmake_ver#*.}}\n\
+      cmake_minor=${{cmake_rest%%.*}}\n\
+      if [[ \"$cmake_major\" =~ ^[0-9]+$ && \"$cmake_minor\" =~ ^[0-9]+$ ]]; then\n\
+        if [[ \"$cmake_major\" -gt 3 || ( \"$cmake_major\" -eq 3 && \"$cmake_minor\" -ge 28 ) ]]; then\n\
+          cmake_ok=1\n\
+        fi\n\
+      fi\n\
+    fi\n\
+    if [[ \"$cmake_ok\" -ne 1 ]]; then\n\
+      cmake_bootstrap_ver=3.31.6\n\
+      case \"$(uname -m)\" in\n\
+        x86_64) cmake_pkg=\"cmake-${{cmake_bootstrap_ver}}-linux-x86_64.tar.gz\" ;;\n\
+        aarch64|arm64) cmake_pkg=\"cmake-${{cmake_bootstrap_ver}}-linux-aarch64.tar.gz\" ;;\n\
+        *)\n\
+          echo \"unsupported architecture for CMake bootstrap: $(uname -m)\" >&2\n\
+          exit 86\n\
+          ;;\n\
+      esac\n\
+      cmake_bootstrap_root=\"$(pwd)/.bioconda2rpm-cmake-${{cmake_bootstrap_ver}}\"\n\
+      cmake_archive=\"$cmake_bootstrap_root/$cmake_pkg\"\n\
+      rm -rf \"$cmake_bootstrap_root\"\n\
+      mkdir -p \"$cmake_bootstrap_root\"\n\
+      cmake_url=\"https://github.com/Kitware/CMake/releases/download/v${{cmake_bootstrap_ver}}/$cmake_pkg\"\n\
+      if command -v curl >/dev/null 2>&1; then\n\
+        curl -L --fail -o \"$cmake_archive\" \"$cmake_url\"\n\
+      elif command -v wget >/dev/null 2>&1; then\n\
+        wget -O \"$cmake_archive\" \"$cmake_url\"\n\
+      else\n\
+        echo \"missing curl/wget for CMake bootstrap\" >&2\n\
+        exit 44\n\
+      fi\n\
+      tar -xf \"$cmake_archive\" -C \"$cmake_bootstrap_root\" --strip-components=1\n\
+      export PATH=\"$cmake_bootstrap_root/bin:$PATH\"\n\
+      if command -v cmake >/dev/null 2>&1; then\n\
+        echo \"bioconda2rpm: bootstrapped $(cmake --version | head -n 1) for bandage-ng\" >&2\n\
+      fi\n\
+    fi\n\
+    fi\n\
+    \n\
     # Kallisto enables zlib-ng in conda's merged-prefix model. In EL9 RPM\n\
     # builds, prefer system zlib and provide explicit HDF5 hints so CMake can\n\
     # resolve the serial HDF5 layout deterministically.\n\
@@ -7498,6 +7544,7 @@ fn map_build_dependency(dep: &str) -> String {
         "libxfixes" => "libXfixes-devel".to_string(),
         "libxxf86vm" => "libXxf86vm-devel".to_string(),
         "mesa-libgl-devel" => "mesa-libGL-devel".to_string(),
+        "mesa-libegl-devel" => "mesa-libEGL-devel".to_string(),
         "libpng" => "libpng-devel".to_string(),
         "libuuid" => "libuuid-devel".to_string(),
         "libopenssl-static" => "openssl-devel".to_string(),
@@ -7519,7 +7566,17 @@ fn map_build_dependency(dep: &str) -> String {
         "snappy" => "snappy-devel".to_string(),
         "sqlite" => "sqlite-devel".to_string(),
         "qt" => "qt5-qtbase-devel qt5-qtsvg-devel".to_string(),
+        "qt6-main" => "qt6-qtbase-devel".to_string(),
         "llvmdev" => "llvm-devel".to_string(),
+        "libvulkan-headers" => "vulkan-headers".to_string(),
+        "libvulkan-loader" => "vulkan-loader-devel".to_string(),
+        "xorg-libice" => "libICE-devel".to_string(),
+        "xorg-libsm" => "libSM-devel".to_string(),
+        "xorg-libx11" => "libX11-devel".to_string(),
+        "xorg-libxcomposite" => "libXcomposite-devel".to_string(),
+        "xorg-libxdamage" => "libXdamage-devel".to_string(),
+        "xorg-libxxf86vm" => "libXxf86vm-devel".to_string(),
+        "xorg-xf86vidmodeproto" => "libXxf86vm-devel".to_string(),
         "xorg-libxext" => "libXext-devel".to_string(),
         "xorg-libxfixes" => "libXfixes-devel".to_string(),
         "xerces-c" => "xerces-c-devel".to_string(),
@@ -7603,9 +7660,11 @@ fn map_runtime_dependency(dep: &str) -> String {
         "liblzma-devel" => "xz".to_string(),
         "liblapack" => "lapack".to_string(),
         "mesa-libgl-devel" => "mesa-libGL".to_string(),
+        "mesa-libegl-devel" => "mesa-libEGL".to_string(),
         "mysql-connector-c" => "mariadb-connector-c".to_string(),
         "lzo" | "lzo2" | "liblzo2" | "liblzo2-dev" | "liblzo2-devel" => "lzo".to_string(),
         "qt" => "qt5-qtbase qt5-qtsvg".to_string(),
+        "qt6-main" => "qt6-qtbase".to_string(),
         "llvmdev" => "llvm".to_string(),
         "nettle" => "nettle".to_string(),
         "sparsehash" => "sparsehash".to_string(),
@@ -7614,6 +7673,15 @@ fn map_runtime_dependency(dep: &str) -> String {
         "zstd-static" => "zstd".to_string(),
         "xorg-libxext" => "libXext".to_string(),
         "xorg-libxfixes" => "libXfixes".to_string(),
+        "xorg-libice" => "libICE".to_string(),
+        "xorg-libsm" => "libSM".to_string(),
+        "xorg-libx11" => "libX11".to_string(),
+        "xorg-libxcomposite" => "libXcomposite".to_string(),
+        "xorg-libxdamage" => "libXdamage".to_string(),
+        "xorg-libxxf86vm" => "libXxf86vm".to_string(),
+        "xorg-xf86vidmodeproto" => "libXxf86vm".to_string(),
+        "libvulkan-headers" => "vulkan-headers".to_string(),
+        "libvulkan-loader" => "vulkan-loader".to_string(),
         "xerces-c" => "xerces-c".to_string(),
         "zlib-ng" | "zlibng" | "zlib-ng-compat" | "zlib-ng-compat-devel" => {
             "zlib-ng-compat".to_string()
@@ -10000,9 +10068,19 @@ mod tests {
             map_build_dependency("xerces-c"),
             "xerces-c-devel".to_string()
         );
+        assert_eq!(
+            map_build_dependency("qt6-main"),
+            "qt6-qtbase-devel".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("xorg-libx11"),
+            "libX11-devel".to_string()
+        );
         assert_eq!(map_runtime_dependency("boost-cpp"), "boost".to_string());
         assert_eq!(map_runtime_dependency("capnproto"), "capnproto".to_string());
         assert_eq!(map_runtime_dependency("xerces-c"), "xerces-c".to_string());
+        assert_eq!(map_runtime_dependency("qt6-main"), "qt6-qtbase".to_string());
+        assert_eq!(map_runtime_dependency("xorg-libx11"), "libX11".to_string());
         assert_eq!(map_build_dependency("eigen"), "eigen3-devel".to_string());
         assert_eq!(
             map_runtime_dependency("biopython"),
@@ -11641,6 +11719,49 @@ requirements:
         assert!(spec.contains("export libmaus2_CFLAGS=\"-I$libmaus2_prefix/include\""));
         assert!(spec.contains("export libmaus2_LIBS=\"-L$libmaus2_prefix/lib -lmaus2\""));
         assert!(spec.contains("BuildRequires:  xerces-c-devel"));
+    }
+
+    #[test]
+    fn bandage_ng_spec_bootstraps_modern_cmake_when_needed() {
+        let parsed = ParsedMeta {
+            package_name: "bandage-ng".to_string(),
+            version: "2026.2.1".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/bandage-ng.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/bandage-ng".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "bandage-ng".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("cmake -S . -B build".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["cmake".to_string()],
+            host_dep_specs_raw: vec!["qt6-main".to_string(), "xorg-libx11".to_string()],
+            run_dep_specs_raw: vec!["qt6-main".to_string()],
+            build_deps: BTreeSet::from(["cmake".to_string()]),
+            host_deps: BTreeSet::from(["qt6-main".to_string(), "xorg-libx11".to_string()]),
+            run_deps: BTreeSet::from(["qt6-main".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "bandage-ng",
+            &parsed,
+            "bioconda-bandage-ng-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"bandage-ng\" ]]; then"));
+        assert!(spec.contains("cmake_bootstrap_ver=3.31.6"));
+        assert!(spec.contains("cmake-${cmake_bootstrap_ver}-linux-x86_64.tar.gz"));
+        assert!(spec.contains("BuildRequires:  qt6-qtbase-devel"));
+        assert!(spec.contains("BuildRequires:  libX11-devel"));
+        assert!(spec.contains("Requires:  qt6-qtbase"));
     }
 
     #[test]
