@@ -7334,6 +7334,10 @@ fn map_build_dependency(dep: &str) -> String {
         "ninja" => "ninja-build".to_string(),
         "openssl" => "openssl-devel".to_string(),
         "openmpi" => "openmpi-devel".to_string(),
+        // staden-io-lib link interfaces require liblzma/libbz2 symlinks from
+        // -devel packages on EL; keep those available for downstream links
+        // (for example libmaus2 with --with-io_lib/--with-lzma).
+        "staden-io-lib" | "staden_io_lib" => "staden-io-lib xz-devel bzip2-devel".to_string(),
         // Keep sparsehash as a Bioconda/Phoreus dependency so headers land
         // under PREFIX for recipes using --with-sparsehash=$PREFIX (e.g. abyss).
         "sparsehash" => "sparsehash".to_string(),
@@ -9924,6 +9928,14 @@ mod tests {
         assert_eq!(map_runtime_dependency("nettle"), "nettle".to_string());
         assert_eq!(map_build_dependency("snappy"), "snappy-devel".to_string());
         assert_eq!(map_runtime_dependency("snappy"), "snappy".to_string());
+        assert_eq!(
+            map_build_dependency("staden_io_lib"),
+            "staden-io-lib xz-devel bzip2-devel".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("staden-io-lib"),
+            "staden-io-lib xz-devel bzip2-devel".to_string()
+        );
         assert_eq!(
             map_runtime_dependency("sparsehash"),
             "sparsehash".to_string()
