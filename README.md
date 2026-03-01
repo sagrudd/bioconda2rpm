@@ -77,6 +77,7 @@ Defaults when omitted:
 - `docs/Rust_RPM_charter.md`
 - `docs/LAUNCH_PACKAGING_CONSTITUTION.md`
 - `docs/CUSTOMER_PACKAGE_INTAKE_SLA.md`
+- `docs/AUDIT_EVIDENCE_TEMPLATE_AND_TIER1_CHECKLIST.md`
 - `docs/USERGUIDE.md`
 - `docs/SRS.md`
 - `docs/ARD.md`

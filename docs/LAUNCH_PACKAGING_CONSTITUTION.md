@@ -160,6 +160,7 @@ For every LPU package, the documentation set MUST contain:
 - build log location,
 - dependency graph artifact references,
 - validation evidence reference.
+- audit evidence and hardening checklist record per [Audit Template and Tier 1 Checklist](./AUDIT_EVIDENCE_TEMPLATE_AND_TIER1_CHECKLIST.md).
 
 Minimal metadata schema:
 - package_name
