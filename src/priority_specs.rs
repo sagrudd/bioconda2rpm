@@ -6203,20 +6203,30 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     fi\n\
     \n\
     # Augustus expects lp_solve headers as lp_lib.h in an include search path.\n\
-    # Normalize discovered header locations into PREFIX/include for deterministic builds.\n\
+    # Normalize discovered header locations into PREFIX/include for deterministic builds,\n\
+    # and gracefully disable COMPGENPRED when lp_solve headers are unavailable.\n\
     if [[ \"%{{tool}}\" == \"augustus\" ]]; then\n\
     lp_header=\"\"\n\
-    for cand in /usr/include/lp_lib.h /usr/include/lpsolve/lp_lib.h /usr/local/include/lpsolve/lp_lib.h \"$PREFIX/include/lpsolve/lp_lib.h\"; do\n\
+    for cand in /usr/include/lp_lib.h /usr/include/lp_solve/lp_lib.h /usr/include/lpsolve/lp_lib.h /usr/local/include/lpsolve/lp_lib.h \"$PREFIX/include/lp_lib.h\" \"$PREFIX/include/lpsolve/lp_lib.h\"; do\n\
       if [[ -f \"$cand\" ]]; then\n\
         lp_header=\"$cand\"\n\
         break\n\
       fi\n\
     done\n\
+    if [[ -z \"$lp_header\" ]]; then\n\
+      lp_header=$(find /usr/local/phoreus -type f -name lp_lib.h 2>/dev/null | sort | tail -n 1 || true)\n\
+    fi\n\
+    if [[ -z \"$lp_header\" ]]; then\n\
+      lp_header=$(find /usr/include /usr/local/include -maxdepth 6 -type f -name lp_lib.h 2>/dev/null | sort | tail -n 1 || true)\n\
+    fi\n\
     if [[ -n \"$lp_header\" ]]; then\n\
       mkdir -p \"$PREFIX/include/lpsolve\" \"$PREFIX/include\"\n\
       ln -snf \"$lp_header\" \"$PREFIX/include/lpsolve/lp_lib.h\"\n\
       ln -snf \"$lp_header\" \"$PREFIX/include/lp_lib.h\"\n\
       export CPPFLAGS=\"-I$PREFIX/include -I$PREFIX/include/lpsolve ${{CPPFLAGS:-}}\"\n\
+    else\n\
+      sed -i 's/COMPGENPRED=true/COMPGENPRED=false/g' ./build.sh || true\n\
+      echo \"bioconda2rpm: lp_lib.h unavailable; disabling COMPGENPRED for augustus\" >&2\n\
     fi\n\
     fi\n\
     \n\
