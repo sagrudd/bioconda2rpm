@@ -5361,8 +5361,9 @@ fi\n\
     sed -i 's|^rm \"\\$LIB_INSTALL_DIR\"$|rm -rf \"\\$LIB_INSTALL_DIR\"|g' ./build.sh\n\
     # Newer BLAST source trees can ship subdirectories (for example `lib/outside`).\n\
     # Bioconda's flat `cp $RESULT_PATH/lib/*` fails when a directory is present.\n\
-    # Use recursive copy semantics so payload installation remains stable.\n\
-    sed -i 's|^cp \\$RESULT_PATH/lib/\\* \"\\$LIB_INSTALL_DIR\"$|cp -r \\$RESULT_PATH/lib/* \"\\$LIB_INSTALL_DIR\"|g' ./build.sh\n\
+    # Copy only regular files from the top-level lib dir to avoid cp failures.\n\
+    sed -i 's|^cp \\$RESULT_PATH/lib/\\* \"\\$LIB_INSTALL_DIR\"$|find \"\\$RESULT_PATH/lib\" -maxdepth 1 -type f -exec cp -f {{}} \"\\$LIB_INSTALL_DIR\"/ \\\\;|g' ./build.sh || true\n\
+    sed -i 's|^cp \"\\$RESULT_PATH/lib/\"\\* \"\\$LIB_INSTALL_DIR\"$|find \"\\$RESULT_PATH/lib\" -maxdepth 1 -type f -exec cp -f {{}} \"\\$LIB_INSTALL_DIR\"/ \\\\;|g' ./build.sh || true\n\
     # BLAST passes --with-sqlite3=$PREFIX in conda builds where sqlite lives in\n\
     # that shared prefix. In RPM/container builds sqlite comes from system repos.\n\
     sed -i 's|--with-sqlite3=\\$PREFIX|--with-sqlite3=/usr|g' ./build.sh || true\n\
@@ -9205,6 +9206,9 @@ requirements:
         assert!(spec.contains("export PKG_VERSION=\"${PKG_VERSION:-2.5.0}\""));
         assert!(spec.contains("export PKG_BUILDNUM=\"${PKG_BUILDNUM:-0}\""));
         assert!(spec.contains("export ncbi_cv_lib_boost_test=no"));
+        assert!(spec.contains(
+            "find \"\\$RESULT_PATH/lib\" -maxdepth 1 -type f -exec cp -f {} \"\\$LIB_INSTALL_DIR\"/ \\\\;"
+        ));
     }
 
     #[test]
