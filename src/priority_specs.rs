@@ -168,8 +168,32 @@ type ProgressSink = Arc<dyn Fn(String) + Send + Sync + 'static>;
 static PROGRESS_SINK: OnceLock<Mutex<Option<ProgressSink>>> = OnceLock::new();
 static CANCELLATION_REQUESTED: AtomicBool = AtomicBool::new(false);
 static CANCELLATION_REASON: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static ACTIVE_CONTAINERS: OnceLock<Mutex<HashMap<String, ActiveContainerRun>>> = OnceLock::new();
 const CONDA_RENDER_ADAPTER_SCRIPT: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/conda_render_ir.py");
+
+#[derive(Debug, Clone)]
+struct ActiveContainerRun {
+    engine: String,
+    label: String,
+    spec: String,
+}
+
+struct ActiveContainerGuard {
+    name: String,
+}
+
+impl ActiveContainerGuard {
+    fn new(name: String) -> Self {
+        Self { name }
+    }
+}
+
+impl Drop for ActiveContainerGuard {
+    fn drop(&mut self) {
+        unregister_active_container(&self.name);
+    }
+}
 
 fn log_progress(message: impl AsRef<str>) {
     emit_progress_line(format!("progress {}", message.as_ref()));
@@ -230,6 +254,137 @@ pub fn request_cancellation(reason: impl Into<String>) {
         "phase=build status=cancel-requested reason={}",
         compact_reason(&reason, 240)
     ));
+    stop_active_containers(&reason);
+}
+
+fn register_active_container(name: &str, engine: &str, label: &str, spec: &str) {
+    let lock = ACTIVE_CONTAINERS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut guard) = lock.lock() {
+        guard.insert(
+            name.to_string(),
+            ActiveContainerRun {
+                engine: engine.to_string(),
+                label: label.to_string(),
+                spec: spec.to_string(),
+            },
+        );
+    }
+}
+
+fn unregister_active_container(name: &str) {
+    let lock = ACTIVE_CONTAINERS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut guard) = lock.lock() {
+        guard.remove(name);
+    }
+}
+
+fn active_container_snapshot() -> Vec<(String, ActiveContainerRun)> {
+    let lock = ACTIVE_CONTAINERS.get_or_init(|| Mutex::new(HashMap::new()));
+    match lock.lock() {
+        Ok(guard) => guard
+            .iter()
+            .map(|(name, run)| (name.clone(), run.clone()))
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn lookup_active_container(name: &str) -> Option<ActiveContainerRun> {
+    let lock = ACTIVE_CONTAINERS.get_or_init(|| Mutex::new(HashMap::new()));
+    match lock.lock() {
+        Ok(guard) => guard.get(name).cloned(),
+        Err(_) => None,
+    }
+}
+
+fn force_stop_container(
+    name: &str,
+    run: &ActiveContainerRun,
+    reason: &str,
+    clear_registry: bool,
+) -> bool {
+    let started = Instant::now();
+    log_progress(format!(
+        "phase=container-build status=stopping label={} spec={} container={} reason={}",
+        run.label,
+        run.spec,
+        name,
+        compact_reason(reason, 160)
+    ));
+    let output = Command::new(&run.engine)
+        .arg("rm")
+        .arg("-f")
+        .arg(name)
+        .output();
+
+    let mut stopped = false;
+    match output {
+        Ok(out) => {
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let lower = combined.to_lowercase();
+            if out.status.success() || lower.contains("no such container") {
+                stopped = true;
+                log_progress(format!(
+                    "phase=container-build status=stopped label={} spec={} container={} elapsed={} detail={}",
+                    run.label,
+                    run.spec,
+                    name,
+                    format_elapsed(started.elapsed()),
+                    compact_reason(&tail_lines(&combined, 4), 220)
+                ));
+            } else {
+                log_progress(format!(
+                    "phase=container-build status=stop-failed label={} spec={} container={} elapsed={} exit={} detail={}",
+                    run.label,
+                    run.spec,
+                    name,
+                    format_elapsed(started.elapsed()),
+                    out.status,
+                    compact_reason(&tail_lines(&combined, 6), 260)
+                ));
+            }
+        }
+        Err(err) => {
+            log_progress(format!(
+                "phase=container-build status=stop-failed label={} spec={} container={} elapsed={} detail={}",
+                run.label,
+                run.spec,
+                name,
+                format_elapsed(started.elapsed()),
+                compact_reason(&err.to_string(), 220)
+            ));
+        }
+    }
+    if clear_registry {
+        unregister_active_container(name);
+    }
+    stopped
+}
+
+fn stop_active_container_by_name(name: &str, reason: &str) -> bool {
+    let Some(run) = lookup_active_container(name) else {
+        return false;
+    };
+    force_stop_container(name, &run, reason, false)
+}
+
+pub fn stop_active_containers(reason: &str) {
+    let snapshot = active_container_snapshot();
+    if snapshot.is_empty() {
+        return;
+    }
+    log_progress(format!(
+        "phase=container-build status=stopping-all count={} reason={}",
+        snapshot.len(),
+        compact_reason(reason, 160)
+    ));
+    for (name, run) in snapshot {
+        let _ = force_stop_container(&name, &run, reason, true);
+    }
 }
 
 fn cancellation_requested() -> bool {
@@ -8231,9 +8386,15 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
             return Err(cancellation_error("container build cancelled before start"));
         }
         let step_started = Instant::now();
+        let container_name = build_container_name(&build_label, spec_name, attempt);
         log_progress(format!(
-            "phase=container-build status=started label={} spec={} attempt={} image={} platform={}",
-            build_label, spec_name, attempt, build_config.container_image, container_platform
+            "phase=container-build status=started label={} spec={} attempt={} image={} platform={} container={}",
+            build_label,
+            spec_name,
+            attempt,
+            build_config.container_image,
+            container_platform,
+            container_name
         ));
         let attempt_log_path = logs_dir.join(format!(
             "{}.attempt{}.log",
@@ -8253,6 +8414,8 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         let mut cmd = Command::new(&build_config.container_engine);
         cmd.arg("run")
             .arg("--rm")
+            .arg("--name")
+            .arg(&container_name)
             .arg("--platform")
             .arg(container_platform)
             .arg("-v")
@@ -8275,6 +8438,13 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
                 spec_name, build_config.container_image
             )
         })?;
+        register_active_container(
+            &container_name,
+            &build_config.container_engine,
+            &build_label,
+            spec_name,
+        );
+        let _container_guard = ActiveContainerGuard::new(container_name.clone());
 
         let mut heartbeat_rng = seed_heartbeat_rng(&build_label, spec_name, attempt);
         let mut next_heartbeat_at =
@@ -8288,6 +8458,7 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
                 break;
             }
             if cancellation_requested() {
+                let _ = stop_active_container_by_name(&container_name, "cancelled by user");
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(cancellation_error("container build cancelled by user"));
@@ -8458,6 +8629,25 @@ fn sanitize_label(input: &str) -> String {
             }
         })
         .collect()
+}
+
+fn build_container_name(label: &str, spec_name: &str, attempt: usize) -> String {
+    let sanitized_label = sanitize_label(label);
+    let sanitized_spec = sanitize_label(spec_name.trim_end_matches(".spec"));
+    let clipped_label: String = sanitized_label.chars().take(24).collect();
+    let clipped_spec: String = sanitized_spec.chars().take(24).collect();
+    let now_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!(
+        "bioconda2rpm-{}-{}-a{}-p{}-{}",
+        clipped_label,
+        clipped_spec,
+        attempt,
+        std::process::id(),
+        now_millis
+    )
 }
 
 fn build_stability_cache_path(reports_dir: &Path) -> PathBuf {

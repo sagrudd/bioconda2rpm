@@ -7,6 +7,9 @@ mod ui;
 use clap::Parser;
 use std::fs;
 use std::process::ExitCode;
+use std::sync::OnceLock;
+
+static SIGNAL_HANDLER_INSTALLED: OnceLock<()> = OnceLock::new();
 
 fn ensure_workspace_paths(
     topdir: &std::path::Path,
@@ -19,7 +22,18 @@ fn ensure_workspace_paths(
     Ok(())
 }
 
+fn install_signal_handler() {
+    let _ = SIGNAL_HANDLER_INSTALLED.get_or_init(|| {
+        if let Err(err) = ctrlc::set_handler(|| {
+            priority_specs::request_cancellation("cancelled by user (SIGINT)");
+        }) {
+            eprintln!("warning: failed to install Ctrl-C handler: {err}");
+        }
+    });
+}
+
 fn main() -> ExitCode {
+    install_signal_handler();
     let cli = cli::Cli::parse();
 
     match cli.command {
