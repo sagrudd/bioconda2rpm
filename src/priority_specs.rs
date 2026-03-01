@@ -3573,11 +3573,7 @@ fn is_r_project_recipe(parsed: &ParsedMeta) -> bool {
 fn build_python_requirements(parsed: &ParsedMeta) -> Vec<String> {
     let runtime_incompatible = recipe_python_runtime_incompatible(parsed);
     let mut out = BTreeSet::new();
-    for raw in parsed
-        .host_dep_specs_raw
-        .iter()
-        .chain(parsed.run_dep_specs_raw.iter())
-    {
+    for raw in &parsed.host_dep_specs_raw {
         if let Some(req) = conda_dep_to_pip_requirement(raw) {
             let normalized_req = if runtime_incompatible {
                 relax_pip_requirement_for_runtime(req)
@@ -8895,12 +8891,13 @@ package:
 requirements:
   host:
     - python <3.10
-  run:
     - scanpy =1.9.3
     - scipy <1.9.0
     - bbknn >=1.5.0,<1.6.0
     - fa2
     - mnnpy >=0.1.9.5
+  run:
+    - python >=3
 "#;
         let parsed = parse_rendered_meta(rendered).expect("parse meta");
         let reqs = build_python_requirements(&parsed);
@@ -8912,7 +8909,7 @@ requirements:
     }
 
     #[test]
-    fn python_requirements_add_cython_cap_for_pomegranate() {
+    fn python_requirements_add_cython_cap_for_host_pomegranate() {
         let parsed = ParsedMeta {
             package_name: "cnvkit".to_string(),
             version: "0.9.12".to_string(),
@@ -8926,8 +8923,11 @@ requirements:
             build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
             noarch_python: true,
             build_dep_specs_raw: Vec::new(),
-            host_dep_specs_raw: vec!["python >=3.8".to_string()],
-            run_dep_specs_raw: vec!["pomegranate >=0.14.8,<=0.14.9".to_string()],
+            host_dep_specs_raw: vec![
+                "python >=3.8".to_string(),
+                "pomegranate >=0.14.8,<=0.14.9".to_string(),
+            ],
+            run_dep_specs_raw: vec!["python >=3.8".to_string()],
             build_deps: BTreeSet::new(),
             host_deps: BTreeSet::new(),
             run_deps: BTreeSet::new(),
@@ -9267,7 +9267,7 @@ requirements:
 
         let reqs = build_python_requirements(&parsed);
         assert!(reqs.contains(&"jinja2>=3.0.0".to_string()));
-        assert!(reqs.contains(&"click>=8.0".to_string()));
+        assert!(!reqs.contains(&"click>=8.0".to_string()));
         assert!(!reqs.iter().any(|r| r.contains("automake")));
     }
 
