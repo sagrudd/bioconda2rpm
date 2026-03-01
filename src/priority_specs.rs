@@ -6064,10 +6064,21 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
         fi\n\
       fi\n\
     fi\n\
+    sed -i 's|\\${{PREFIX}}/bin/perl|perl|g' ./build.sh || true\n\
+    sed -i 's|\\$PREFIX/bin/perl|perl|g' ./build.sh || true\n\
+    sed -i 's|\"\\${{PREFIX}}/bin/perl\"|perl|g' ./build.sh || true\n\
+    sed -i 's|\"\\$PREFIX/bin/perl\"|perl|g' ./build.sh || true\n\
     perl -0pi -e 's@(^\\s*make\\s+test_dynamic\\b[^\\n]*)$@$1 || true@mg' ./build.sh || true\n\
     perl -0pi -e 's@(^\\s*make\\s+test\\b[^\\n]*)$@$1 || true@mg' ./build.sh || true\n\
     perl -0pi -e 's@(^\\s*\\./Build\\s+test\\b[^\\n]*)$@$1 || true@mg' ./build.sh || true\n\
     perl -0pi -e 's@(^\\s*prove\\b[^\\n]*)$@$1 || true@mg' ./build.sh || true\n\
+    perl -0pi -e 's@(^|[;\\n])([ \\t]*make[ \\t]+test_dynamic\\b[^;\\n]*)(?=(;|\\n|$))@$1$2 || true@g' ./build.sh || true\n\
+    perl -0pi -e 's@(^|[;\\n])([ \\t]*make[ \\t]+test\\b[^;\\n]*)(?=(;|\\n|$))@$1$2 || true@g' ./build.sh || true\n\
+    perl -0pi -e 's@(^|[;\\n])([ \\t]*\\./Build[ \\t]+test\\b[^;\\n]*)(?=(;|\\n|$))@$1$2 || true@g' ./build.sh || true\n\
+    perl -0pi -e 's@(^|[;\\n])([ \\t]*prove\\b[^;\\n]*)(?=(;|\\n|$))@$1$2 || true@g' ./build.sh || true\n\
+    fi\n\
+    if [[ \"%{{tool}}\" == \"perl-gd\" ]]; then\n\
+    perl -0pi -e 's@(^\\s*chmod\\s+u\\+w\\s+.*bdftogd\\b.*)$@[ -e \"$PREFIX/bin/bdftogd\" ] && $1 || true@mg' ./build.sh || true\n\
     fi\n\
     \n\
     # Bandage-NG requires CMake >= 3.28. EL9 base images can be older.\n\
@@ -6221,6 +6232,35 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     export CPPFLAGS=\"-include linux/types.h ${{CPPFLAGS:-}}\"\n\
     export CFLAGS=\"-include linux/types.h ${{CFLAGS:-}}\"\n\
     export CXXFLAGS=\"-include linux/types.h ${{CXXFLAGS:-}}\"\n\
+    fi\n\
+    \n\
+    if [[ \"%{{tool}}\" == \"delly\" ]]; then\n\
+    if [[ -e /usr/lib64/liblzma.so.5 && ! -e /usr/lib64/liblzma.so ]]; then\n\
+      ln -sf /usr/lib64/liblzma.so.5 /usr/lib64/liblzma.so || true\n\
+    fi\n\
+    if [[ -e /usr/lib/liblzma.so.5 && ! -e /usr/lib/liblzma.so ]]; then\n\
+      ln -sf /usr/lib/liblzma.so.5 /usr/lib/liblzma.so || true\n\
+    fi\n\
+    if [[ -e /usr/lib64/liblzma.so ]]; then\n\
+      export LDFLAGS=\"-L/usr/lib64 ${{LDFLAGS:-}}\"\n\
+    elif [[ -e /usr/lib/liblzma.so ]]; then\n\
+      export LDFLAGS=\"-L/usr/lib ${{LDFLAGS:-}}\"\n\
+    fi\n\
+    fi\n\
+    \n\
+    if [[ \"%{{tool}}\" == \"plink\" ]]; then\n\
+    cblas_header=\"\"\n\
+    for cand in /usr/include/cblas.h /usr/include/openblas/cblas.h /usr/include/blas/cblas.h; do\n\
+      if [[ -f \"$cand\" ]]; then\n\
+        cblas_header=\"$cand\"\n\
+        break\n\
+      fi\n\
+    done\n\
+    if [[ -n \"$cblas_header\" && ! -f \"$PREFIX/include/cblas.h\" ]]; then\n\
+      mkdir -p \"$PREFIX/include\"\n\
+      ln -sf \"$cblas_header\" \"$PREFIX/include/cblas.h\"\n\
+      export CPPFLAGS=\"-I$PREFIX/include ${{CPPFLAGS:-}}\"\n\
+    fi\n\
     fi\n\
     \n\
     # HMMER optionally enables MPI. Some EL9 buildroots expose libmpi but not\n\
@@ -6670,7 +6710,7 @@ fi\n\
     fi\n\
     tar -xf capnproto-1.0.2.tar.gz\n\
     cd capnproto-1.0.2/c++\n\
-    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"$PREFIX\" -DCMAKE_INSTALL_LIBDIR=lib\n\
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"$PREFIX\" -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_TESTING=OFF\n\
     cmake --build build -j\"${CPU_COUNT:-1}\"\n\
     cmake --install build\n\
     popd >/dev/null\n\
@@ -7708,13 +7748,13 @@ fn map_build_dependency(dep: &str) -> String {
         // -devel packages on EL; keep those available for downstream links
         // (for example libmaus2 with --with-io_lib/--with-lzma).
         "staden-io-lib" | "staden_io_lib" => "staden-io-lib xz-devel bzip2-devel".to_string(),
-        // Keep sparsehash as a Bioconda/Phoreus dependency so headers land
-        // under PREFIX for recipes using --with-sparsehash=$PREFIX (e.g. abyss).
-        "sparsehash" => "sparsehash".to_string(),
+        // Prefer the development package for headers expected by configure checks.
+        "sparsehash" => "sparsehash-devel".to_string(),
         "snappy" => "snappy-devel".to_string(),
         "sqlite" => "sqlite-devel".to_string(),
         "qt" => "qt5-qtbase-devel qt5-qtsvg-devel".to_string(),
-        "qt6-main" => "qt6-qtbase-devel".to_string(),
+        // Keep qt6-main as a logical dependency so local/Phoreus providers can satisfy it.
+        "qt6-main" => "qt6-main".to_string(),
         "llvmdev" => "llvm-devel".to_string(),
         "libvulkan-headers" => "vulkan-headers".to_string(),
         "libvulkan-loader" => "vulkan-loader-devel".to_string(),
@@ -7727,7 +7767,7 @@ fn map_build_dependency(dep: &str) -> String {
         "xorg-xf86vidmodeproto" => "libXxf86vm-devel".to_string(),
         "xorg-libxext" => "libXext-devel".to_string(),
         "xorg-libxfixes" => "libXfixes-devel".to_string(),
-        "xerces-c" => "xerces-c-devel".to_string(),
+        "xerces-c" => "xerces-c".to_string(),
         "xz" => "xz-devel".to_string(),
         "zlib" => "zlib-devel".to_string(),
         "libzlib" => "zlib-devel".to_string(),
@@ -7814,10 +7854,10 @@ fn map_runtime_dependency(dep: &str) -> String {
         "mysql-connector-c" => "mariadb-connector-c".to_string(),
         "lzo" | "lzo2" | "liblzo2" | "liblzo2-dev" | "liblzo2-devel" => "lzo".to_string(),
         "qt" => "qt5-qtbase qt5-qtsvg".to_string(),
-        "qt6-main" => "qt6-qtbase".to_string(),
+        "qt6-main" => "qt6-main".to_string(),
         "llvmdev" => "llvm".to_string(),
         "nettle" => "nettle".to_string(),
-        "sparsehash" => "sparsehash".to_string(),
+        "sparsehash" => "sparsehash-devel".to_string(),
         "ninja" => "ninja-build".to_string(),
         "snappy" => "snappy".to_string(),
         "zstd-static" => "zstd".to_string(),
@@ -10220,11 +10260,11 @@ mod tests {
         );
         assert_eq!(
             map_build_dependency("xerces-c"),
-            "xerces-c-devel".to_string()
+            "xerces-c".to_string()
         );
         assert_eq!(
             map_build_dependency("qt6-main"),
-            "qt6-qtbase-devel".to_string()
+            "qt6-main".to_string()
         );
         assert_eq!(
             map_build_dependency("xorg-libx11"),
@@ -10234,7 +10274,7 @@ mod tests {
         assert_eq!(map_runtime_dependency("capnproto"), "capnproto".to_string());
         assert_eq!(map_runtime_dependency("cffi"), "python3-cffi".to_string());
         assert_eq!(map_runtime_dependency("xerces-c"), "xerces-c".to_string());
-        assert_eq!(map_runtime_dependency("qt6-main"), "qt6-qtbase".to_string());
+        assert_eq!(map_runtime_dependency("qt6-main"), "qt6-main".to_string());
         assert_eq!(map_runtime_dependency("xorg-libx11"), "libX11".to_string());
         assert_eq!(map_build_dependency("eigen"), "eigen3-devel".to_string());
         assert_eq!(
@@ -10302,7 +10342,7 @@ mod tests {
         assert_eq!(map_build_dependency("ninja"), "ninja-build".to_string());
         assert_eq!(
             map_build_dependency("sparsehash"),
-            "sparsehash".to_string()
+            "sparsehash-devel".to_string()
         );
         assert_eq!(map_build_dependency("sqlite"), "sqlite-devel".to_string());
         assert_eq!(map_build_dependency("cereal"), "cereal-devel".to_string());
@@ -10368,7 +10408,7 @@ mod tests {
         );
         assert_eq!(
             map_runtime_dependency("sparsehash"),
-            "sparsehash".to_string()
+            "sparsehash-devel".to_string()
         );
         assert_eq!(map_runtime_dependency("cereal"), "cereal-devel".to_string());
         assert_eq!(map_runtime_dependency("k8"), "nodejs".to_string());
@@ -10607,6 +10647,7 @@ requirements:
         assert!(script.contains("bootstrapping capnproto into $PREFIX"));
         assert!(script.contains("capnproto-1.0.2.tar.gz"));
         assert!(script.contains("archive/refs/tags/v1.0.2.tar.gz"));
+        assert!(script.contains("-DBUILD_TESTING=OFF"));
         assert!(script.contains("cmake --install build"));
     }
 
@@ -11885,6 +11926,86 @@ requirements:
     }
 
     #[test]
+    fn payload_spec_adds_delly_lzma_linker_shim() {
+        let parsed = ParsedMeta {
+            package_name: "delly".to_string(),
+            version: "1.2.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/delly.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/delly".to_string(),
+            license: "BSD-3-Clause".to_string(),
+            summary: "delly".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("make -j${CPU_COUNT}".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "delly",
+            &parsed,
+            "bioconda-delly-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"delly\" ]]; then"));
+        assert!(spec.contains("liblzma.so.5"));
+        assert!(spec.contains("export LDFLAGS=\"-L/usr/lib64 ${LDFLAGS:-}\""));
+    }
+
+    #[test]
+    fn payload_spec_adds_plink_cblas_header_shim() {
+        let parsed = ParsedMeta {
+            package_name: "plink".to_string(),
+            version: "1.9".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/plink.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/plink".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "plink".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("make".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "plink",
+            &parsed,
+            "bioconda-plink-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"plink\" ]]; then"));
+        assert!(spec.contains("cblas_header=\"\""));
+        assert!(spec.contains("ln -sf \"$cblas_header\" \"$PREFIX/include/cblas.h\""));
+    }
+
+    #[test]
     fn payload_spec_perl_recipes_relax_brittle_test_steps() {
         let parsed = ParsedMeta {
             package_name: "perl-lwp-mediatypes".to_string(),
@@ -11922,6 +12043,7 @@ requirements:
         assert!(spec.contains("if [[ \"%{tool}\" == perl-* ]]; then"));
         assert!(spec.contains("export RELEASE_TESTING=0"));
         assert!(spec.contains("perl -0pi -e"));
+        assert!(spec.contains("sed -i 's|\\${PREFIX}/bin/perl|perl|g' ./build.sh || true"));
     }
 
     #[test]
@@ -12047,7 +12169,7 @@ requirements:
         assert!(spec.contains("if ! pkg-config --exists libmaus2 2>/dev/null; then"));
         assert!(spec.contains("export libmaus2_CFLAGS=\"-I$libmaus2_prefix/include\""));
         assert!(spec.contains("export libmaus2_LIBS=\"-L$libmaus2_prefix/lib -lmaus2\""));
-        assert!(spec.contains("BuildRequires:  xerces-c-devel"));
+        assert!(spec.contains("BuildRequires:  xerces-c"));
     }
 
     #[test]
@@ -12090,9 +12212,9 @@ requirements:
         assert!(spec.contains("cmake-${cmake_bootstrap_ver}-linux-x86_64.tar.gz"));
         assert!(spec.contains("find /usr/local/phoreus -maxdepth 8 -type f -name Qt6Config.cmake"));
         assert!(spec.contains("export Qt6_DIR=\"$(dirname \"$qt6_cfg\")\""));
-        assert!(spec.contains("BuildRequires:  qt6-qtbase-devel"));
+        assert!(spec.contains("BuildRequires:  qt6-main"));
         assert!(spec.contains("BuildRequires:  libX11-devel"));
-        assert!(spec.contains("Requires:  qt6-qtbase"));
+        assert!(spec.contains("Requires:  qt6-main"));
     }
 
     #[test]
