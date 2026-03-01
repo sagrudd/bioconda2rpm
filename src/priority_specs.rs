@@ -1921,7 +1921,7 @@ fn parse_meta_for_resolved_conda(
         let stdout = String::from_utf8_lossy(&output.stdout);
         let detail = summarize_conda_adapter_issue(output.status, &stdout, &stderr);
         anyhow::bail!(
-            "conda render adapter unavailable: {}",
+            "conda render adapter not active: {}",
             compact_reason(&detail, 400)
         );
     }
@@ -1971,10 +1971,13 @@ fn summarize_conda_adapter_issue(
 ) -> String {
     let stderr_compact = compact_reason(stderr, 300);
     if stderr.contains("No module named 'conda_build'") {
-        return format!("status={} detail=missing_python_module_conda_build", status);
+        return format!(
+            "status={} detail=conda_build_module_not_installed",
+            status
+        );
     }
     if stderr.contains("command not found") {
-        return format!("status={} detail=missing_conda_tooling", status);
+        return format!("status={} detail=conda_tooling_not_installed", status);
     }
     if stderr.trim().is_empty() && stdout.trim().is_empty() {
         return format!("status={} detail=no_adapter_output", status);
