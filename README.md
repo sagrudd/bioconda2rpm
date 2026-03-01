@@ -86,6 +86,7 @@ Defaults when omitted:
 - `docs/NORMALIZATION_READINESS_GATE.md`
 - `docs/NORMALIZATION_MATURITY_INDEX.md`
 - `docs/ECOSYSTEM_STABILITY_STRESS_TEST_FRAMEWORK.md`
+- `docs/LONG_TERM_ECOSYSTEM_EVOLUTION_MODEL.md`
 - `docs/historical_log_mining/historical_log_mining_report.md`
 
 ## Container Build Images
