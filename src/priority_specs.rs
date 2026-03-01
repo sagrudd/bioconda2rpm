@@ -6429,12 +6429,29 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
       fi\n\
     done\n\
     if [[ -z \"$cblas_header\" ]]; then\n\
+      if command -v dnf >/dev/null 2>&1; then\n\
+        dnf -y install openblas-devel blas-devel >/dev/null 2>&1 || true\n\
+      fi\n\
+      if command -v microdnf >/dev/null 2>&1; then\n\
+        microdnf -y install openblas-devel blas-devel >/dev/null 2>&1 || true\n\
+      fi\n\
+      for cand in /usr/include/cblas.h /usr/include/openblas/cblas.h /usr/include/blas/cblas.h /usr/include/openblas-pthread/cblas.h /usr/include/openblas-openmp/cblas.h; do\n\
+        if [[ -f \"$cand\" ]]; then\n\
+          cblas_header=\"$cand\"\n\
+          break\n\
+        fi\n\
+      done\n\
+    fi\n\
+    if [[ -z \"$cblas_header\" ]]; then\n\
       cblas_header=$(find /usr/include -maxdepth 4 -type f -name cblas.h 2>/dev/null | head -n 1 || true)\n\
     fi\n\
     if [[ -n \"$cblas_header\" && ! -f \"$PREFIX/include/cblas.h\" ]]; then\n\
       mkdir -p \"$PREFIX/include\"\n\
       ln -sf \"$cblas_header\" \"$PREFIX/include/cblas.h\"\n\
       export CPPFLAGS=\"-I$PREFIX/include ${{CPPFLAGS:-}}\"\n\
+    fi\n\
+    if [[ -n \"$cblas_header\" ]]; then\n\
+      export LDFLAGS=\"-L/usr/lib64 -L/usr/lib ${{LDFLAGS:-}}\"\n\
     fi\n\
     fi\n\
     \n\
@@ -12381,7 +12398,9 @@ requirements:
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"plink\" ]]; then"));
         assert!(spec.contains("cblas_header=\"\""));
+        assert!(spec.contains("dnf -y install openblas-devel blas-devel"));
         assert!(spec.contains("ln -sf \"$cblas_header\" \"$PREFIX/include/cblas.h\""));
+        assert!(spec.contains("export LDFLAGS=\"-L/usr/lib64 -L/usr/lib ${LDFLAGS:-}\""));
     }
 
     #[test]
