@@ -6733,7 +6733,19 @@ install_from_cran_archive <- function(pkg, lib) {{\n\
   hits <- regmatches(idx, gregexpr(patt, idx, perl = TRUE))\n\
   files <- unique(unlist(hits, use.names = FALSE))\n\
   if (!length(files)) return(FALSE)\n\
-  tarball <- tail(sort(files), 1)\n\
+  version_for_file <- function(file, pkg) {{\n\
+    v <- sub(sprintf(\"^%s_\", pkg), \"\", file)\n\
+    v <- sub(\"\\\\.tar\\\\.gz$\", \"\", v)\n\
+    tryCatch(package_version(v), error = function(e) package_version(\"0\"))\n\
+  }}\n\
+  versions <- lapply(files, version_for_file, pkg = pkg)\n\
+  keys <- vapply(versions, function(v) {{\n\
+    parts <- as.integer(unclass(v)[[1]])\n\
+    if (!length(parts)) return(\"00000000\")\n\
+    paste(sprintf(\"%08d\", parts), collapse = \".\")\n\
+  }}, character(1))\n\
+  ord <- order(keys, files)\n\
+  tarball <- files[tail(ord, 1)]\n\
   ok <- tryCatch({{\n\
     install.packages(paste0(archive_url, tarball), repos = c(CRAN = \"https://cloud.r-project.org\"), dependencies = TRUE, type = \"source\", lib = lib)\n\
     TRUE\n\
@@ -10604,6 +10616,9 @@ requirements:
         assert!(spec.contains("BuildRequires:  bioconductor-zlibbioc"));
         assert!(spec.contains("Requires:  bioconductor-zlibbioc"));
         assert!(spec.contains("install_from_local_phoreus_rpm <- function(pkg)"));
+        assert!(spec.contains("version_for_file <- function(file, pkg)"));
+        assert!(spec.contains("tryCatch(package_version(v), error = function(e) package_version(\"0\"))"));
+        assert!(spec.contains("paste(sprintf(\"%08d\", parts), collapse = \".\")"));
         assert!(spec.contains("/work/targets/*/RPMS/*/phoreus-bioconductor-%s-*.rpm"));
     }
 
