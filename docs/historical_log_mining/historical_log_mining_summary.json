@@ -1,0 +1,86 @@
+{
+  "target_root": "/Users/stephen/bioconda2rpm/targets/phoreus-bioconda2rpm-build-almalinux-9.7-aarch64",
+  "generated_at_utc": "2026-03-01T09:04:41.633987+00:00",
+  "input_discovery": {
+    "bad_spec_files": 3,
+    "build_logs_examined": 103,
+    "failure_gathering_tsv_files": 1,
+    "patch_activity_logs": 3,
+    "source_counts": {
+      "bad_spec": 3,
+      "build_log": 6,
+      "adapter_failure_tsv": 133
+    }
+  },
+  "classifier_validation": {
+    "total_historical_failures": 142,
+    "classified_count": 142,
+    "classified_percent": 100.0,
+    "unknown_count": 0,
+    "unknown_percent": 0.0,
+    "taxonomy_insufficiency_flag": false
+  },
+  "top10_classes": [
+    [
+      "MetadataRenderFailure",
+      133
+    ],
+    [
+      "UnresolvedBuildRequiresToken",
+      3
+    ],
+    [
+      "BuildScriptContractFailure",
+      2
+    ],
+    [
+      "AutotoolsConfigureFailure",
+      1
+    ],
+    [
+      "MissingLinkTimeDependency",
+      1
+    ],
+    [
+      "PatchApplicationFailure",
+      1
+    ],
+    [
+      "ToolchainResourceExhaustion",
+      1
+    ]
+  ],
+  "stage_distribution": {
+    "Build": 5,
+    "DependencyNormalization": 3,
+    "SourceNormalization": 1,
+    "Ingestion": 133
+  },
+  "long_tail_share_percent": 6.34,
+  "rule_proliferation_indicator": false,
+  "repeated_signatures_top": [
+    {
+      "package": "minimap2",
+      "canonical_class": "BuildScriptContractFailure",
+      "occurrences": 2
+    }
+  ],
+  "patch_drift_top": [
+    {
+      "package": "flye",
+      "canonical_class": "AutotoolsConfigureFailure",
+      "artifact_path": "/Users/stephen/bioconda2rpm/targets/phoreus-bioconda2rpm-build-almalinux-9.7-aarch64/reports/build_logs/flye.log"
+    },
+    {
+      "package": "minimap2",
+      "canonical_class": "BuildScriptContractFailure",
+      "artifact_path": "/Users/stephen/bioconda2rpm/targets/phoreus-bioconda2rpm-build-almalinux-9.7-aarch64/reports/build_logs/minimap2.log"
+    }
+  ],
+  "artifacts": {
+    "records_tsv": "/Users/stephen/Projects/bioconda2rpm/docs/historical_log_mining/historical_failure_records.tsv",
+    "clusters_tsv": "/Users/stephen/Projects/bioconda2rpm/docs/historical_log_mining/historical_failure_clusters.tsv",
+    "candidates_tsv": "/Users/stephen/Projects/bioconda2rpm/docs/historical_log_mining/historical_normalization_candidates.tsv",
+    "report_md": "/Users/stephen/Projects/bioconda2rpm/docs/historical_log_mining/historical_log_mining_report.md"
+  }
+}

@@ -1,0 +1,8 @@
+failure_category	proposed_layer	automation_feasibility	deterministic_normalization_opportunity	estimated_impact_percent
+MetadataRenderFailure	ModulePolicy	High	yes	93.66
+UnresolvedBuildRequiresToken	DependencyClassifier	High	yes	2.11
+BuildScriptContractFailure	SourceNormalizer	Low	no	1.41
+AutotoolsConfigureFailure	SourceNormalizer	Medium	yes	0.7
+MissingLinkTimeDependency	DependencyClassifier	High	yes	0.7
+PatchApplicationFailure	SourceNormalizer	Low	no	0.7
+ToolchainResourceExhaustion	GovernanceException	Low	yes	0.7
