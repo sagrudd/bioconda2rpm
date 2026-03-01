@@ -5630,7 +5630,14 @@ fi\n\
 \n\
 # Ensure common install subdirectories exist for build.sh scripts that assume them.\n\
 mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\" \"$PREFIX/include\"\n\
-export BUILD_PREFIX=\"${{BUILD_PREFIX:-$PREFIX}}\"\n\
+export BUILD_PREFIX=\"${{BUILD_PREFIX:-$(pwd)/.bioconda2rpm-build-prefix}}\"\n\
+if [[ \"$BUILD_PREFIX\" == \"$PREFIX\" ]]; then\n\
+  export BUILD_PREFIX=\"$(pwd)/.bioconda2rpm-build-prefix\"\n\
+fi\n\
+mkdir -p \"$BUILD_PREFIX/bin\"\n\
+if command -v m4 >/dev/null 2>&1; then\n\
+  ln -snf \"$(command -v m4)\" \"$BUILD_PREFIX/bin/m4\" || true\n\
+fi\n\
 mkdir -p \"$BUILD_PREFIX/share/gnuconfig\" \"$PREFIX/share/gnuconfig\"\n\
 if [[ ! -f \"$BUILD_PREFIX/share/gnuconfig/config.guess\" || ! -f \"$BUILD_PREFIX/share/gnuconfig/config.sub\" || ! -f \"$PREFIX/share/gnuconfig/config.guess\" || ! -f \"$PREFIX/share/gnuconfig/config.sub\" ]]; then\n\
   cfg_dir=\"\"\n\
@@ -7090,6 +7097,7 @@ fn map_build_dependency(dep: &str) -> String {
         "libcurl" => "libcurl-devel".to_string(),
         "libgd" => "gd-devel".to_string(),
         "libblas" => "openblas-devel".to_string(),
+        "libcblas" => "openblas-devel".to_string(),
         // Keep libdeflate as a Bioconda/Phoreus dependency for prefix hydration.
         "libdeflate" => "libdeflate".to_string(),
         "libdeflate-devel" => "libdeflate".to_string(),
@@ -7123,6 +7131,7 @@ fn map_build_dependency(dep: &str) -> String {
         "xorg-libxfixes" => "libXfixes-devel".to_string(),
         "xz" => "xz-devel".to_string(),
         "zlib" => "zlib-devel".to_string(),
+        "libzlib" => "zlib-devel".to_string(),
         "zlib-ng" | "zlibng" | "zlib-ng-compat" => "zlib-ng-compat-devel".to_string(),
         "zstd" => "libzstd-devel".to_string(),
         "zstd-static" => "libzstd-devel".to_string(),
@@ -7186,6 +7195,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "gnuconfig" => "automake".to_string(),
         "jsoncpp" => "jsoncpp".to_string(),
         "libblas" => "openblas".to_string(),
+        "libcblas" => "openblas".to_string(),
         "libhwy" => "highway".to_string(),
         "libiconv" => "glibc".to_string(),
         "libxau" => "libXau".to_string(),
@@ -7212,6 +7222,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "zlib-ng" | "zlibng" | "zlib-ng-compat" | "zlib-ng-compat-devel" => {
             "zlib-ng-compat".to_string()
         }
+        "libzlib" => "zlib".to_string(),
         other => other.to_string(),
     }
 }
@@ -9594,6 +9605,7 @@ mod tests {
             "mariadb-connector-c-devel".to_string()
         );
         assert_eq!(map_build_dependency("zlib"), "zlib-devel".to_string());
+        assert_eq!(map_build_dependency("libzlib"), "zlib-devel".to_string());
         assert_eq!(
             map_build_dependency("zlib-ng"),
             "zlib-ng-compat-devel".to_string()
@@ -9623,6 +9635,10 @@ mod tests {
         assert_eq!(map_build_dependency("libhwy"), "highway-devel".to_string());
         assert_eq!(
             map_build_dependency("libblas"),
+            "openblas-devel".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("libcblas"),
             "openblas-devel".to_string()
         );
         assert_eq!(
@@ -9681,6 +9697,8 @@ mod tests {
             "fontconfig".to_string()
         );
         assert_eq!(map_runtime_dependency("ninja"), "ninja-build".to_string());
+        assert_eq!(map_runtime_dependency("libzlib"), "zlib".to_string());
+        assert_eq!(map_runtime_dependency("libcblas"), "openblas".to_string());
         assert_eq!(
             map_runtime_dependency("zlib-ng"),
             "zlib-ng-compat".to_string()
@@ -9884,6 +9902,9 @@ requirements:
         assert!(
             spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name include")
         );
+        assert!(spec.contains("export BUILD_PREFIX=\"${BUILD_PREFIX:-$(pwd)/.bioconda2rpm-build-prefix}\""));
+        assert!(spec.contains("mkdir -p \"$BUILD_PREFIX/bin\""));
+        assert!(spec.contains("ln -snf \"$(command -v m4)\" \"$BUILD_PREFIX/bin/m4\" || true"));
         assert!(spec.contains("mkdir -p \"$BUILD_PREFIX/share/gnuconfig\" \"$PREFIX/share/gnuconfig\""));
         assert!(spec.contains("cp -f \"$cfg_dir/config.guess\" \"$PREFIX/share/gnuconfig/config.guess\" || true"));
         assert!(spec.contains("export CPATH=\"/usr/include${CPATH:+:$CPATH}\""));
