@@ -215,6 +215,25 @@ impl UiState {
 
         (ready, running, completed, blocked)
     }
+
+    fn recent_pass_fail(&self) -> (Vec<(String, PackageState)>, Vec<(String, PackageState)>) {
+        let mut passing = self
+            .packages
+            .iter()
+            .filter(|(_, ps)| is_passing_status(&ps.status))
+            .map(|(pkg, ps)| (pkg.clone(), ps.clone()))
+            .collect::<Vec<_>>();
+        let mut failing = self
+            .packages
+            .iter()
+            .filter(|(_, ps)| is_failing_status(&ps.status))
+            .map(|(pkg, ps)| (pkg.clone(), ps.clone()))
+            .collect::<Vec<_>>();
+
+        passing.sort_by(|a, b| b.1.seq.cmp(&a.1.seq).then_with(|| a.0.cmp(&b.0)));
+        failing.sort_by(|a, b| b.1.seq.cmp(&a.1.seq).then_with(|| a.0.cmp(&b.0)));
+        (passing, failing)
+    }
 }
 
 pub struct ProgressUi {
@@ -346,11 +365,26 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
         .constraints([
             Constraint::Length(3),
             Constraint::Length(3),
+            Constraint::Min(12),
+        ])
+        .split(frame.area());
+
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(67), Constraint::Percentage(33)])
+        .split(chunks[2]);
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
             Constraint::Min(13),
             Constraint::Length(6),
             Constraint::Length(3),
         ])
-        .split(frame.area());
+        .split(body[0]);
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(body[1]);
 
     let elapsed = state.started.elapsed().as_secs();
     let header = Paragraph::new(format!(
@@ -415,7 +449,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
     });
     // Fit visible rows to current terminal height instead of a fixed cap.
     // Table has: top border + header + bottom border.
-    let visible_capacity = chunks[2].height.saturating_sub(3) as usize;
+    let visible_capacity = left[0].height.saturating_sub(3) as usize;
     let visible_capacity = visible_capacity.max(1);
     let is_completed = |status: &str| matches!(status, "generated" | "up-to-date" | "skipped");
     let mut primary = rows
@@ -463,7 +497,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
     )
     .header(Row::new(vec!["Package", "State", "Detail"]).style(Style::default().fg(Color::White)))
     .block(Block::default().borders(Borders::ALL).title("Packages"));
-    frame.render_widget(table, chunks[2]);
+    frame.render_widget(table, left[0]);
 
     let log_text = state
         .logs
@@ -479,7 +513,7 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
     let logs = Paragraph::new(log_text)
         .block(Block::default().borders(Borders::ALL).title("Recent Logs"))
         .wrap(Wrap { trim: true });
-    frame.render_widget(logs, chunks[3]);
+    frame.render_widget(logs, left[1]);
 
     let summary = Paragraph::new(
         state
@@ -489,7 +523,30 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
     )
     .block(Block::default().borders(Borders::ALL).title("Summary"))
     .wrap(Wrap { trim: true });
-    frame.render_widget(summary, chunks[4]);
+    frame.render_widget(summary, left[2]);
+
+    let (passing, failing) = state.recent_pass_fail();
+    let passing_text =
+        render_recent_outcome_panel(&passing, right[0].height, "No passing builds yet");
+    let passing_panel = Paragraph::new(passing_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Passing Builds (Recent)"),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(passing_panel, right[0]);
+
+    let failing_text =
+        render_recent_outcome_panel(&failing, right[1].height, "No failing builds yet");
+    let failing_panel = Paragraph::new(failing_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Failing Builds (Recent)"),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(failing_panel, right[1]);
 }
 
 fn parse_progress_kv(line: &str) -> BTreeMap<String, String> {
@@ -500,4 +557,30 @@ fn parse_progress_kv(line: &str) -> BTreeMap<String, String> {
         }
     }
     out
+}
+
+fn is_passing_status(status: &str) -> bool {
+    matches!(status, "generated" | "up-to-date")
+}
+
+fn is_failing_status(status: &str) -> bool {
+    matches!(status, "quarantined" | "blocked" | "failed")
+}
+
+fn render_recent_outcome_panel(
+    entries: &[(String, PackageState)],
+    panel_height: u16,
+    empty_message: &str,
+) -> String {
+    let capacity = panel_height.saturating_sub(2) as usize;
+    let capacity = capacity.max(1);
+    if entries.is_empty() {
+        return empty_message.to_string();
+    }
+    entries
+        .iter()
+        .take(capacity)
+        .map(|(pkg, ps)| format!("{pkg} | {} | {}", ps.status, ps.detail))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
