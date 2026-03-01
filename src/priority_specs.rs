@@ -6607,6 +6607,10 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
         fi\n\
       fi\n\
     fi\n\
+    if [[ -f ./build.sh ]]; then\n\
+      sed -i 's/ ocamlfind/ mcl.12-068 ocamlfind/g' ./build.sh || true\n\
+      perl -0pi -e 's@\\ncd mcl\\n.*?\\ncd \\.\\.\\n@\\n# bioconda2rpm: use opam mcl package, skip bundled mcl source build\\n:\\n@s' ./build.sh || true\n\
+    fi\n\
     fi\n\
     \n\
     # SPAdes NCBI SDK support is optional upstream and disabled by default\n\
@@ -12853,6 +12857,8 @@ requirements:
         assert!(spec.contains("opam_ver=2.1.6"));
         assert!(spec.contains("https://github.com/ocaml/opam/releases/download/${opam_ver}/opam-${opam_ver}-${opam_arch}-linux"));
         assert!(spec.contains("curl -L --fail -o /usr/local/bin/opam \"$opam_url\" || true"));
+        assert!(spec.contains("sed -i 's/ ocamlfind/ mcl.12-068 ocamlfind/g' ./build.sh || true"));
+        assert!(spec.contains("skip bundled mcl source build"));
     }
 
     #[test]
