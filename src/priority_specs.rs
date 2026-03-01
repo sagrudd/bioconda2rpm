@@ -4735,6 +4735,10 @@ fn ensure_local_pip_install_no_build_isolation(line: String) -> String {
     if line.contains("--no-build-isolation") {
         return line;
     }
+    if line.trim_end().ends_with(';') {
+        let without_semicolon = line.trim_end().trim_end_matches(';').trim_end();
+        return format!("{without_semicolon} --no-build-isolation;");
+    }
     format!("{line} --no-build-isolation")
 }
 
@@ -4748,9 +4752,21 @@ fn rewrite_local_pip_pep517_line_with_fallback(line: &str) -> Option<Vec<String>
 
     let trimmed = line.trim_start();
     let indent = &line[..line.len() - trimmed.len()];
-    let fallback = trimmed.replace("--use-pep517", "--no-use-pep517");
+    let primary = trimmed.trim_end_matches(';').trim_end();
+    let mut fallback = primary
+        .replace(" --use-pep517 ", " ")
+        .replace("--use-pep517 ", "")
+        .replace(" --use-pep517", "")
+        .replace("--use-pep517", "");
+    while fallback.contains("  ") {
+        fallback = fallback.replace("  ", " ");
+    }
+    let fallback = fallback.trim().to_string();
+    if fallback.is_empty() || fallback == primary {
+        return None;
+    }
     Some(vec![
-        format!("{indent}if ! {trimmed}; then"),
+        format!("{indent}if ! {primary}; then"),
         format!("{indent}  {fallback}"),
         format!("{indent}fi"),
     ])
@@ -5205,11 +5221,33 @@ fn normalize_dependency_name(raw: &str) -> Option<String> {
         "cxx-compiler" | "cpp-compiler" => "gcc-c++".to_string(),
         "fortran-compiler" => "gcc-gfortran".to_string(),
         "go-compiler" | "gocompiler" => "golang".to_string(),
-        "openjdk" => "java-11-openjdk".to_string(),
+        "openjdk" => normalize_openjdk_runtime_package(cleaned),
         other => other.to_string(),
     };
 
     Some(mapped)
+}
+
+fn normalize_openjdk_runtime_package(spec: &str) -> String {
+    let lower = spec.to_ascii_lowercase();
+    if lower.contains(">=21") || lower.contains(">20") {
+        return "java-21-openjdk".to_string();
+    }
+    if lower.contains(">=17")
+        || lower.contains(">16")
+        || lower.contains("17")
+        || lower.contains("18")
+        || lower.contains("19")
+        || lower.contains("20")
+        || lower.contains("21")
+        || lower.contains("22")
+        || lower.contains("23")
+        || lower.contains("24")
+        || lower.contains("25")
+    {
+        return "java-17-openjdk".to_string();
+    }
+    "java-11-openjdk".to_string()
 }
 
 fn render_payload_spec(
@@ -7199,6 +7237,9 @@ fn stage_recipe_patches(
         {
             continue;
         }
+        if patch_name_is_non_linux_specific(patch_name) && selector_ctx.linux {
+            continue;
+        }
         let candidates = [
             resolved.variant_dir.join(patch_name),
             resolved.recipe_dir.join(patch_name),
@@ -7235,6 +7276,11 @@ fn stage_recipe_patches(
         staged.push(staged_name);
     }
     Ok(staged)
+}
+
+fn patch_name_is_non_linux_specific(patch_name: &str) -> bool {
+    let lower = patch_name.to_ascii_lowercase();
+    lower.contains("osx") || lower.contains("darwin") || lower.contains("macos")
 }
 
 fn split_inline_patch_selector(entry: &str) -> (&str, Option<&str>) {
@@ -9895,6 +9941,10 @@ mod tests {
             Some("java-11-openjdk".to_string())
         );
         assert_eq!(
+            normalize_dependency_name("openjdk >=17,<=24"),
+            Some("java-17-openjdk".to_string())
+        );
+        assert_eq!(
             normalize_dependency_name("pandas>=0.21,<0.24"),
             Some("pandas".to_string())
         );
@@ -10220,6 +10270,39 @@ requirements:
 
         let staged = stage_recipe_patches(
             &["makefile.patch [osx]".to_string()],
+            &resolved,
+            &sources_dir,
+            "plink",
+            "x86_64",
+        )
+        .expect("stage patches");
+        assert!(staged.is_empty());
+    }
+
+    #[test]
+    fn stage_recipe_patches_skips_osx_named_patch_on_linux() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let recipe_dir = tmp.path().join("recipe");
+        let variant_dir = recipe_dir.clone();
+        let sources_dir = tmp.path().join("SOURCES");
+        fs::create_dir_all(&recipe_dir).expect("create recipe dir");
+        fs::create_dir_all(&sources_dir).expect("create sources dir");
+        fs::write(recipe_dir.join("meta.yaml"), "package: {name: plink, version: 1.0}")
+            .expect("write meta");
+        fs::write(recipe_dir.join("signed_int64_osx.patch"), "diff --git a/a b/a\n")
+            .expect("write patch");
+
+        let resolved = ResolvedRecipe {
+            recipe_name: "plink".to_string(),
+            recipe_dir: recipe_dir.clone(),
+            variant_dir,
+            meta_path: recipe_dir.join("meta.yaml"),
+            build_sh_path: None,
+            overlap_reason: "exact".to_string(),
+        };
+
+        let staged = stage_recipe_patches(
+            &["signed_int64_osx.patch".to_string()],
             &resolved,
             &sources_dir,
             "plink",
@@ -11648,7 +11731,17 @@ requirements:
         let script = "{{ PYTHON }} -m pip install --no-deps --use-pep517 . -vvv";
         let generated = synthesize_build_sh_from_meta_script(script);
         assert!(generated.contains("if ! $PYTHON -m pip install --no-deps --use-pep517 . -vvv --no-build-isolation; then"));
-        assert!(generated.contains("$PYTHON -m pip install --no-deps --no-use-pep517 . -vvv --no-build-isolation"));
+        assert!(generated.contains("$PYTHON -m pip install --no-deps . -vvv --no-build-isolation"));
+    }
+
+    #[test]
+    fn synthesized_build_script_wraps_use_pep517_with_trailing_semicolon_safely() {
+        let script = "{{ PYTHON }} -m pip install --no-deps --use-pep517 . -vvv;";
+        let generated = synthesize_build_sh_from_meta_script(script);
+        assert!(generated.contains(
+            "if ! $PYTHON -m pip install --no-deps --use-pep517 . -vvv --no-build-isolation; then"
+        ));
+        assert!(!generated.contains(";; then"));
     }
 
     #[test]
@@ -12184,7 +12277,7 @@ requirements:
         );
         assert!(
             hardened.contains(
-                "$PYTHON -m pip install --no-deps --no-use-pep517 . -vvv --no-build-isolation"
+                "$PYTHON -m pip install --no-deps . -vvv --no-build-isolation"
             )
         );
     }
@@ -12193,7 +12286,7 @@ requirements:
     fn harden_build_script_does_not_double_wrap_existing_pep517_fallback_if_blocks() {
         let raw = "\
 if ! $PYTHON -m pip install --no-deps --use-pep517 . -vvv --no-build-isolation; then
-  $PYTHON -m pip install --no-deps --no-use-pep517 . -vvv --no-build-isolation
+  $PYTHON -m pip install --no-deps . -vvv --no-build-isolation
 fi
 ";
         let hardened = harden_build_script_text(raw);
