@@ -27,6 +27,7 @@ Out of scope (initial baseline):
 The following governance documents are normative for this SRS and shall be treated as binding policy inputs for implementation and release behavior:
 - [Module Governance Charter](../MODULE_GOVERNANCE_CHARTER.md)
 - [Launch Packaging Constitution](./LAUNCH_PACKAGING_CONSTITUTION.md)
+- [Customer Package Intake SLA](./CUSTOMER_PACKAGE_INTAKE_SLA.md)
 - [RPM Charter](./RPM_charter.md)
 - [Python RPM Charter](./Python_RPM_charter.md)
 - [R RPM Charter](./R_RPM_charter.md)

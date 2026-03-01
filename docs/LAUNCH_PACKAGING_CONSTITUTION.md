@@ -136,6 +136,7 @@ Post-launch intake workflow:
 
 Service target:
 - Standard intake SLA SHOULD target 2 to 5 working days per package.
+- Operational intake governance MUST follow [Customer Package Intake SLA](./CUSTOMER_PACKAGE_INTAKE_SLA.md).
 
 ## 8. Exception Handling
 

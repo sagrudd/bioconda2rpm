@@ -76,6 +76,7 @@ Defaults when omitted:
 - `docs/R_RPM_charter.md`
 - `docs/Rust_RPM_charter.md`
 - `docs/LAUNCH_PACKAGING_CONSTITUTION.md`
+- `docs/CUSTOMER_PACKAGE_INTAKE_SLA.md`
 - `docs/USERGUIDE.md`
 - `docs/SRS.md`
 - `docs/ARD.md`
