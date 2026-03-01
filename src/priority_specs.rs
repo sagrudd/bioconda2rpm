@@ -4421,9 +4421,14 @@ fn should_keep_rpm_dependency_for_r(dep: &str) -> bool {
     if is_r_base_dependency_name(&normalized) {
         return true;
     }
-    // Do not hard-require non-base R/Bioconductor dependency RPMs at rpmbuild
-    // time; resolve via DAG/local artifacts when present and R restore fallback
-    // otherwise. This avoids false negatives when EL repos don't provide r-*.
+    // Keep Bioconductor RPM edges explicit so local dependency artifacts are
+    // hydrated before R install scripts run. This avoids fallback network
+    // installs for core BioC libs (for example, zlibbioc -> Rhtslib).
+    if normalized.starts_with("bioconductor-") {
+        return true;
+    }
+    // For CRAN-style r-* package names we still prefer Phoreus R runtime
+    // restore logic over hard rpmbuild edges against distro repos.
     false
 }
 
@@ -9920,7 +9925,7 @@ requirements:
     }
 
     #[test]
-    fn r_project_payload_uses_phoreus_r_runtime_without_hard_bioconductor_rpm_edges() {
+    fn r_project_payload_keeps_bioconductor_rpm_edges_for_local_hydration() {
         let parsed = ParsedMeta {
             package_name: "bioconductor-rhtslib".to_string(),
             version: "3.2.0".to_string(),
@@ -9953,8 +9958,10 @@ requirements:
             false,
             false,
         );
-        assert!(!spec.contains("BuildRequires:  bioconductor-zlibbioc"));
-        assert!(!spec.contains("Requires:  bioconductor-zlibbioc"));
+        assert!(spec.contains(&format!("BuildRequires:  {}", PHOREUS_R_PACKAGE)));
+        assert!(spec.contains(&format!("Requires:  {}", PHOREUS_R_PACKAGE)));
+        assert!(spec.contains("BuildRequires:  bioconductor-zlibbioc"));
+        assert!(spec.contains("Requires:  bioconductor-zlibbioc"));
     }
 
     #[test]
