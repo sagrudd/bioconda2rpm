@@ -6228,7 +6228,7 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     # libstdc++ include_next lookup for stdlib.h on EL9 toolchains.\n\
     if [[ \"%{{tool}}\" == \"vcf-validator\" ]]; then\n\
     sed -i -E 's@^([[:space:]]*export[[:space:]]+CXXFLAGS=\"[^\"]*)\"@\\1 -idirafter /usr/include\"@' ./build.sh || true\n\
-    perl -0pi -e 's@(^\\s*make\\s+-j[^\\n]*$)@if [[ -d build ]]; then\\n  find build -type f -name flags.make | while IFS= read -r fm; do\\n    sed -i \"s# -isystem /usr/include##g; s# -I/usr/include##g\" \"\\$fm\" || true\\n  done\\nfi\\n$1@mg' ./build.sh || true\n\
+    perl -0pi -e 's@(^\\s*make\\s+-j[^\\n]*$)@if [[ -d . ]]; then\\n  find . -type f -name flags.make | while IFS= read -r fm; do\\n    sed -i \"s# -isystem /usr/include##g; s# -I/usr/include##g\" \"\\$fm\" || true\\n  done\\nfi\\n$1@mg' ./build.sh || true\n\
     fi\n\
     \n\
     # Augustus expects lp_solve headers as lp_lib.h in an include search path.\n\
@@ -12636,7 +12636,7 @@ requirements:
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"vcf-validator\" ]]; then"));
         assert!(spec.contains("-idirafter /usr/include"));
-        assert!(spec.contains("find build -type f -name flags.make | while IFS= read -r fm; do"));
+        assert!(spec.contains("find . -type f -name flags.make | while IFS= read -r fm; do"));
     }
 
     #[test]
