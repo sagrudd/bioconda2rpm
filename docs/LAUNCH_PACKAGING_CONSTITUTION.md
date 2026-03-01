@@ -196,6 +196,8 @@ This constitution does not:
 
 Scope is intentionally bounded to achieve launch velocity with regulatory discipline.
 
+Weekly founder execution control MUST use [Founder Execution Dashboard](./FOUNDER_EXECUTION_DASHBOARD.md).
+
 ## 12. Versioning
 
 Version model:

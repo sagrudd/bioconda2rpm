@@ -15,6 +15,7 @@ This architecture is constrained by the following governance artifacts:
 - [Launch Packaging Constitution](./LAUNCH_PACKAGING_CONSTITUTION.md)
 - [Customer Package Intake SLA](./CUSTOMER_PACKAGE_INTAKE_SLA.md)
 - [Audit Template and Tier 1 Checklist](./AUDIT_EVIDENCE_TEMPLATE_AND_TIER1_CHECKLIST.md)
+- [Founder Execution Dashboard](./FOUNDER_EXECUTION_DASHBOARD.md)
 - [RPM Charter](./RPM_charter.md)
 - [Python RPM Charter](./Python_RPM_charter.md)
 - [R RPM Charter](./R_RPM_charter.md)

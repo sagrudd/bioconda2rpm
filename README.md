@@ -78,6 +78,7 @@ Defaults when omitted:
 - `docs/LAUNCH_PACKAGING_CONSTITUTION.md`
 - `docs/CUSTOMER_PACKAGE_INTAKE_SLA.md`
 - `docs/AUDIT_EVIDENCE_TEMPLATE_AND_TIER1_CHECKLIST.md`
+- `docs/FOUNDER_EXECUTION_DASHBOARD.md`
 - `docs/USERGUIDE.md`
 - `docs/SRS.md`
 - `docs/ARD.md`
