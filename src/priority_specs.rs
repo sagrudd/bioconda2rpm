@@ -5663,9 +5663,9 @@ if [[ -f /usr/include/H5pubconf-32.h && ! -e \"$PREFIX/include/H5pubconf.h\" ]];
   ln -snf /usr/include/H5pubconf-32.h \"$PREFIX/include/H5pubconf.h\"\n\
 fi\n\
 \n\
-# Some recipes call `yacc` explicitly while only `bison` is present.\n\
-# Provide a deterministic shim instead of per-package overrides.\n\
-if ! command -v yacc >/dev/null 2>&1 && command -v bison >/dev/null 2>&1; then\n\
+    # Some recipes call `yacc` explicitly while only `bison` is present.\n\
+    # Provide a deterministic shim instead of per-package overrides.\n\
+    if ! command -v yacc >/dev/null 2>&1 && command -v bison >/dev/null 2>&1; then\n\
   shim_dir=\"$(pwd)/.bioconda2rpm-shims\"\n\
   mkdir -p \"$shim_dir\"\n\
   cat > \"$shim_dir/yacc\" <<'SHIMEOF'\n\
@@ -5675,6 +5675,11 @@ SHIMEOF\n\
   chmod 0755 \"$shim_dir/yacc\"\n\
   export PATH=\"$shim_dir:$PATH\"\n\
 fi\n\
+\n\
+# Some upstream scripts use `./configure ... || cat config.log`, which masks\n\
+# configure failures and cascades into opaque `no makefile found` errors.\n\
+# Normalize these to fail fast after printing config.log.\n\
+sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log; exit 1; }}/g' ./build.sh || true\n\
 \n\
 {python_venv_setup}\
 \n\
@@ -7057,6 +7062,7 @@ fn map_build_dependency(dep: &str) -> String {
         "ninja" => "ninja-build".to_string(),
         "openssl" => "openssl-devel".to_string(),
         "openmpi" => "openmpi-devel".to_string(),
+        "sparsehash" => "sparsehash-devel".to_string(),
         "sqlite" => "sqlite-devel".to_string(),
         "qt" => "qt5-qtbase-devel qt5-qtsvg-devel".to_string(),
         "llvmdev" => "llvm-devel".to_string(),
@@ -7141,6 +7147,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "lzo" | "lzo2" | "liblzo2" | "liblzo2-dev" | "liblzo2-devel" => "lzo".to_string(),
         "qt" => "qt5-qtbase qt5-qtsvg".to_string(),
         "llvmdev" => "llvm".to_string(),
+        "sparsehash" => "sparsehash".to_string(),
         "ninja" => "ninja-build".to_string(),
         "zstd-static" => "zstd".to_string(),
         "xorg-libxext" => "libXext".to_string(),
@@ -9563,6 +9570,10 @@ mod tests {
             "xz-devel".to_string()
         );
         assert_eq!(map_build_dependency("ninja"), "ninja-build".to_string());
+        assert_eq!(
+            map_build_dependency("sparsehash"),
+            "sparsehash-devel".to_string()
+        );
         assert_eq!(map_build_dependency("sqlite"), "sqlite-devel".to_string());
         assert_eq!(map_build_dependency("cereal"), "cereal-devel".to_string());
         assert_eq!(map_build_dependency("gnuconfig"), "automake".to_string());
@@ -9604,6 +9615,10 @@ mod tests {
             "fontconfig".to_string()
         );
         assert_eq!(map_runtime_dependency("ninja"), "ninja-build".to_string());
+        assert_eq!(
+            map_runtime_dependency("sparsehash"),
+            "sparsehash".to_string()
+        );
         assert_eq!(map_runtime_dependency("cereal"), "cereal-devel".to_string());
         assert_eq!(map_runtime_dependency("k8"), "nodejs".to_string());
         assert_eq!(map_runtime_dependency("gnuconfig"), "automake".to_string());
@@ -9800,6 +9815,7 @@ requirements:
         assert!(spec.contains("export PATH=\"$dep_bin:$PATH\""));
         assert!(spec.contains("disabled by bioconda2rpm for EL9 compatibility"));
         assert!(spec.contains("if [[ \"${CONFIG_SITE:-}\" == \"NONE\" ]]; then"));
+        assert!(spec.contains("cat config.log; exit 1;"));
         assert!(spec.contains("CURSES_LIB=\"${CURSES_LIB:-}\" ./configure"));
         assert!(spec.contains("export PKG_NAME=\"${PKG_NAME:-blast}\""));
         assert!(spec.contains("export PKG_VERSION=\"${PKG_VERSION:-2.5.0}\""));
