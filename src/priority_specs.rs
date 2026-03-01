@@ -5107,6 +5107,16 @@ fi\n\
     sed -i 's|GSL_LIBS=-lgsl|GSL_LIBS=\"-lgsl -lopenblas\"|g' ./build.sh || true\n\
     fi\n\
     \n\
+    # Diamond's Bioconda script hard-pins a static zstd archive under $PREFIX,\n\
+    # but RPM builds commonly provide zstd as shared system libs.\n\
+    if [[ \"%{{tool}}\" == \"diamond\" ]]; then\n\
+    sed -i 's|-DZSTD_LIBRARY=\"${{PREFIX}}/lib/libzstd.a\"|-DZSTD_LIBRARY=\"/usr/lib64/libzstd.so\"|g' ./build.sh || true\n\
+    if [[ ! -e /usr/lib64/libzstd.so && -e /usr/lib/libzstd.so ]]; then\n\
+      sed -i 's|/usr/lib64/libzstd.so|/usr/lib/libzstd.so|g' ./build.sh || true\n\
+    fi\n\
+    sed -i 's|-DZSTD_INCLUDE_DIR=\"${{PREFIX}}/include\"|-DZSTD_INCLUDE_DIR=\"/usr/include\"|g' ./build.sh || true\n\
+    fi\n\
+    \n\
     # EBSeq currently pulls modern BH headers that require at least C++14.\n\
     # Some recipe scripts only wire CXX/CXX11 without an explicit std level,\n\
     # which can fall back to older defaults on EL9 and fail in Boost headers.\n\
@@ -6067,6 +6077,7 @@ fn map_build_dependency(dep: &str) -> String {
         "xz" => "xz-devel".to_string(),
         "zlib" => "zlib-devel".to_string(),
         "zstd" => "libzstd-devel".to_string(),
+        "zstd-static" => "libzstd-devel".to_string(),
         other => other.to_string(),
     }
 }
@@ -6141,6 +6152,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "qt" => "qt5-qtbase qt5-qtsvg".to_string(),
         "llvmdev" => "llvm".to_string(),
         "ninja" => "ninja-build".to_string(),
+        "zstd-static" => "zstd".to_string(),
         "xorg-libxext" => "libXext".to_string(),
         "xorg-libxfixes" => "libXfixes".to_string(),
         other => other.to_string(),
@@ -8416,6 +8428,10 @@ mod tests {
         assert_eq!(map_build_dependency("xz"), "xz-devel".to_string());
         assert_eq!(map_build_dependency("libcurl"), "libcurl-devel".to_string());
         assert_eq!(map_build_dependency("libpng"), "libpng-devel".to_string());
+        assert_eq!(
+            map_build_dependency("zstd-static"),
+            "libzstd-devel".to_string()
+        );
         assert_eq!(map_build_dependency("libuuid"), "libuuid-devel".to_string());
         assert_eq!(map_build_dependency("libhwy"), "highway-devel".to_string());
         assert_eq!(
@@ -8488,6 +8504,7 @@ mod tests {
         assert_eq!(map_runtime_dependency("glib"), "glib2".to_string());
         assert_eq!(map_runtime_dependency("liblapack"), "lapack".to_string());
         assert_eq!(map_runtime_dependency("liblzma-devel"), "xz".to_string());
+        assert_eq!(map_runtime_dependency("zstd-static"), "zstd".to_string());
         assert_eq!(
             map_runtime_dependency("xorg-libxfixes"),
             "libXfixes".to_string()
