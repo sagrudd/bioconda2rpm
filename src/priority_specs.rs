@@ -7946,6 +7946,7 @@ fn canonicalize_perl_module_segment(segment: &str) -> String {
         "cpan" => "CPAN".to_string(),
         "dbd" => "DBD".to_string(),
         "dbi" => "DBI".to_string(),
+        "extutils" => "ExtUtils".to_string(),
         "http" => "HTTP".to_string(),
         "idn" => "IDN".to_string(),
         "io" => "IO".to_string(),
@@ -8000,6 +8001,7 @@ fn perl_module_name_from_conda(dep: &str) -> Option<String> {
             "cpan" => "CPAN".to_string(),
             "dbi" => "DBI".to_string(),
             "dbd" => "DBD".to_string(),
+            "extutils" => "ExtUtils".to_string(),
             "http" => "HTTP".to_string(),
             "io" => "IO".to_string(),
             "ipc" => "IPC".to_string(),
@@ -9795,6 +9797,14 @@ mod tests {
         assert_eq!(
             map_build_dependency("perl(list::moreutils::xs)"),
             "perl(List::MoreUtils::XS)".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl-extutils-constant"),
+            "perl(ExtUtils::Constant)".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl(extutils::constant)"),
+            "perl(ExtUtils::Constant)".to_string()
         );
         assert_eq!(
             map_build_dependency("perl(common::sense)"),
