@@ -6224,6 +6224,12 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     fi\n\
     fi\n\
     \n\
+    # Some CMake recipes inject '-isystem /usr/include', which can break\n\
+    # libstdc++ include_next lookup for stdlib.h on EL9 toolchains.\n\
+    if [[ \"%{{tool}}\" == \"vcf-validator\" ]]; then\n\
+    sed -i -E 's@^([[:space:]]*export[[:space:]]+CXXFLAGS=\"[^\"]*)\"@\\1 -idirafter /usr/include\"@' ./build.sh || true\n\
+    fi\n\
+    \n\
     # Augustus expects lp_solve headers as lp_lib.h in an include search path.\n\
     # Normalize discovered header locations into PREFIX/include for deterministic builds,\n\
     # and gracefully disable COMPGENPRED when lp_solve headers are unavailable.\n\
@@ -12590,6 +12596,45 @@ requirements:
         assert!(spec.contains("BuildRequires:  libX11-devel"));
         assert!(spec.contains("Requires:  qt6-qtbase"));
         assert!(spec.contains("Requires:  qt6-qtsvg"));
+    }
+
+    #[test]
+    fn vcf_validator_spec_patches_cxxflags_for_include_next_compatibility() {
+        let parsed = ParsedMeta {
+            package_name: "vcf-validator".to_string(),
+            version: "0.10.2".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/vcf-validator.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/vcf-validator".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "vcf-validator".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("mkdir build\ncd build\ncmake ..\nmake -j${CPU_COUNT}\n".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["cmake".to_string()],
+            host_dep_specs_raw: vec!["boost".to_string()],
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::from(["cmake".to_string()]),
+            host_deps: BTreeSet::from(["boost".to_string()]),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "vcf-validator",
+            &parsed,
+            "bioconda-vcf-validator-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"vcf-validator\" ]]; then"));
+        assert!(spec.contains("-idirafter /usr/include"));
     }
 
     #[test]
