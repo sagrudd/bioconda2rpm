@@ -5269,6 +5269,8 @@ fn render_payload_spec(
     let needs_libhwy = recipe_dep_mentions(parsed, "libhwy");
     let needs_jsoncpp =
         recipe_dep_mentions(parsed, "jsoncpp") || recipe_dep_mentions(parsed, "jsoncpp-devel");
+    let needs_capnproto =
+        recipe_dep_mentions(parsed, "capnproto") || recipe_dep_mentions(parsed, "capnp");
     let python_venv_setup = render_python_venv_setup_block(python_recipe, &python_requirements);
     let r_runtime_setup =
         render_r_runtime_setup_block(r_runtime_required, r_project_recipe, &r_cran_requirements);
@@ -5281,6 +5283,7 @@ fn render_payload_spec(
         needs_jemalloc,
         needs_libhwy,
         needs_jsoncpp,
+        needs_capnproto,
     );
     let module_lua_env = render_module_lua_env_block(
         python_recipe,
@@ -5466,6 +5469,10 @@ mkdir -p %{bioconda_source_subdir}\n"
     if needs_jemalloc {
         build_requires.remove("jemalloc");
         build_requires.remove("jemalloc-devel");
+    }
+    if needs_capnproto {
+        build_requires.remove("capnproto");
+        build_requires.remove("capnproto-devel");
     }
 
     let mut runtime_requires = BTreeSet::new();
@@ -6301,6 +6308,7 @@ fn render_core_c_dep_bootstrap_block(
     needs_jemalloc: bool,
     needs_libhwy: bool,
     needs_jsoncpp: bool,
+    needs_capnproto: bool,
 ) -> String {
     if !needs_isal
         && !needs_libdeflate
@@ -6308,6 +6316,7 @@ fn render_core_c_dep_bootstrap_block(
         && !needs_jemalloc
         && !needs_libhwy
         && !needs_jsoncpp
+        && !needs_capnproto
     {
         return String::new();
     }
@@ -6435,6 +6444,48 @@ fi\n\
     make install\n\
     popd >/dev/null\n\
   fi\n\
+fi\n\
+",
+        );
+    }
+
+    if needs_capnproto {
+        out.push_str(
+            "if ! command -v capnp >/dev/null 2>&1; then\n\
+  echo \"bioconda2rpm: bootstrapping capnproto into $PREFIX\" >&2\n\
+  if command -v dnf >/dev/null 2>&1; then dnf -y install capnproto capnproto-devel >/dev/null 2>&1 || true; fi\n\
+  if command -v microdnf >/dev/null 2>&1; then microdnf -y install capnproto capnproto-devel >/dev/null 2>&1 || true; fi\n\
+  if ! command -v capnp >/dev/null 2>&1; then\n\
+    if ! command -v cmake >/dev/null 2>&1; then\n\
+      if command -v dnf >/dev/null 2>&1; then dnf -y install cmake >/dev/null 2>&1 || true; fi\n\
+      if command -v microdnf >/dev/null 2>&1; then microdnf -y install cmake >/dev/null 2>&1 || true; fi\n\
+    fi\n\
+    pushd \"$third_party_root\" >/dev/null\n\
+    rm -rf capnproto-c++-1.0.2\n\
+    if command -v curl >/dev/null 2>&1; then\n\
+      curl -L --fail --output capnproto-c++-1.0.2.tar.gz https://github.com/capnproto/capnproto/releases/download/v1.0.2/capnproto-c++-1.0.2.tar.gz\n\
+    elif command -v wget >/dev/null 2>&1; then\n\
+      wget -O capnproto-c++-1.0.2.tar.gz https://github.com/capnproto/capnproto/releases/download/v1.0.2/capnproto-c++-1.0.2.tar.gz\n\
+    else\n\
+      echo \"missing curl/wget for capnproto bootstrap\" >&2\n\
+      exit 44\n\
+    fi\n\
+    tar -xf capnproto-c++-1.0.2.tar.gz\n\
+    cd capnproto-c++-1.0.2/c++\n\
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"$PREFIX\" -DCMAKE_INSTALL_LIBDIR=lib\n\
+    cmake --build build -j\"${CPU_COUNT:-1}\"\n\
+    cmake --install build\n\
+    popd >/dev/null\n\
+  fi\n\
+fi\n\
+if [[ -x \"$PREFIX/bin/capnp\" ]]; then\n\
+  export PATH=\"$PREFIX/bin:$PATH\"\n\
+fi\n\
+if [[ -d \"$PREFIX/include\" ]]; then\n\
+  export CPPFLAGS=\"-I$PREFIX/include ${CPPFLAGS:-}\"\n\
+fi\n\
+if [[ -d \"$PREFIX/lib\" ]]; then\n\
+  export LDFLAGS=\"-L$PREFIX/lib ${LDFLAGS:-}\"\n\
 fi\n\
 ",
         );
@@ -7335,6 +7386,7 @@ fn map_build_dependency(dep: &str) -> String {
         "autoconf" => "autoconf271".to_string(),
         "boost-cpp" => "boost-devel".to_string(),
         "bzip2" => "bzip2-devel".to_string(),
+        "capnproto" | "capnp" => "capnproto".to_string(),
         "cereal" => "cereal-devel".to_string(),
         "clangdev" => "clang-devel".to_string(),
         // Bioconda often models curl + openssl split differently than EL.
@@ -7453,6 +7505,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "k8" => "nodejs".to_string(),
         "boost-cpp" => "boost".to_string(),
         "biopython" => "python3-biopython".to_string(),
+        "capnproto" | "capnp" => "capnproto".to_string(),
         "cereal" => "cereal-devel".to_string(),
         "clangdev" => "clang".to_string(),
         "eigen" => "eigen3-devel".to_string(),
@@ -9861,7 +9914,12 @@ mod tests {
         assert_eq!(map_build_dependency("boost-cpp"), "boost-devel".to_string());
         assert_eq!(map_build_dependency("autoconf"), "autoconf271".to_string());
         assert_eq!(map_build_dependency("hdf5"), "hdf5-devel".to_string());
+        assert_eq!(
+            map_build_dependency("capnproto"),
+            "capnproto".to_string()
+        );
         assert_eq!(map_runtime_dependency("boost-cpp"), "boost".to_string());
+        assert_eq!(map_runtime_dependency("capnproto"), "capnproto".to_string());
         assert_eq!(map_build_dependency("eigen"), "eigen3-devel".to_string());
         assert_eq!(
             map_runtime_dependency("biopython"),
@@ -10173,13 +10231,15 @@ requirements:
 
     #[test]
     fn core_c_bootstrap_empty_when_no_deps_requested() {
-        let script = render_core_c_dep_bootstrap_block(false, false, false, false, false, false);
+        let script =
+            render_core_c_dep_bootstrap_block(false, false, false, false, false, false, false);
         assert!(script.is_empty());
     }
 
     #[test]
     fn core_c_bootstrap_includes_cereal_and_jemalloc() {
-        let script = render_core_c_dep_bootstrap_block(false, false, true, true, false, false);
+        let script =
+            render_core_c_dep_bootstrap_block(false, false, true, true, false, false, false);
         assert!(script.contains("bootstrapping cereal into $PREFIX"));
         assert!(script.contains("USCiLab/cereal"));
         assert!(script.contains("bootstrapping jemalloc into $PREFIX"));
@@ -10187,8 +10247,18 @@ requirements:
     }
 
     #[test]
+    fn core_c_bootstrap_includes_capnproto() {
+        let script =
+            render_core_c_dep_bootstrap_block(false, false, false, false, false, false, true);
+        assert!(script.contains("bootstrapping capnproto into $PREFIX"));
+        assert!(script.contains("capnproto-c++-1.0.2.tar.gz"));
+        assert!(script.contains("cmake --install build"));
+    }
+
+    #[test]
     fn payload_spec_omits_bootstrap_managed_core_c_buildrequires() {
         let mut host_deps = BTreeSet::new();
+        host_deps.insert("capnproto".to_string());
         host_deps.insert("cereal".to_string());
         host_deps.insert("jemalloc".to_string());
         host_deps.insert("libdeflate".to_string());
@@ -10208,6 +10278,7 @@ requirements:
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec![
                 "cereal".to_string(),
+                "capnproto".to_string(),
                 "jemalloc".to_string(),
                 "libdeflate".to_string(),
                 "zlib".to_string(),
@@ -10235,6 +10306,9 @@ requirements:
         assert!(!spec.contains("BuildRequires:  jemalloc-devel"));
         assert!(!spec.contains("BuildRequires:  libdeflate"));
         assert!(!spec.contains("BuildRequires:  libdeflate-devel"));
+        assert!(!spec.contains("BuildRequires:  capnproto"));
+        assert!(!spec.contains("BuildRequires:  capnproto-devel"));
+        assert!(spec.contains("bootstrapping capnproto into $PREFIX"));
         assert!(spec.contains("BuildRequires:  zlib-devel"));
     }
 
