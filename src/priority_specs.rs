@@ -6452,6 +6452,10 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     fi\n\
     if [[ -n \"$cblas_header\" ]]; then\n\
       export LDFLAGS=\"-L/usr/lib64 -L/usr/lib ${{LDFLAGS:-}}\"\n\
+      if [[ -f ./build.sh ]]; then\n\
+        sed -i 's|CFLAGS= |CFLAGS= -I${{PREFIX}}/include |g' ./build.sh || true\n\
+        sed -i 's|CXXFLAGS= |CXXFLAGS= -I${{PREFIX}}/include |g' ./build.sh || true\n\
+      fi\n\
     fi\n\
     fi\n\
     \n\
@@ -12401,6 +12405,8 @@ requirements:
         assert!(spec.contains("dnf -y install openblas-devel blas-devel"));
         assert!(spec.contains("ln -sf \"$cblas_header\" \"$PREFIX/include/cblas.h\""));
         assert!(spec.contains("export LDFLAGS=\"-L/usr/lib64 -L/usr/lib ${LDFLAGS:-}\""));
+        assert!(spec.contains("sed -i 's|CFLAGS= |CFLAGS= -I${PREFIX}/include |g' ./build.sh || true"));
+        assert!(spec.contains("sed -i 's|CXXFLAGS= |CXXFLAGS= -I${PREFIX}/include |g' ./build.sh || true"));
     }
 
     #[test]
