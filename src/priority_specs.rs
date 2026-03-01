@@ -4534,6 +4534,17 @@ fn should_keep_rpm_dependency_for_r(dep: &str) -> bool {
 
 fn should_keep_rpm_dependency_for_perl(dep: &str) -> bool {
     let normalized = normalize_dependency_token(dep);
+    // Keep critical test modules that are frequently executed by default
+    // perl build scripts (for example Build test / make test).
+    if matches!(
+        normalized.as_str(),
+        "perl-test-fatal"
+            | "perl-test-requires"
+            | "perl(test::fatal)"
+            | "perl(test::requires)"
+    ) {
+        return true;
+    }
     // Perl test-only modules frequently appear in Bioconda host/test deps but
     // should not hard-block RPM payload builds when upstream tests are not run.
     if normalized == "perl-test" || normalized.starts_with("perl-test-") {
@@ -5348,6 +5359,8 @@ fn render_payload_spec(
 if [[ -d \"$PHOREUS_PERL_PREFIX/lib/perl5\" ]]; then\n\
   export PATH=\"$PHOREUS_PERL_PREFIX/bin:$PATH\"\n\
   export BIOCONDA2RPM_PERL_RUNTIME=phoreus\n\
+  export PERL5LIB=\"$PHOREUS_PERL_PREFIX/lib/perl5:$PHOREUS_PERL_PREFIX/lib64/perl5${{PERL5LIB:+:$PERL5LIB}}\"\n\
+  export PERL5OPT=\"${{PERL5OPT:+$PERL5OPT }}-I$PHOREUS_PERL_PREFIX/lib/perl5 -I$PHOREUS_PERL_PREFIX/lib64/perl5\"\n\
 else\n\
   # Keep builds functional when Phoreus Perl is not preinstalled in container.\n\
   # Payload still installs into Phoreus prefix via PREFIX.\n\
@@ -5732,8 +5745,8 @@ mkdir -p %{bioconda_source_subdir}\n"
     export FC=\"${{FC:-gfortran}}\"\n\
     export F77=\"${{F77:-gfortran}}\"\n\
     fi\n\
-    export CFLAGS=\"${{CFLAGS:-}}\"\n\
-    export CXXFLAGS=\"${{CXXFLAGS:-}}\"\n\
+    export CFLAGS=\"${{CFLAGS:-}} -fPIC\"\n\
+    export CXXFLAGS=\"${{CXXFLAGS:-}} -fPIC\"\n\
     export CPPFLAGS=\"${{CPPFLAGS:-}}\"\n\
     export LDFLAGS=\"${{LDFLAGS:-}}\"\n\
     export AR=\"${{AR:-ar}}\"\n\
@@ -7704,6 +7717,7 @@ fn map_build_dependency(dep: &str) -> String {
         // S3/compression code paths (for example canu), which require
         // <openssl/hmac.h>, <lzma.h>, and bz2 linkage during local builds.
         "curl" => "libcurl-devel openssl-devel xz-devel bzip2-devel".to_string(),
+        "libcurl-devel" => "libcurl-devel openssl-devel".to_string(),
         "eigen" => "eigen3-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
@@ -7729,6 +7743,7 @@ fn map_build_dependency(dep: &str) -> String {
         "libdeflate-devel" => "libdeflate".to_string(),
         "liblzma-devel" => "xz-devel".to_string(),
         "liblapack" => "lapack-devel".to_string(),
+        "lp-solve" | "lpsolve" => "lpsolve-devel".to_string(),
         "libhwy" => "highway-devel".to_string(),
         "libiconv" => "glibc-devel".to_string(),
         "libxau" => "libXau-devel".to_string(),
@@ -7854,6 +7869,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "libdeflate-devel" => "libdeflate".to_string(),
         "liblzma-devel" => "xz".to_string(),
         "liblapack" => "lapack".to_string(),
+        "lp-solve" | "lpsolve" => "lpsolve".to_string(),
         "mesa-libgl-devel" => "mesa-libGL".to_string(),
         "mesa-libegl-devel" => "mesa-libEGL".to_string(),
         "mysql-connector-c" => "mariadb-connector-c".to_string(),
@@ -10338,6 +10354,10 @@ mod tests {
         assert_eq!(map_build_dependency("xz"), "xz-devel".to_string());
         assert_eq!(map_build_dependency("libcurl"), "libcurl-devel".to_string());
         assert_eq!(
+            map_build_dependency("libcurl-devel"),
+            "libcurl-devel openssl-devel".to_string()
+        );
+        assert_eq!(
             map_build_dependency("curl"),
             "libcurl-devel openssl-devel xz-devel bzip2-devel".to_string()
         );
@@ -10457,6 +10477,8 @@ mod tests {
         assert_eq!(map_runtime_dependency("jsoncpp"), "jsoncpp".to_string());
         assert_eq!(map_runtime_dependency("glib"), "glib2".to_string());
         assert_eq!(map_runtime_dependency("liblapack"), "lapack".to_string());
+        assert_eq!(map_build_dependency("lp-solve"), "lpsolve-devel".to_string());
+        assert_eq!(map_runtime_dependency("lp-solve"), "lpsolve".to_string());
         assert_eq!(map_runtime_dependency("liblzma-devel"), "xz".to_string());
         assert_eq!(map_runtime_dependency("zstd-static"), "zstd".to_string());
         assert_eq!(
@@ -12893,6 +12915,10 @@ requirements:
         assert_eq!(mapped_test, "perl(Test::LeakTrace)".to_string());
         assert!(!should_keep_rpm_dependency_for_perl(&mapped_test));
         assert!(!should_keep_rpm_dependency_for_perl("perl-test-leaktrace"));
+        assert!(should_keep_rpm_dependency_for_perl("perl-test-requires"));
+        assert!(should_keep_rpm_dependency_for_perl("perl-test-fatal"));
+        assert!(should_keep_rpm_dependency_for_perl("perl(Test::Requires)"));
+        assert!(should_keep_rpm_dependency_for_perl("perl(Test::Fatal)"));
         assert!(should_keep_rpm_dependency_for_perl(
             "perl(List::MoreUtils::XS)"
         ));
