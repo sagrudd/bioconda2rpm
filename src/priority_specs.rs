@@ -6001,6 +6001,32 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     fi\n\
     fi\n\
     \n\
+    # Biobambam hard-requires libmaus2 >= 2.0.800 through pkg-config, but some\n\
+    # deployments may stage libmaus2 without a discoverable .pc path. Inject an\n\
+    # explicit fallback so configure can proceed via libmaus2_CFLAGS/LIBS.\n\
+    if [[ \"%{{tool}}\" == \"biobambam\" ]]; then\n\
+    if ! pkg-config --exists libmaus2 2>/dev/null; then\n\
+      libmaus2_prefix=$(find /usr/local/phoreus/libmaus2 -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1 || true)\n\
+      if [[ -z \"$libmaus2_prefix\" && -d \"$PREFIX/include/libmaus2\" ]]; then\n\
+        libmaus2_prefix=\"$PREFIX\"\n\
+      fi\n\
+      if [[ -n \"$libmaus2_prefix\" && -d \"$libmaus2_prefix/include\" ]]; then\n\
+        export libmaus2_CFLAGS=\"-I$libmaus2_prefix/include\"\n\
+      fi\n\
+      if [[ -n \"$libmaus2_prefix\" ]]; then\n\
+        if [[ -d \"$libmaus2_prefix/lib\" ]]; then\n\
+          export libmaus2_LIBS=\"-L$libmaus2_prefix/lib -lmaus2\"\n\
+          export PKG_CONFIG_PATH=\"$libmaus2_prefix/lib/pkgconfig${{PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}}\"\n\
+          export LDFLAGS=\"-L$libmaus2_prefix/lib ${{LDFLAGS:-}}\"\n\
+        elif [[ -d \"$libmaus2_prefix/lib64\" ]]; then\n\
+          export libmaus2_LIBS=\"-L$libmaus2_prefix/lib64 -lmaus2\"\n\
+          export PKG_CONFIG_PATH=\"$libmaus2_prefix/lib64/pkgconfig${{PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}}\"\n\
+          export LDFLAGS=\"-L$libmaus2_prefix/lib64 ${{LDFLAGS:-}}\"\n\
+        fi\n\
+      fi\n\
+    fi\n\
+    fi\n\
+    \n\
     # Minimap2 build.sh may pass a quoted empty ARCH_OPTS token to make,\n\
     # which GNU make treats as an invalid empty filename on EL platforms.\n\
     # Normalize to shell expansion that vanishes when ARCH_OPTS is unset.\n\
@@ -7496,6 +7522,7 @@ fn map_build_dependency(dep: &str) -> String {
         "llvmdev" => "llvm-devel".to_string(),
         "xorg-libxext" => "libXext-devel".to_string(),
         "xorg-libxfixes" => "libXfixes-devel".to_string(),
+        "xerces-c" => "xerces-c-devel".to_string(),
         "xz" => "xz-devel".to_string(),
         "zlib" => "zlib-devel".to_string(),
         "libzlib" => "zlib-devel".to_string(),
@@ -7587,6 +7614,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "zstd-static" => "zstd".to_string(),
         "xorg-libxext" => "libXext".to_string(),
         "xorg-libxfixes" => "libXfixes".to_string(),
+        "xerces-c" => "xerces-c".to_string(),
         "zlib-ng" | "zlibng" | "zlib-ng-compat" | "zlib-ng-compat-devel" => {
             "zlib-ng-compat".to_string()
         }
@@ -9968,8 +9996,13 @@ mod tests {
             map_build_dependency("capnproto"),
             "capnproto".to_string()
         );
+        assert_eq!(
+            map_build_dependency("xerces-c"),
+            "xerces-c-devel".to_string()
+        );
         assert_eq!(map_runtime_dependency("boost-cpp"), "boost".to_string());
         assert_eq!(map_runtime_dependency("capnproto"), "capnproto".to_string());
+        assert_eq!(map_runtime_dependency("xerces-c"), "xerces-c".to_string());
         assert_eq!(map_build_dependency("eigen"), "eigen3-devel".to_string());
         assert_eq!(
             map_runtime_dependency("biopython"),
@@ -11566,6 +11599,48 @@ requirements:
         ));
         assert!(spec.contains("sed -i 's|-DUSE_HDF5=ON|-DUSE_HDF5=OFF|g' ./build.sh || true"));
         assert!(spec.contains("sed -i 's|-DUSE_BAM=ON|-DUSE_BAM=OFF|g' ./build.sh || true"));
+    }
+
+    #[test]
+    fn biobambam_spec_exports_libmaus2_pkgconfig_fallback() {
+        let parsed = ParsedMeta {
+            package_name: "biobambam".to_string(),
+            version: "2.0.185".to_string(),
+            build_number: "1".to_string(),
+            source_url: "https://example.invalid/biobambam.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/biobambam".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "biobambam".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("./configure --with-libmaus2".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["libmaus2 >=2.0.813".to_string(), "xerces-c".to_string()],
+            run_dep_specs_raw: vec!["libmaus2 >=2.0.813".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::from(["libmaus2".to_string(), "xerces-c".to_string()]),
+            run_deps: BTreeSet::from(["libmaus2".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "biobambam",
+            &parsed,
+            "bioconda-biobambam-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"biobambam\" ]]; then"));
+        assert!(spec.contains("if ! pkg-config --exists libmaus2 2>/dev/null; then"));
+        assert!(spec.contains("export libmaus2_CFLAGS=\"-I$libmaus2_prefix/include\""));
+        assert!(spec.contains("export libmaus2_LIBS=\"-L$libmaus2_prefix/lib -lmaus2\""));
+        assert!(spec.contains("BuildRequires:  xerces-c-devel"));
     }
 
     #[test]
