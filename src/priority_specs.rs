@@ -5661,6 +5661,7 @@ fi\n\
     export LDFLAGS=\"-L$hts_prefix/lib ${{LDFLAGS:-}}\"\n\
     export PKG_CONFIG_PATH=\"$hts_prefix/lib/pkgconfig${{PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}}\"\n\
     fi\n\
+    fi\n\
     \n\
     # Minimap2 build.sh may pass a quoted empty ARCH_OPTS token to make,\n\
     # which GNU make treats as an invalid empty filename on EL platforms.\n\
@@ -5668,6 +5669,10 @@ fi\n\
     if [[ \"%{{tool}}\" == \"minimap2\" ]]; then\n\
     sed -i 's|\"\\$ARCH_OPTS\"|${{ARCH_OPTS:+$ARCH_OPTS}}|g' ./build.sh || true\n\
     sed -i 's|\"${{ARCH_OPTS}}\"|${{ARCH_OPTS:+$ARCH_OPTS}}|g' ./build.sh || true\n\
+    sed -i \"s|'\\\\$ARCH_OPTS'|${{ARCH_OPTS:+$ARCH_OPTS}}|g\" ./build.sh || true\n\
+    sed -i \"s|'${{ARCH_OPTS}}'|${{ARCH_OPTS:+$ARCH_OPTS}}|g\" ./build.sh || true\n\
+    sed -i 's|[[:space:]]\"\"[[:space:]]| |g' ./build.sh || true\n\
+    sed -i \"s|[[:space:]]''[[:space:]]| |g\" ./build.sh || true\n\
     fi\n\
     # Ensure CURSES_LIB is passed as an environment assignment to configure.\n\
     sed -i 's|^\\./configure |CURSES_LIB=\"$CURSES_LIB\" ./configure |' ./build.sh || true\n\
@@ -5677,7 +5682,6 @@ fi\n\
     fi\n\
     if ! ldconfig -p 2>/dev/null | grep -q 'libncursesw\\\\.so'; then\n\
     sed -i 's|-lncursesw|-lncurses|g' ./build.sh || true\n\
-    fi\n\
     fi\n\
     \n\
     # STAR can hit container OOM/SIGKILL during final link on constrained hosts.\n\
@@ -10245,6 +10249,54 @@ requirements:
         assert!(reqs.contains(&"numpy".to_string()));
         assert!(!reqs.iter().any(|r| r == "mummer"));
         assert!(!reqs.iter().any(|r| r == "minimap2"));
+    }
+
+    #[test]
+    fn minimap2_arch_opts_sanitization_is_not_nested_under_samtools_block() {
+        let parsed = ParsedMeta {
+            package_name: "minimap2".to_string(),
+            version: "2.30".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/minimap2-2.30.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/minimap2".to_string(),
+            license: "MIT".to_string(),
+            summary: "minimap2".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("make -j${CPU_COUNT} minimap2 sdust".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "minimap2",
+            &parsed,
+            "bioconda-minimap2-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"minimap2\" ]]; then"));
+        assert!(spec.contains(
+            "sed -i \"s|'\\\\$ARCH_OPTS'|${ARCH_OPTS:+$ARCH_OPTS}|g\" ./build.sh || true"
+        ));
+        assert!(
+            spec.contains(
+                "sed -i \"s|'${ARCH_OPTS}'|${ARCH_OPTS:+$ARCH_OPTS}|g\" ./build.sh || true"
+            )
+        );
+        assert!(spec.contains("sed -i 's|[[:space:]]\"\"[[:space:]]| |g' ./build.sh || true"));
+        assert!(spec.contains("sed -i \"s|[[:space:]]''[[:space:]]| |g\" ./build.sh || true"));
     }
 
     #[test]
