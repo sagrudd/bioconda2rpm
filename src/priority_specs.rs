@@ -5691,7 +5691,8 @@ fi\n\
     sed -i \"s|[[:space:]]''[[:space:]]| |g\" ./build.sh || true\n\
     fi\n\
     # Ensure CURSES_LIB is passed as an environment assignment to configure.\n\
-    sed -i 's|^\\./configure |CURSES_LIB=\"$CURSES_LIB\" ./configure |' ./build.sh || true\n\
+    # Use a set -u-safe default expansion so missing CURSES_LIB never aborts.\n\
+    sed -i -E 's|^[[:space:]]*\\./configure[[:space:]]+|CURSES_LIB=\"${{CURSES_LIB:-}}\" ./configure |' ./build.sh || true\n\
     # Normalize Bioconda's conda-oriented wide-curses flags for EL9 toolchains.\n\
     if ! ldconfig -p 2>/dev/null | grep -q 'libtinfow\\\\.so'; then\n\
     sed -i 's|-ltinfow|-ltinfo|g' ./build.sh || true\n\
@@ -9665,6 +9666,7 @@ requirements:
         assert!(spec.contains("export PATH=\"$dep_bin:$PATH\""));
         assert!(spec.contains("disabled by bioconda2rpm for EL9 compatibility"));
         assert!(spec.contains("if [[ \"${CONFIG_SITE:-}\" == \"NONE\" ]]; then"));
+        assert!(spec.contains("CURSES_LIB=\"${CURSES_LIB:-}\" ./configure"));
         assert!(spec.contains("export PKG_NAME=\"${PKG_NAME:-blast}\""));
         assert!(spec.contains("export PKG_VERSION=\"${PKG_VERSION:-2.5.0}\""));
         assert!(spec.contains("export PKG_BUILDNUM=\"${PKG_BUILDNUM:-0}\""));
