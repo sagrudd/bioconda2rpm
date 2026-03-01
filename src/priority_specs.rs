@@ -5107,14 +5107,21 @@ fi\n\
     sed -i 's|GSL_LIBS=-lgsl|GSL_LIBS=\"-lgsl -lopenblas\"|g' ./build.sh || true\n\
     fi\n\
     \n\
-    # Diamond's Bioconda script hard-pins a static zstd archive under $PREFIX,\n\
-    # but RPM builds commonly provide zstd as shared system libs.\n\
+    # Diamond's Bioconda script hard-pins static zstd under PREFIX, but RPM\n\
+    # container builds should link system shared zstd.\n\
     if [[ \"%{{tool}}\" == \"diamond\" ]]; then\n\
+    echo \"bioconda2rpm: applying diamond zstd shared-library rewrites\" >&2\n\
+    # Handle exact and relaxed forms observed in recipe variants.\n\
     sed -i 's|-DZSTD_LIBRARY=\"${{PREFIX}}/lib/libzstd.a\"|-DZSTD_LIBRARY=\"/usr/lib64/libzstd.so\"|g' ./build.sh || true\n\
+    sed -i 's|-DZSTD_LIBRARY=\"$PREFIX/lib/libzstd.a\"|-DZSTD_LIBRARY=\"/usr/lib64/libzstd.so\"|g' ./build.sh || true\n\
+    sed -E -i 's|-DZSTD_LIBRARY=\"[^\"]*libzstd\\.a\"|-DZSTD_LIBRARY=\"/usr/lib64/libzstd.so\"|g' ./build.sh || true\n\
+    sed -i 's|-DZSTD_INCLUDE_DIR=\"${{PREFIX}}/include\"|-DZSTD_INCLUDE_DIR=\"/usr/include\"|g' ./build.sh || true\n\
+    sed -i 's|-DZSTD_INCLUDE_DIR=\"$PREFIX/include\"|-DZSTD_INCLUDE_DIR=\"/usr/include\"|g' ./build.sh || true\n\
     if [[ ! -e /usr/lib64/libzstd.so && -e /usr/lib/libzstd.so ]]; then\n\
       sed -i 's|/usr/lib64/libzstd.so|/usr/lib/libzstd.so|g' ./build.sh || true\n\
     fi\n\
-    sed -i 's|-DZSTD_INCLUDE_DIR=\"${{PREFIX}}/include\"|-DZSTD_INCLUDE_DIR=\"/usr/include\"|g' ./build.sh || true\n\
+    # Emit the resulting cmake args so failures are diagnosable from logs.\n\
+    grep -nE 'ZSTD_LIBRARY|ZSTD_INCLUDE_DIR|WITH_ZSTD' ./build.sh || true\n\
     fi\n\
     \n\
     # EBSeq currently pulls modern BH headers that require at least C++14.\n\
