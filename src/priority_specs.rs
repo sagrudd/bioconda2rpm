@@ -6583,6 +6583,31 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
       fi\n\
     fi\n\
     fi\n\
+\n\
+    # pplacer's build script expects opam, but EL9 repos used in these\n\
+    # containers can omit an opam package. Bootstrap a release binary.\n\
+    if [[ \"%{{tool}}\" == \"pplacer\" ]]; then\n\
+    if ! command -v opam >/dev/null 2>&1; then\n\
+      opam_ver=2.1.6\n\
+      case \"$(uname -m)\" in\n\
+        x86_64) opam_arch=\"x86_64\" ;;\n\
+        aarch64|arm64) opam_arch=\"arm64\" ;;\n\
+        *) opam_arch=\"\" ;;\n\
+      esac\n\
+      if [[ -n \"$opam_arch\" ]]; then\n\
+        opam_url=\"https://github.com/ocaml/opam/releases/download/${{opam_ver}}/opam-${{opam_ver}}-${{opam_arch}}-linux\"\n\
+        if command -v curl >/dev/null 2>&1; then\n\
+          curl -L --fail -o /usr/local/bin/opam \"$opam_url\" || true\n\
+        elif command -v wget >/dev/null 2>&1; then\n\
+          wget -O /usr/local/bin/opam \"$opam_url\" || true\n\
+        fi\n\
+        if [[ -f /usr/local/bin/opam ]]; then\n\
+          chmod +x /usr/local/bin/opam || true\n\
+          export PATH=\"/usr/local/bin:$PATH\"\n\
+        fi\n\
+      fi\n\
+    fi\n\
+    fi\n\
     \n\
     # SPAdes NCBI SDK support is optional upstream and disabled by default\n\
     # due to compatibility issues. Bioconda patching can force it ON, which\n\
@@ -12787,6 +12812,47 @@ requirements:
         assert!(spec.contains("dnf -y install ldc"));
         assert!(spec.contains("if command -v ldc2 >/dev/null 2>&1; then"));
         assert!(spec.contains("ln -sf \"$(command -v ldc2)\" /usr/local/bin/ldmd2 || true"));
+    }
+
+    #[test]
+    fn pplacer_spec_bootstraps_opam_binary_when_repo_lacks_package() {
+        let parsed = ParsedMeta {
+            package_name: "pplacer".to_string(),
+            version: "1.1".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/pplacer.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/pplacer".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "pplacer".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("opam init --disable-sandboxing -y".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["ocaml".to_string(), "opam".to_string()],
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::from(["ocaml".to_string(), "opam".to_string()]),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "pplacer",
+            &parsed,
+            "bioconda-pplacer-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"pplacer\" ]]; then"));
+        assert!(spec.contains("opam_ver=2.1.6"));
+        assert!(spec.contains("https://github.com/ocaml/opam/releases/download/${opam_ver}/opam-${opam_ver}-${opam_arch}-linux"));
+        assert!(spec.contains("curl -L --fail -o /usr/local/bin/opam \"$opam_url\" || true"));
     }
 
     #[test]
