@@ -3126,6 +3126,7 @@ fn process_tool(
         &resolved,
         sources_dir,
         &software_slug,
+        &build_config.target_arch,
     ) {
         Ok(v) => v,
         Err(err) => {
@@ -7103,8 +7104,10 @@ fn stage_recipe_patches(
     resolved: &ResolvedRecipe,
     sources_dir: &Path,
     software_slug: &str,
+    target_arch: &str,
 ) -> Result<Vec<String>> {
     let mut staged = Vec::new();
+    let selector_ctx = SelectorContext::for_rpm_build(target_arch);
     for (idx, patch_entry) in source_patches.iter().enumerate() {
         let raw = patch_entry.trim();
         if raw.is_empty() {
@@ -7117,6 +7120,12 @@ fn stage_recipe_patches(
         }
 
         let patch_name = raw.split('#').next().unwrap_or(raw).trim();
+        let (patch_name, patch_selector) = split_inline_patch_selector(patch_name);
+        if let Some(selector) = patch_selector
+            && !evaluate_selector(selector, &selector_ctx)
+        {
+            continue;
+        }
         let candidates = [
             resolved.variant_dir.join(patch_name),
             resolved.recipe_dir.join(patch_name),
@@ -7153,6 +7162,26 @@ fn stage_recipe_patches(
         staged.push(staged_name);
     }
     Ok(staged)
+}
+
+fn split_inline_patch_selector(entry: &str) -> (&str, Option<&str>) {
+    let trimmed = entry.trim();
+    let Some(open_idx) = trimmed.rfind('[') else {
+        return (trimmed, None);
+    };
+    if !trimmed.ends_with(']') {
+        return (trimmed, None);
+    }
+    let before = &trimmed[..open_idx];
+    if !before.chars().last().is_some_and(|c| c.is_ascii_whitespace()) {
+        return (trimmed, None);
+    }
+    let selector = trimmed[(open_idx + 1)..(trimmed.len() - 1)].trim();
+    let patch_name = before.trim_end();
+    if patch_name.is_empty() || selector.is_empty() {
+        return (trimmed, None);
+    }
+    (patch_name, Some(selector))
 }
 
 fn stage_recipe_support_files(resolved: &ResolvedRecipe, sources_dir: &Path) -> Result<()> {
@@ -10076,6 +10105,48 @@ requirements:
             parsed.source_patches,
             vec!["boost_106400.patch".to_string()]
         );
+    }
+
+    #[test]
+    fn split_inline_patch_selector_parses_selector_suffix() {
+        let (name, selector) = split_inline_patch_selector("makefile.patch [osx]");
+        assert_eq!(name, "makefile.patch");
+        assert_eq!(selector, Some("osx"));
+
+        let (name, selector) = split_inline_patch_selector("shared_lib.patch");
+        assert_eq!(name, "shared_lib.patch");
+        assert_eq!(selector, None);
+    }
+
+    #[test]
+    fn stage_recipe_patches_skips_non_matching_inline_selector_suffix() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let recipe_dir = tmp.path().join("recipe");
+        let variant_dir = recipe_dir.clone();
+        let sources_dir = tmp.path().join("SOURCES");
+        fs::create_dir_all(&recipe_dir).expect("create recipe dir");
+        fs::create_dir_all(&sources_dir).expect("create sources dir");
+        fs::write(recipe_dir.join("meta.yaml"), "package: {name: plink, version: 1.0}")
+            .expect("write meta");
+
+        let resolved = ResolvedRecipe {
+            recipe_name: "plink".to_string(),
+            recipe_dir: recipe_dir.clone(),
+            variant_dir,
+            meta_path: recipe_dir.join("meta.yaml"),
+            build_sh_path: None,
+            overlap_reason: "exact".to_string(),
+        };
+
+        let staged = stage_recipe_patches(
+            &["makefile.patch [osx]".to_string()],
+            &resolved,
+            &sources_dir,
+            "plink",
+            "x86_64",
+        )
+        .expect("stage patches");
+        assert!(staged.is_empty());
     }
 
     #[test]
