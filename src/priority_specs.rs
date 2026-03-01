@@ -7587,7 +7587,7 @@ while IFS= read -r top_dir; do\n\
 done < <(find . -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null || true)\n\
 for patch_dir in \"${{patch_dirs[@]}}\"; do\n\
   for patch_strip in 1 0 2 3 4 5; do\n\
-    if (cd \"$patch_dir\" && patch --batch -p\"$patch_strip\" -i \"$patch_input\"); then\n\
+    if (cd \"$patch_dir\" && patch --binary --forward --batch -p\"$patch_strip\" -i \"$patch_input\"); then\n\
       patch_applied=1\n\
       break 2\n\
     fi\n\
@@ -10943,7 +10943,9 @@ requirements:
         assert!(spec.contains("patch_rel=\"${patch_rel#b/}\""));
         assert!(spec.contains("for maybe_dir in userApps Source_code_including_submodules source src; do"));
         assert!(spec.contains("find . -mindepth 1 -maxdepth 1 -type d -print"));
-        assert!(spec.contains("patch --batch -p\"$patch_strip\" -i \"$patch_input\""));
+        assert!(spec.contains(
+            "patch --binary --forward --batch -p\"$patch_strip\" -i \"$patch_input\""
+        ));
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(spec.contains("retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\""));
         assert!(spec.contains("export CPU_COUNT=\"${BIOCONDA2RPM_CPU_COUNT:-1}\""));
