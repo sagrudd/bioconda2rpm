@@ -82,6 +82,7 @@ Defaults when omitted:
 - `docs/dependency_policy.md`
 - `docs/decision_log.md`
 - `docs/STAGE_ISOLATION_AND_SAMPLING_BLUEPRINT.md`
+- `docs/STATISTICAL_SAMPLING_STRATEGY.md`
 
 ## Container Build Images
 
