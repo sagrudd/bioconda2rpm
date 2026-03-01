@@ -5631,12 +5631,23 @@ fi\n\
 # Ensure common install subdirectories exist for build.sh scripts that assume them.\n\
 mkdir -p \"$PREFIX/lib\" \"$PREFIX/bin\" \"$PREFIX/include\"\n\
 export BUILD_PREFIX=\"${{BUILD_PREFIX:-$PREFIX}}\"\n\
-mkdir -p \"$BUILD_PREFIX/share/gnuconfig\"\n\
-if [[ ! -f \"$BUILD_PREFIX/share/gnuconfig/config.guess\" || ! -f \"$BUILD_PREFIX/share/gnuconfig/config.sub\" ]]; then\n\
-  cfg_dir=$(find /usr/share -maxdepth 4 -type f -name config.guess -print 2>/dev/null | head -n 1 | xargs -r dirname)\n\
+mkdir -p \"$BUILD_PREFIX/share/gnuconfig\" \"$PREFIX/share/gnuconfig\"\n\
+if [[ ! -f \"$BUILD_PREFIX/share/gnuconfig/config.guess\" || ! -f \"$BUILD_PREFIX/share/gnuconfig/config.sub\" || ! -f \"$PREFIX/share/gnuconfig/config.guess\" || ! -f \"$PREFIX/share/gnuconfig/config.sub\" ]]; then\n\
+  cfg_dir=\"\"\n\
+  for cand in \"$BUILD_PREFIX/share/gnuconfig\" \"$PREFIX/share/gnuconfig\" /usr/share/gnuconfig /usr/share/automake-1.16 /usr/share/automake-1.15 /usr/share/automake-1.14 /usr/lib/rpm/redhat; do\n\
+    if [[ -f \"$cand/config.guess\" && -f \"$cand/config.sub\" ]]; then\n\
+      cfg_dir=\"$cand\"\n\
+      break\n\
+    fi\n\
+  done\n\
+  if [[ -z \"$cfg_dir\" ]]; then\n\
+    cfg_dir=$(find /usr -maxdepth 6 -type f -name config.guess -print 2>/dev/null | head -n 1 | xargs -r dirname)\n\
+  fi\n\
   if [[ -n \"$cfg_dir\" && -f \"$cfg_dir/config.guess\" && -f \"$cfg_dir/config.sub\" ]]; then\n\
     cp -f \"$cfg_dir/config.guess\" \"$BUILD_PREFIX/share/gnuconfig/config.guess\" || true\n\
     cp -f \"$cfg_dir/config.sub\" \"$BUILD_PREFIX/share/gnuconfig/config.sub\" || true\n\
+    cp -f \"$cfg_dir/config.guess\" \"$PREFIX/share/gnuconfig/config.guess\" || true\n\
+    cp -f \"$cfg_dir/config.sub\" \"$PREFIX/share/gnuconfig/config.sub\" || true\n\
   fi\n\
 fi\n\
 \n\
@@ -9873,6 +9884,8 @@ requirements:
         assert!(
             spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name include")
         );
+        assert!(spec.contains("mkdir -p \"$BUILD_PREFIX/share/gnuconfig\" \"$PREFIX/share/gnuconfig\""));
+        assert!(spec.contains("cp -f \"$cfg_dir/config.guess\" \"$PREFIX/share/gnuconfig/config.guess\" || true"));
         assert!(spec.contains("export CPATH=\"/usr/include${CPATH:+:$CPATH}\""));
         assert!(spec.contains("export CPATH=\"${CPATH:+$CPATH:}$dep_include\""));
         assert!(spec.contains("linux|asm|asm-generic) continue ;;"));
