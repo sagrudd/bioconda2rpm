@@ -8309,6 +8309,42 @@ if [[ \"$source0_url\" =~ ^https?://(www\\.)?clustal\\.org/download/current/(clu
   source_candidates+=(\"https://ftp.ebi.ac.uk/pub/software/clustalw2/${{clustalw_version}}/${{clustalw_file}}\")\n\
   source_candidates+=(\"ftp://ftp.ebi.ac.uk/pub/software/clustalw2/${{clustalw_version}}/${{clustalw_file}}\")\n\
 fi\n\
+validate_source_file() {{\n\
+  local source_path=\"$1\"\n\
+  [[ -s \"$source_path\" ]] || return 1\n\
+  case \"$source_path\" in\n\
+    *.tar.gz|*.tgz)\n\
+      if command -v gzip >/dev/null 2>&1; then gzip -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      if command -v tar >/dev/null 2>&1; then tar -tzf \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      ;;\n\
+    *.tar.bz2|*.tbz2)\n\
+      if command -v bzip2 >/dev/null 2>&1; then bzip2 -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      if command -v tar >/dev/null 2>&1; then tar -tjf \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      ;;\n\
+    *.tar.xz|*.txz)\n\
+      if command -v xz >/dev/null 2>&1; then xz -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      if command -v tar >/dev/null 2>&1; then tar -tJf \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      ;;\n\
+    *.tar)\n\
+      if command -v tar >/dev/null 2>&1; then tar -tf \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      ;;\n\
+    *.zip)\n\
+      if command -v unzip >/dev/null 2>&1; then unzip -tqq \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      ;;\n\
+    *.gz)\n\
+      if command -v gzip >/dev/null 2>&1; then gzip -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      ;;\n\
+    *.bz2)\n\
+      if command -v bzip2 >/dev/null 2>&1; then bzip2 -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      ;;\n\
+    *.xz)\n\
+      if command -v xz >/dev/null 2>&1; then xz -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      ;;\n\
+    *)\n\
+      ;;\n\
+  esac\n\
+  return 0\n\
+}}\n\
 spectool_ok=0\n\
 if [[ -z \"$source0_url\" ]]; then\n\
   spectool_ok=1\n\
@@ -8345,8 +8381,12 @@ else\n\
         candidate_file=\"${{candidate_file%%\\?*}}\"\n\
         candidate_file=\"${{candidate_file##*/}}\"\n\
         if [[ -n \"$candidate_file\" && -s \"/work/SOURCES/$candidate_file\" ]]; then\n\
-          spectool_ok=1\n\
-          break 2\n\
+          if validate_source_file \"/work/SOURCES/$candidate_file\"; then\n\
+            spectool_ok=1\n\
+            break 2\n\
+          fi\n\
+          echo \"source archive validation failed for /work/SOURCES/$candidate_file; removing corrupt download\" >&2\n\
+          rm -f \"/work/SOURCES/$candidate_file\" || true\n\
         fi\n\
         echo \"source download did not produce /work/SOURCES/$candidate_file\" >&2\n\
       fi\n\
@@ -8368,7 +8408,12 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
         curl -L --fail --output \"/work/SOURCES/$ftp_file\" \"$source0_url\" || true\n\
       fi\n\
       if [[ -s \"/work/SOURCES/$ftp_file\" ]]; then\n\
-        spectool_ok=1\n\
+        if validate_source_file \"/work/SOURCES/$ftp_file\"; then\n\
+          spectool_ok=1\n\
+        else\n\
+          echo \"source archive validation failed for /work/SOURCES/$ftp_file; removing corrupt download\" >&2\n\
+          rm -f \"/work/SOURCES/$ftp_file\" || true\n\
+        fi\n\
       fi\n\
     fi\n\
   fi\n\
