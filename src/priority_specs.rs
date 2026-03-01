@@ -8194,6 +8194,15 @@ if [[ \"$source0_url\" =~ ^(.*/)([^/]+)-([0-9][0-9\\.]*)-([0-9]+)\\.zip$ ]]; the
     done\n\
   fi\n\
 fi\n\
+# ClustalW upstream current URL can rot; use deterministic versioned and EBI mirror fallbacks.\n\
+if [[ \"$source0_url\" =~ ^https?://(www\\.)?clustal\\.org/download/current/(clustalw-([0-9][0-9A-Za-z\\._-]*))\\.tar\\.gz$ ]]; then\n\
+  clustalw_file=\"${{BASH_REMATCH[2]}}.tar.gz\"\n\
+  clustalw_version=\"${{BASH_REMATCH[3]}}\"\n\
+  source_candidates+=(\"https://www.clustal.org/download/${{clustalw_version}}/${{clustalw_file}}\")\n\
+  source_candidates+=(\"http://www.clustal.org/download/${{clustalw_version}}/${{clustalw_file}}\")\n\
+  source_candidates+=(\"https://ftp.ebi.ac.uk/pub/software/clustalw2/${{clustalw_version}}/${{clustalw_file}}\")\n\
+  source_candidates+=(\"ftp://ftp.ebi.ac.uk/pub/software/clustalw2/${{clustalw_version}}/${{clustalw_file}}\")\n\
+fi\n\
 spectool_ok=0\n\
 if [[ -z \"$source0_url\" ]]; then\n\
   spectool_ok=1\n\
