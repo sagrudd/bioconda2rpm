@@ -402,11 +402,16 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
             _ => 6,
         }
     };
+    let is_running = |status: &str| matches!(status, "running" | "started");
     rows.sort_by(|a, b| {
-        rank(&a.1.status)
-            .cmp(&rank(&b.1.status))
-            .then_with(|| b.1.seq.cmp(&a.1.seq))
-            .then_with(|| a.0.cmp(&b.0))
+        let rank_cmp = rank(&a.1.status).cmp(&rank(&b.1.status));
+        if rank_cmp != std::cmp::Ordering::Equal {
+            return rank_cmp;
+        }
+        if is_running(&a.1.status) && is_running(&b.1.status) {
+            return a.0.cmp(&b.0).then_with(|| b.1.seq.cmp(&a.1.seq));
+        }
+        b.1.seq.cmp(&a.1.seq).then_with(|| a.0.cmp(&b.0))
     });
     // Fit visible rows to current terminal height instead of a fixed cap.
     // Table has: top border + header + bottom border.
