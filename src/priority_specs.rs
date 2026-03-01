@@ -5326,6 +5326,9 @@ mkdir -p %{bioconda_source_subdir}\n"
     }
     if r_runtime_required {
         build_requires.insert(PHOREUS_R_PACKAGE.to_string());
+        // CRAN/Bioconductor source restores frequently compile Fortran code
+        // (for example statmod). Keep gfortran always present for R payloads.
+        build_requires.insert("gcc-gfortran".to_string());
         // Common native stack required by many CRAN/Bioconductor graphics/text packages
         // (for example systemfonts/textshaping/ragg/ggrastr).
         build_requires.insert("cairo-devel".to_string());
@@ -10568,6 +10571,7 @@ requirements:
             false,
         );
         assert!(spec.contains(&format!("BuildRequires:  {}", PHOREUS_R_PACKAGE)));
+        assert!(spec.contains("BuildRequires:  gcc-gfortran"));
         assert!(spec.contains(&format!("Requires:  {}", PHOREUS_R_PACKAGE)));
         assert!(!spec.contains("BuildRequires:  r-rcurl"));
         assert!(!spec.contains("BuildRequires:  r-yaml"));
@@ -10612,6 +10616,7 @@ requirements:
             false,
         );
         assert!(spec.contains(&format!("BuildRequires:  {}", PHOREUS_R_PACKAGE)));
+        assert!(spec.contains("BuildRequires:  gcc-gfortran"));
         assert!(spec.contains(&format!("Requires:  {}", PHOREUS_R_PACKAGE)));
         assert!(spec.contains("BuildRequires:  bioconductor-zlibbioc"));
         assert!(spec.contains("Requires:  bioconductor-zlibbioc"));
