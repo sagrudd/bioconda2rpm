@@ -7323,10 +7323,23 @@ fn render_patch_apply_lines(staged_patch_sources: &[String], source_dir: &str) -
         for (idx, _) in staged_patch_sources.iter().enumerate() {
             out.push_str(&format!(
                 "patch_source=%{{SOURCE{}}}\n\
+patch_input=\"$patch_source\"\n\
+patch_tmp=\"\"\n\
+if grep -q $'\\r' \"$patch_source\" 2>/dev/null; then\n\
+  patch_tmp=\"$(mktemp)\"\n\
+  tr -d '\\r' < \"$patch_source\" > \"$patch_tmp\"\n\
+  patch_input=\"$patch_tmp\"\n\
+fi\n\
 patch_applied=0\n\
 patch_dirs=(.)\n\
-patch_rel=$(awk 'BEGIN{{rel=\"\"}} /^\\+\\+\\+ [ab]\\//{{rel=$2; sub(/^\\+\\+\\+ [ab]\\//, \"\", rel); print rel; exit}} /^--- [ab]\\//{{if (rel==\"\") {{rel=$2; sub(/^--- [ab]\\//, \"\", rel)}}}} END{{if (rel!=\"\") print rel}}' \"$patch_source\" | head -n 1)\n\
-if [[ -n \"$patch_rel\" ]]; then\n\
+while IFS= read -r patch_rel; do\n\
+  patch_rel=\"${{patch_rel%%$'\\r'}}\"\n\
+  patch_rel=\"${{patch_rel#./}}\"\n\
+  patch_rel=\"${{patch_rel#a/}}\"\n\
+  patch_rel=\"${{patch_rel#b/}}\"\n\
+  if [[ -z \"$patch_rel\" || \"$patch_rel\" == \"/dev/null\" ]]; then\n\
+    continue\n\
+  fi\n\
   while IFS= read -r hit; do\n\
     candidate=\"${{hit%/$patch_rel}}\"\n\
     if [[ \"$candidate\" == \"$hit\" ]]; then\n\
@@ -7344,15 +7357,32 @@ if [[ -n \"$patch_rel\" ]]; then\n\
       patch_dirs+=(\"$candidate\")\n\
     fi\n\
   done < <(find . -type f -path \"*/$patch_rel\" -print 2>/dev/null || true)\n\
-fi\n\
+done < <(awk '/^diff --git /{{old=$3; new=$4; sub(/^[ab]\\//, \"\", old); sub(/^[ab]\\//, \"\", new); if (old != \"/dev/null\") print old; if (new != \"/dev/null\") print new; next}} /^\\+\\+\\+ / || /^--- /{{p=$2; sub(/^[ab]\\//, \"\", p); sub(/\\r$/, \"\", p); if (p != \"/dev/null\") print p;}}' \"$patch_input\" | sed '/^$/d' | sort -u)\n\
+for maybe_dir in userApps Source_code_including_submodules source src; do\n\
+  if [[ -d \"$maybe_dir\" ]]; then\n\
+    already=0\n\
+    for seen in \"${{patch_dirs[@]}}\"; do\n\
+      if [[ \"$seen\" == \"$maybe_dir\" ]]; then\n\
+        already=1\n\
+        break\n\
+      fi\n\
+    done\n\
+    if [[ \"$already\" -eq 0 ]]; then\n\
+      patch_dirs+=(\"$maybe_dir\")\n\
+    fi\n\
+  fi\n\
+done\n\
 for patch_dir in \"${{patch_dirs[@]}}\"; do\n\
   for patch_strip in 1 0 2 3 4 5; do\n\
-    if (cd \"$patch_dir\" && patch --batch -p\"$patch_strip\" -i \"$patch_source\"); then\n\
+    if (cd \"$patch_dir\" && patch --batch -p\"$patch_strip\" -i \"$patch_input\"); then\n\
       patch_applied=1\n\
       break 2\n\
     fi\n\
   done\n\
 done\n\
+if [[ -n \"$patch_tmp\" ]]; then\n\
+  rm -f \"$patch_tmp\"\n\
+fi\n\
 if [[ \"$patch_applied\" -ne 1 ]]; then\n\
   echo \"failed to apply patch %{{SOURCE{}}} with supported strip levels (1,0,2,3,4,5) and candidate dirs: ${{patch_dirs[*]}}\" >&2\n\
   exit 1\n\
@@ -10640,7 +10670,11 @@ requirements:
         assert!(spec.contains("Source2:"));
         assert!(spec.contains("patch_dirs=(.)"));
         assert!(spec.contains("for patch_strip in 1 0 2 3 4 5; do"));
-        assert!(spec.contains("patch --batch -p\"$patch_strip\" -i \"$patch_source\""));
+        assert!(spec.contains("patch_input=\"$patch_source\""));
+        assert!(spec.contains("tr -d '\\r' < \"$patch_source\" > \"$patch_tmp\""));
+        assert!(spec.contains("patch_rel=\"${patch_rel#b/}\""));
+        assert!(spec.contains("for maybe_dir in userApps Source_code_including_submodules source src; do"));
+        assert!(spec.contains("patch --batch -p\"$patch_strip\" -i \"$patch_input\""));
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(spec.contains("retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\""));
         assert!(spec.contains("export CPU_COUNT=\"${BIOCONDA2RPM_CPU_COUNT:-1}\""));
