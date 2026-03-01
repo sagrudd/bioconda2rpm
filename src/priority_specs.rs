@@ -6229,6 +6229,9 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     if [[ \"%{{tool}}\" == \"vcf-validator\" ]]; then\n\
     if command -v dnf >/dev/null 2>&1; then dnf -y install xz-devel liblzma-devel >/dev/null 2>&1 || true; fi\n\
     if command -v microdnf >/dev/null 2>&1; then microdnf -y install xz-devel liblzma-devel >/dev/null 2>&1 || true; fi\n\
+    if [[ ! -e /usr/lib64/liblzma.so && -e /usr/lib64/liblzma.so.5 ]]; then ln -sf /usr/lib64/liblzma.so.5 /usr/lib64/liblzma.so || true; fi\n\
+    if [[ ! -e /usr/lib/liblzma.so && -e /usr/lib/liblzma.so.5 ]]; then ln -sf /usr/lib/liblzma.so.5 /usr/lib/liblzma.so || true; fi\n\
+    export LDFLAGS=\"-L/usr/lib64 -L/usr/lib ${{LDFLAGS:-}}\"\n\
     sed -i -E 's@^([[:space:]]*export[[:space:]]+CXXFLAGS=\"[^\"]*)\"@\\1 -idirafter /usr/include\"@' ./build.sh || true\n\
     perl -0pi -e 's@(^\\s*make\\s+-j[^\\n]*$)@if [[ -d . ]]; then\\n  find . -type f -name flags.make | while IFS= read -r fm; do\\n    sed -i \"s# -isystem /usr/include##g; s# -I/usr/include##g\" \"\\$fm\" || true\\n  done\\nfi\\n$1@mg' ./build.sh || true\n\
     fi\n\
@@ -12638,6 +12641,7 @@ requirements:
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"vcf-validator\" ]]; then"));
         assert!(spec.contains("dnf -y install xz-devel liblzma-devel"));
+        assert!(spec.contains("ln -sf /usr/lib64/liblzma.so.5 /usr/lib64/liblzma.so"));
         assert!(spec.contains("-idirafter /usr/include"));
         assert!(spec.contains("find . -type f -name flags.make | while IFS= read -r fm; do"));
     }
