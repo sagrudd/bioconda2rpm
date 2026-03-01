@@ -6857,7 +6857,7 @@ fn map_build_dependency(dep: &str) -> String {
         "libuuid" => "libuuid-devel".to_string(),
         "libopenssl-static" => "openssl-devel".to_string(),
         "lz4-c" => "lz4-devel".to_string(),
-        "lzo" | "lzo2" => "lzo-devel".to_string(),
+        "lzo" | "lzo2" | "liblzo2" | "liblzo2-dev" | "liblzo2-devel" => "lzo-devel".to_string(),
         "mysql-connector-c" => "mariadb-connector-c-devel".to_string(),
         "ncurses" => "ncurses-devel".to_string(),
         "ninja" => "ninja-build".to_string(),
@@ -6944,7 +6944,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "liblapack" => "lapack".to_string(),
         "mesa-libgl-devel" => "mesa-libGL".to_string(),
         "mysql-connector-c" => "mariadb-connector-c".to_string(),
-        "lzo" | "lzo2" => "lzo".to_string(),
+        "lzo" | "lzo2" | "liblzo2" | "liblzo2-dev" | "liblzo2-devel" => "lzo".to_string(),
         "qt" => "qt5-qtbase qt5-qtsvg".to_string(),
         "llvmdev" => "llvm".to_string(),
         "ninja" => "ninja-build".to_string(),
@@ -9289,6 +9289,9 @@ mod tests {
         assert_eq!(map_build_dependency("xz"), "xz-devel".to_string());
         assert_eq!(map_build_dependency("libcurl"), "libcurl-devel".to_string());
         assert_eq!(map_build_dependency("libpng"), "libpng-devel".to_string());
+        assert_eq!(map_build_dependency("liblzo2"), "lzo-devel".to_string());
+        assert_eq!(map_build_dependency("liblzo2-dev"), "lzo-devel".to_string());
+        assert_eq!(map_runtime_dependency("liblzo2"), "lzo".to_string());
         assert_eq!(
             map_build_dependency("zstd-static"),
             "libzstd-devel".to_string()
