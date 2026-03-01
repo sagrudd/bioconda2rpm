@@ -5086,11 +5086,12 @@ fi\n\
     \n\
     # Bowtie2 v2.5.x emits ENABLE_x86_64_v3 code paths that use\n\
     # __builtin_cpu_supports(\"x86-64-v3\"), which GCC 11 (EL9 baseline)\n\
-    # rejects. Strip that define and fallback to generic x86-64 tuning.\n\
+    # rejects. Strip the problematic probe/define while keeping upstream\n\
+    # target tuning flags intact (required for AVX2 object files).\n\
     if [[ \"%{{tool}}\" == \"bowtie2\" ]]; then\n\
+    sed -i 's/-DENABLE_x86_64_v3//g' ./build.sh || true\n\
     sed -i 's/-DENABLE_x86_64_v3//g' Makefile || true\n\
-    sed -i 's/__builtin_cpu_supports (\"x86-64-v3\")/0/g' bowtie_main.cpp || true\n\
-    sed -i 's/-march=x86-64-v3/-march=x86-64/g' ./build.sh || true\n\
+    sed -E -i 's/__builtin_cpu_supports[[:space:]]*\\([[:space:]]*\"x86-64-v3\"[[:space:]]*\\)/0/g' bowtie_main.cpp || true\n\
     fi\n\
     \n\
     # RNA-SeQC v2.4.2 bundles a BWA fork that hard-requires x86 SSE headers\n\
