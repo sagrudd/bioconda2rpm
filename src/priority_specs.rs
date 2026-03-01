@@ -4712,7 +4712,12 @@ fn canonicalize_meta_build_script(script: &str) -> String {
         } else {
             line.to_string()
         };
-        lines.push(ensure_local_pip_install_no_build_isolation(rewritten));
+        let rewritten = ensure_local_pip_install_no_build_isolation(rewritten);
+        if let Some(expanded) = rewrite_local_pip_pep517_line_with_fallback(&rewritten) {
+            lines.extend(expanded);
+        } else {
+            lines.push(rewritten);
+        }
     }
 
     if lines.is_empty() {
@@ -4730,6 +4735,24 @@ fn ensure_local_pip_install_no_build_isolation(line: String) -> String {
         return line;
     }
     format!("{line} --no-build-isolation")
+}
+
+fn rewrite_local_pip_pep517_line_with_fallback(line: &str) -> Option<Vec<String>> {
+    if !pip_install_targets_local_source(line) {
+        return None;
+    }
+    if !line.contains("--use-pep517") {
+        return None;
+    }
+
+    let trimmed = line.trim_start();
+    let indent = &line[..line.len() - trimmed.len()];
+    let fallback = trimmed.replace("--use-pep517", "--no-use-pep517");
+    Some(vec![
+        format!("{indent}if ! {trimmed}; then"),
+        format!("{indent}  {fallback}"),
+        format!("{indent}fi"),
+    ])
 }
 
 fn pip_install_targets_local_source(line: &str) -> bool {
@@ -4799,10 +4822,17 @@ fn harden_build_script_text(script: &str) -> String {
             rewritten_lines.extend(expanded);
         } else if let Some(rewritten) = rewrite_cargo_bundle_licenses_line(line) {
             rewritten_lines.push(rewritten);
-        } else if pip_install_targets_local_source(line) {
-            rewritten_lines.push(ensure_local_pip_install_no_build_isolation(line.to_string()));
         } else {
-            rewritten_lines.push(line.to_string());
+            let rewritten = if pip_install_targets_local_source(line) {
+                ensure_local_pip_install_no_build_isolation(line.to_string())
+            } else {
+                line.to_string()
+            };
+            if let Some(expanded) = rewrite_local_pip_pep517_line_with_fallback(&rewritten) {
+                rewritten_lines.extend(expanded);
+            } else {
+                rewritten_lines.push(rewritten);
+            }
         }
     }
 
@@ -11392,6 +11422,14 @@ requirements:
     }
 
     #[test]
+    fn synthesized_build_script_wraps_use_pep517_with_legacy_fallback() {
+        let script = "{{ PYTHON }} -m pip install --no-deps --use-pep517 . -vvv";
+        let generated = synthesize_build_sh_from_meta_script(script);
+        assert!(generated.contains("if ! $PYTHON -m pip install --no-deps --use-pep517 . -vvv --no-build-isolation; then"));
+        assert!(generated.contains("$PYTHON -m pip install --no-deps --no-use-pep517 . -vvv --no-build-isolation"));
+    }
+
+    #[test]
     fn python_payload_with_r_dependency_requires_phoreus_r_runtime() {
         let mut run_deps = BTreeSet::new();
         run_deps.insert("r-ggplot2".to_string());
@@ -11911,6 +11949,22 @@ requirements:
         let raw = "$PYTHON -m pip install . --no-deps --ignore-installed -vv\n";
         let hardened = harden_build_script_text(raw);
         assert!(hardened.contains("$PYTHON -m pip install . --no-deps --ignore-installed -vv --no-build-isolation"));
+    }
+
+    #[test]
+    fn harden_build_script_wraps_use_pep517_with_legacy_fallback() {
+        let raw = "$PYTHON -m pip install --no-deps --use-pep517 . -vvv\n";
+        let hardened = harden_build_script_text(raw);
+        assert!(
+            hardened.contains(
+                "if ! $PYTHON -m pip install --no-deps --use-pep517 . -vvv --no-build-isolation; then"
+            )
+        );
+        assert!(
+            hardened.contains(
+                "$PYTHON -m pip install --no-deps --no-use-pep517 . -vvv --no-build-isolation"
+            )
+        );
     }
 
     #[test]
