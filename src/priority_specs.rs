@@ -6083,6 +6083,27 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
         echo \"bioconda2rpm: bootstrapped $(cmake --version | head -n 1) for bandage-ng\" >&2\n\
       fi\n\
     fi\n\
+    if [[ -z \"${{Qt6_DIR:-}}\" ]]; then\n\
+      for qt6_cmake_dir in /usr/lib64/cmake/Qt6 /usr/lib/cmake/Qt6; do\n\
+        if [[ -f \"$qt6_cmake_dir/Qt6Config.cmake\" ]]; then\n\
+          export Qt6_DIR=\"$qt6_cmake_dir\"\n\
+          break\n\
+        fi\n\
+      done\n\
+    fi\n\
+    if [[ -z \"${{Qt6_DIR:-}}\" ]]; then\n\
+      qt6_cfg=$(find /usr/local/phoreus -maxdepth 8 -type f -name Qt6Config.cmake 2>/dev/null | sort | tail -n 1 || true)\n\
+      if [[ -n \"$qt6_cfg\" ]]; then\n\
+        export Qt6_DIR=\"$(dirname \"$qt6_cfg\")\"\n\
+      fi\n\
+    fi\n\
+    if [[ -n \"${{Qt6_DIR:-}}\" ]]; then\n\
+      qt6_prefix=\"$(cd \"$Qt6_DIR/../../..\" 2>/dev/null && pwd -P || true)\"\n\
+      if [[ -n \"$qt6_prefix\" ]]; then\n\
+        export CMAKE_PREFIX_PATH=\"$qt6_prefix${{CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}}\"\n\
+      fi\n\
+      echo \"bioconda2rpm: using Qt6 from $Qt6_DIR\" >&2\n\
+    fi\n\
     fi\n\
     \n\
     # Kallisto enables zlib-ng in conda's merged-prefix model. In EL9 RPM\n\
@@ -6169,6 +6190,14 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     export CPPFLAGS=\"-include linux/types.h ${{CPPFLAGS:-}}\"\n\
     export CFLAGS=\"-include linux/types.h ${{CFLAGS:-}}\"\n\
     export CXXFLAGS=\"-include linux/types.h ${{CXXFLAGS:-}}\"\n\
+    fi\n\
+    \n\
+    # Clair3's build.py imports cffi directly with the Phoreus interpreter.\n\
+    # Ensure cffi is installed in that interpreter before invoking make.\n\
+    if [[ \"%{{tool}}\" == \"clair3\" ]]; then\n\
+    if ! \"$PYTHON\" -c 'import cffi' >/dev/null 2>&1; then\n\
+      \"$PYTHON\" -m pip install --no-cache-dir cffi\n\
+    fi\n\
     fi\n\
     \n\
     # Diamond's Bioconda script hard-pins static zstd under PREFIX, but RPM\n\
@@ -6571,17 +6600,17 @@ fi\n\
       if command -v microdnf >/dev/null 2>&1; then microdnf -y install cmake >/dev/null 2>&1 || true; fi\n\
     fi\n\
     pushd \"$third_party_root\" >/dev/null\n\
-    rm -rf capnproto-c++-1.0.2\n\
+    rm -rf capnproto-c++-1.0.2 capnproto-1.0.2\n\
     if command -v curl >/dev/null 2>&1; then\n\
-      curl -L --fail --output capnproto-c++-1.0.2.tar.gz https://github.com/capnproto/capnproto/releases/download/v1.0.2/capnproto-c++-1.0.2.tar.gz\n\
+      curl -L --fail --output capnproto-1.0.2.tar.gz https://github.com/capnproto/capnproto/archive/refs/tags/v1.0.2.tar.gz\n\
     elif command -v wget >/dev/null 2>&1; then\n\
-      wget -O capnproto-c++-1.0.2.tar.gz https://github.com/capnproto/capnproto/releases/download/v1.0.2/capnproto-c++-1.0.2.tar.gz\n\
+      wget -O capnproto-1.0.2.tar.gz https://github.com/capnproto/capnproto/archive/refs/tags/v1.0.2.tar.gz\n\
     else\n\
       echo \"missing curl/wget for capnproto bootstrap\" >&2\n\
       exit 44\n\
     fi\n\
-    tar -xf capnproto-c++-1.0.2.tar.gz\n\
-    cd capnproto-c++-1.0.2/c++\n\
+    tar -xf capnproto-1.0.2.tar.gz\n\
+    cd capnproto-1.0.2/c++\n\
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"$PREFIX\" -DCMAKE_INSTALL_LIBDIR=lib\n\
     cmake --build build -j\"${CPU_COUNT:-1}\"\n\
     cmake --install build\n\
@@ -7505,6 +7534,7 @@ fn map_build_dependency(dep: &str) -> String {
         "boost-cpp" => "boost-devel".to_string(),
         "bzip2" => "bzip2-devel".to_string(),
         "capnproto" | "capnp" => "capnproto".to_string(),
+        "cffi" => "python3-cffi".to_string(),
         "cereal" => "cereal-devel".to_string(),
         "clangdev" => "clang-devel".to_string(),
         // Bioconda often models curl + openssl split differently than EL.
@@ -7531,6 +7561,7 @@ fn map_build_dependency(dep: &str) -> String {
         "libgd" => "gd-devel".to_string(),
         "libblas" => "openblas-devel".to_string(),
         "libcblas" => "openblas-devel".to_string(),
+        "openblas" | "libopenblas" => "openblas-devel".to_string(),
         // Keep libdeflate as a Bioconda/Phoreus dependency for prefix hydration.
         "libdeflate" => "libdeflate".to_string(),
         "libdeflate-devel" => "libdeflate".to_string(),
@@ -7636,6 +7667,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "boost-cpp" => "boost".to_string(),
         "biopython" => "python3-biopython".to_string(),
         "capnproto" | "capnp" => "capnproto".to_string(),
+        "cffi" => "python3-cffi".to_string(),
         "cereal" => "cereal-devel".to_string(),
         "clangdev" => "clang".to_string(),
         "eigen" => "eigen3-devel".to_string(),
@@ -7648,6 +7680,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "jsoncpp" => "jsoncpp".to_string(),
         "libblas" => "openblas".to_string(),
         "libcblas" => "openblas".to_string(),
+        "openblas" | "libopenblas" => "openblas".to_string(),
         "libhwy" => "highway".to_string(),
         "libiconv" => "glibc".to_string(),
         "libxau" => "libXau".to_string(),
@@ -10065,6 +10098,10 @@ mod tests {
             "capnproto".to_string()
         );
         assert_eq!(
+            map_build_dependency("cffi"),
+            "python3-cffi".to_string()
+        );
+        assert_eq!(
             map_build_dependency("xerces-c"),
             "xerces-c-devel".to_string()
         );
@@ -10078,6 +10115,7 @@ mod tests {
         );
         assert_eq!(map_runtime_dependency("boost-cpp"), "boost".to_string());
         assert_eq!(map_runtime_dependency("capnproto"), "capnproto".to_string());
+        assert_eq!(map_runtime_dependency("cffi"), "python3-cffi".to_string());
         assert_eq!(map_runtime_dependency("xerces-c"), "xerces-c".to_string());
         assert_eq!(map_runtime_dependency("qt6-main"), "qt6-qtbase".to_string());
         assert_eq!(map_runtime_dependency("xorg-libx11"), "libX11".to_string());
@@ -10130,6 +10168,10 @@ mod tests {
         );
         assert_eq!(
             map_build_dependency("libcblas"),
+            "openblas-devel".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("libopenblas"),
             "openblas-devel".to_string()
         );
         assert_eq!(
@@ -10190,6 +10232,7 @@ mod tests {
         assert_eq!(map_runtime_dependency("ninja"), "ninja-build".to_string());
         assert_eq!(map_runtime_dependency("libzlib"), "zlib".to_string());
         assert_eq!(map_runtime_dependency("libcblas"), "openblas".to_string());
+        assert_eq!(map_runtime_dependency("libopenblas"), "openblas".to_string());
         assert_eq!(
             map_runtime_dependency("zlib-ng"),
             "zlib-ng-compat".to_string()
@@ -10445,7 +10488,8 @@ requirements:
         let script =
             render_core_c_dep_bootstrap_block(false, false, false, false, false, false, true);
         assert!(script.contains("bootstrapping capnproto into $PREFIX"));
-        assert!(script.contains("capnproto-c++-1.0.2.tar.gz"));
+        assert!(script.contains("capnproto-1.0.2.tar.gz"));
+        assert!(script.contains("archive/refs/tags/v1.0.2.tar.gz"));
         assert!(script.contains("cmake --install build"));
     }
 
@@ -11631,6 +11675,9 @@ requirements:
         assert!(spec.contains("export CXX=${CXX:-g++}"));
         assert!(spec.contains("export GCC=${GCC:-$CC}"));
         assert!(spec.contains("export GXX=${GXX:-$CXX}"));
+        assert!(spec.contains("if [[ \"%{tool}\" == \"clair3\" ]]; then"));
+        assert!(spec.contains("\"$PYTHON\" -c 'import cffi'"));
+        assert!(spec.contains("\"$PYTHON\" -m pip install --no-cache-dir cffi"));
     }
 
     #[test]
@@ -11759,6 +11806,8 @@ requirements:
         assert!(spec.contains("if [[ \"%{tool}\" == \"bandage-ng\" ]]; then"));
         assert!(spec.contains("cmake_bootstrap_ver=3.31.6"));
         assert!(spec.contains("cmake-${cmake_bootstrap_ver}-linux-x86_64.tar.gz"));
+        assert!(spec.contains("find /usr/local/phoreus -maxdepth 8 -type f -name Qt6Config.cmake"));
+        assert!(spec.contains("export Qt6_DIR=\"$(dirname \"$qt6_cfg\")\""));
         assert!(spec.contains("BuildRequires:  qt6-qtbase-devel"));
         assert!(spec.contains("BuildRequires:  libX11-devel"));
         assert!(spec.contains("Requires:  qt6-qtbase"));
