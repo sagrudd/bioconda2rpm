@@ -138,6 +138,8 @@ Regression-only options:
 - Dependencies are resolved by default.
 - Multiple requested roots are supported in one build invocation.
 - Multi-package queue mode enforces dependency gates: a package is dispatched only after its Bioconda dependency nodes succeed.
+- Workspace-lock ownership is authoritative: secondary `build` invocations submit package names into the active session queue instead of failing lock-acquisition.
+- Forwarded packages inherit the authoritative session force-rebuild policy (`--force`) and do not override other scheduler/container settings.
 - Recipes with `outputs:` are expanded into discrete package outputs.
 - Highest versioned recipe subdirectory is selected when present.
 - Unresolved dependencies quarantine by default.

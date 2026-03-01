@@ -39,6 +39,8 @@ FR-003 Dependency closure control
 - Dependency policy shall be configurable.
 - Default dependency policy shall include `build + host + run`.
 - Multi-root queue execution shall enforce dependency gates: a package job shall start only after required Bioconda dependency jobs complete successfully.
+- While a build session holds the workspace lock, concurrent `build` invocations on the same `--topdir` shall forward package names into the authoritative queue instead of failing lock acquisition.
+- Forwarded package requests shall inherit the authoritative build session policy for `--force` behavior.
 
 FR-004 Recipe rendering
 - `meta.yaml` rendering shall use full Jinja support.

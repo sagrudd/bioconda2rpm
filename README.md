@@ -57,6 +57,10 @@ Behavior:
 - Build concurrency is policy-driven:
   - `--parallel-policy adaptive` (default): parallel first attempt, automatic serial retry, learned stability cache
   - `--parallel-policy serial`: force single-core builds
+- Workspace lock is authoritative for one active build session per `--topdir`:
+  - additional `bioconda2rpm build ...` invocations from the same host/user are forwarded to the active session queue
+  - only package names are submitted from secondary processes
+  - if the authoritative session was started with `--force`, forwarded packages are built under that same force policy
 
 Defaults when omitted:
 - `--topdir` -> `~/bioconda2rpm`

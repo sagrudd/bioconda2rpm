@@ -44,23 +44,24 @@ fn main() -> ExitCode {
             if progress_ui.is_none() {
                 println!("{}", args.execution_summary());
             }
-            let requested_packages = if args.packages.is_empty() {
-                vec![format!(
-                    "packages-file:{}",
-                    args.packages_file
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "unknown".to_string())
-                )]
-            } else {
-                args.packages.clone()
+            let requested_packages = match priority_specs::collect_requested_build_packages(&args) {
+                Ok(packages) => packages,
+                Err(err) => {
+                    priority_specs::clear_progress_sink();
+                    if let Some(ui) = progress_ui.take() {
+                        ui.finish(format!("build failed: package selection error: {err}"));
+                    }
+                    eprintln!("failed to determine requested packages: {err:#}");
+                    return ExitCode::FAILURE;
+                }
             };
-            let _build_session = match build_lock::BuildSessionGuard::acquire(
+            let _build_session = match build_lock::BuildSessionGuard::acquire_or_forward_build(
                 &topdir,
                 &args.effective_target_id(),
                 &requested_packages,
+                args.force,
             ) {
-                Ok(guard) => {
+                Ok(build_lock::BuildAcquireOutcome::Owner(guard)) => {
                     priority_specs::log_external_progress(format!(
                         "phase=workspace-lock status=acquired topdir={} target_id={} packages={}",
                         topdir.display(),
@@ -68,6 +69,31 @@ fn main() -> ExitCode {
                         requested_packages.join(",")
                     ));
                     guard
+                }
+                Ok(build_lock::BuildAcquireOutcome::Forwarded(forwarded)) => {
+                    priority_specs::log_external_progress(format!(
+                        "phase=workspace-lock status=forwarded owner_pid={} target_id={} owner_force={} packages={}",
+                        forwarded.owner_pid,
+                        forwarded.owner_target_id,
+                        forwarded.owner_force_rebuild,
+                        forwarded.queued_packages.join(",")
+                    ));
+                    priority_specs::clear_progress_sink();
+                    if let Some(ui) = progress_ui.take() {
+                        ui.finish(format!(
+                            "request forwarded to active build session (owner pid={}, packages={})",
+                            forwarded.owner_pid,
+                            forwarded.queued_packages.join(",")
+                        ));
+                    }
+                    println!(
+                        "forwarded build request to active session owner_pid={} target_id={} owner_force={} packages={}",
+                        forwarded.owner_pid,
+                        forwarded.owner_target_id,
+                        forwarded.owner_force_rebuild,
+                        forwarded.queued_packages.join(",")
+                    );
+                    return ExitCode::SUCCESS;
                 }
                 Err(err) => {
                     priority_specs::clear_progress_sink();
@@ -176,6 +202,8 @@ fn main() -> ExitCode {
                     "generate-priority-specs:{}",
                     args.tools_csv.to_string_lossy()
                 )],
+                build_lock::BuildSessionKind::GeneratePrioritySpecs,
+                false,
             ) {
                 Ok(guard) => guard,
                 Err(err) => {
@@ -238,6 +266,8 @@ fn main() -> ExitCode {
                 &topdir,
                 &args.effective_target_id(),
                 &[format!("regression:{:?}", args.mode)],
+                build_lock::BuildSessionKind::Regression,
+                false,
             ) {
                 Ok(guard) => guard,
                 Err(err) => {

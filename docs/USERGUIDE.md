@@ -222,6 +222,9 @@ Per `build <tool>` run:
    - dependency gate enforced per node
    - a node builds only after all upstream Bioconda dependency nodes succeed
    - blocked descendants are quarantined/skipped according to missing-dependency policy
+   - if another local `bioconda2rpm build ...` process starts while this run owns the workspace lock, that secondary request is forwarded into this queue as additional root package(s)
+   - forwarded requests contribute package names only; queue/scheduler/container configuration remains authoritative from the owning process
+   - when the owning process is running with `--force`, forwarded packages are rebuilt under the same force policy
 5. For each package:
    - Resolve/prepare sources from recipe metadata.
    - Stage and apply any `source.patches` entries during `%prep`.

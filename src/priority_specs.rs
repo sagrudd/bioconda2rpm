@@ -1,3 +1,4 @@
+use crate::build_lock;
 use crate::cli::{
     BuildArgs, BuildContainerProfile, BuildStage, ContainerMode, DependencyPolicy,
     GeneratePrioritySpecsArgs, MetadataAdapter, MissingDependencyPolicy, NamingProfile,
@@ -533,7 +534,7 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
     })
 }
 
-fn collect_requested_build_packages(args: &BuildArgs) -> Result<Vec<String>> {
+pub(crate) fn collect_requested_build_packages(args: &BuildArgs) -> Result<Vec<String>> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
 
@@ -807,6 +808,146 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn process_failed_dependency_queue(
+    fail_queue: &mut VecDeque<String>,
+    global_nodes: &BTreeMap<String, BuildPlanNode>,
+    pending_deps: &mut HashMap<String, usize>,
+    dependents: &HashMap<String, Vec<String>>,
+    finalized: &mut HashSet<String>,
+    failed_by: &mut HashMap<String, BTreeSet<String>>,
+    results: &mut Vec<ReportEntry>,
+    bad_spec_dir: &Path,
+    missing_dependency: &MissingDependencyPolicy,
+    fail_reason: &mut Option<String>,
+) {
+    while let Some(failed_key) = fail_queue.pop_front() {
+        if finalized.contains(&failed_key) {
+            continue;
+        }
+        let Some(node) = global_nodes.get(&failed_key) else {
+            finalized.insert(failed_key);
+            continue;
+        };
+        let failed_keys = failed_by.get(&failed_key).cloned().unwrap_or_default();
+        let failed_names = failed_keys
+            .iter()
+            .filter_map(|k| global_nodes.get(k).map(|n| n.name.clone()))
+            .collect::<Vec<_>>();
+        let reason = if failed_names.is_empty() {
+            format!("blocked by failed dependencies for {}", node.name)
+        } else {
+            format!(
+                "blocked by failed dependencies: {}",
+                failed_names.join(", ")
+            )
+        };
+        let status = match missing_dependency {
+            MissingDependencyPolicy::Skip => "skipped",
+            _ => "quarantined",
+        }
+        .to_string();
+        if status == "quarantined" {
+            quarantine_note(bad_spec_dir, &failed_key, &reason);
+        }
+        log_progress(format!(
+            "phase=batch-queue status={} key={} package={} reason={}",
+            status,
+            failed_key,
+            node.name,
+            compact_reason(&reason, 220)
+        ));
+        results.push(ReportEntry {
+            software: node.name.clone(),
+            priority: 0,
+            status: status.clone(),
+            reason: reason.clone(),
+            overlap_recipe: node.name.clone(),
+            overlap_reason: "dependency-closure".to_string(),
+            variant_dir: String::new(),
+            package_name: String::new(),
+            version: String::new(),
+            payload_spec_path: String::new(),
+            meta_spec_path: String::new(),
+            staged_build_sh: String::new(),
+        });
+        finalized.insert(failed_key.clone());
+        if *missing_dependency == MissingDependencyPolicy::Fail && fail_reason.is_none() {
+            *fail_reason = Some(reason.clone());
+        }
+
+        if let Some(children) = dependents.get(&failed_key) {
+            for child in children {
+                if finalized.contains(child) {
+                    continue;
+                }
+                if let Some(pending) = pending_deps.get_mut(child)
+                    && *pending > 0
+                {
+                    *pending -= 1;
+                }
+                failed_by
+                    .entry(child.clone())
+                    .or_default()
+                    .insert(failed_key.clone());
+                if pending_deps.get(child).copied().unwrap_or(0) == 0 {
+                    fail_queue.push_back(child.clone());
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn merge_dynamic_plan_nodes(
+    nodes: BTreeMap<String, BuildPlanNode>,
+    global_nodes: &mut BTreeMap<String, BuildPlanNode>,
+    pending_deps: &mut HashMap<String, usize>,
+    dependents: &mut HashMap<String, Vec<String>>,
+    failed_by: &mut HashMap<String, BTreeSet<String>>,
+    finalized: &HashSet<String>,
+    succeeded: &HashSet<String>,
+    ready: &mut VecDeque<String>,
+    fail_queue: &mut VecDeque<String>,
+) -> usize {
+    let mut inserted = 0usize;
+    for (key, node) in nodes {
+        if global_nodes.contains_key(&key) {
+            continue;
+        }
+        inserted += 1;
+        let mut pending = 0usize;
+        let mut failed_inputs = BTreeSet::new();
+        for dep in &node.direct_bioconda_deps {
+            dependents.entry(dep.clone()).or_default().push(key.clone());
+            if finalized.contains(dep) {
+                if !succeeded.contains(dep) {
+                    failed_inputs.insert(dep.clone());
+                }
+            } else {
+                pending += 1;
+            }
+        }
+        if !failed_inputs.is_empty() {
+            failed_by.insert(key.clone(), failed_inputs);
+        }
+        pending_deps.insert(key.clone(), pending);
+        global_nodes.insert(key.clone(), node);
+        if pending == 0 {
+            if failed_by
+                .get(&key)
+                .map(|deps| !deps.is_empty())
+                .unwrap_or(false)
+            {
+                fail_queue.push_back(key.clone());
+            } else {
+                ready.push_back(key.clone());
+            }
+        }
+    }
+    inserted
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_build_batch_queue(
     args: &BuildArgs,
     requested_packages: &[String],
@@ -832,6 +973,12 @@ fn run_build_batch_queue(
     let mut global_nodes: BTreeMap<String, BuildPlanNode> = BTreeMap::new();
     let mut results: Vec<ReportEntry> = Vec::new();
     let mut fail_reason: Option<String> = None;
+    let mut requested_roots = requested_packages.to_vec();
+    let mut requested_root_keys: HashSet<String> = requested_packages
+        .iter()
+        .map(|pkg| normalize_name(pkg))
+        .filter(|pkg| !pkg.is_empty())
+        .collect();
 
     for root in requested_packages {
         match collect_build_plan(
@@ -929,10 +1076,124 @@ fn run_build_batch_queue(
     let (tx, rx) = mpsc::channel::<(String, ReportEntry, Duration)>();
     let mut running = 0usize;
     let mut finalized: HashSet<String> = HashSet::new();
+    let mut succeeded: HashSet<String> = HashSet::new();
     let mut failed_by: HashMap<String, BTreeSet<String>> = HashMap::new();
+    let mut pending_fail_queue: VecDeque<String> = VecDeque::new();
     let mut build_order = Vec::new();
 
-    while !ready.is_empty() || running > 0 {
+    while !ready.is_empty() || running > 0 || !pending_fail_queue.is_empty() {
+        if !cancellation_requested() {
+            match build_lock::drain_forwarded_build_requests(
+                build_config.topdir.as_path(),
+                &build_config.target_id,
+            ) {
+                Ok(forwarded_roots) => {
+                    for root in forwarded_roots {
+                        let key = normalize_name(&root);
+                        if key.is_empty() || !requested_root_keys.insert(key.clone()) {
+                            continue;
+                        }
+                        requested_roots.push(root.clone());
+                        log_progress(format!(
+                            "phase=workspace-lock status=forwarded-request-received package={} target_id={}",
+                            root, build_config.target_id
+                        ));
+                        match collect_build_plan(
+                            &root,
+                            args.with_deps(),
+                            &args.dependency_policy,
+                            recipe_root.as_path(),
+                            recipe_dirs.as_slice(),
+                            metadata_adapter.as_ref(),
+                            &build_config.target_arch,
+                        ) {
+                            Ok((order, nodes)) => {
+                                let root_order = order
+                                    .iter()
+                                    .filter_map(|node_key| {
+                                        nodes.get(node_key).map(|node| node.name.clone())
+                                    })
+                                    .collect::<Vec<_>>();
+                                let added = merge_dynamic_plan_nodes(
+                                    nodes,
+                                    &mut global_nodes,
+                                    &mut pending_deps,
+                                    &mut dependents,
+                                    &mut failed_by,
+                                    &finalized,
+                                    &succeeded,
+                                    &mut ready,
+                                    &mut pending_fail_queue,
+                                );
+                                log_progress(format!(
+                                    "phase=dependency-plan status=completed package={} planned_nodes={} added_nodes={} order={}",
+                                    root,
+                                    root_order.len(),
+                                    added,
+                                    root_order.join("->")
+                                ));
+                            }
+                            Err(err) => {
+                                let slug = normalize_name(&root);
+                                let reason = format!(
+                                    "no overlapping recipe found in bioconda metadata for '{}': {}",
+                                    root,
+                                    compact_reason(&err.to_string(), 240)
+                                );
+                                let status = match args.missing_dependency {
+                                    MissingDependencyPolicy::Skip => "skipped",
+                                    _ => "quarantined",
+                                }
+                                .to_string();
+                                if status == "quarantined" {
+                                    quarantine_note(bad_spec_dir.as_path(), &slug, &reason);
+                                }
+                                results.push(ReportEntry {
+                                    software: root.clone(),
+                                    priority: 0,
+                                    status,
+                                    reason: reason.clone(),
+                                    overlap_recipe: root.clone(),
+                                    overlap_reason: "requested-root".to_string(),
+                                    variant_dir: String::new(),
+                                    package_name: String::new(),
+                                    version: String::new(),
+                                    payload_spec_path: String::new(),
+                                    meta_spec_path: String::new(),
+                                    staged_build_sh: String::new(),
+                                });
+                                if args.missing_dependency == MissingDependencyPolicy::Fail
+                                    && fail_reason.is_none()
+                                {
+                                    fail_reason = Some(reason);
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    log_progress(format!(
+                        "phase=workspace-lock status=forwarded-request-drain-error target_id={} detail={}",
+                        build_config.target_id,
+                        compact_reason(&err.to_string(), 220)
+                    ));
+                }
+            }
+        }
+
+        process_failed_dependency_queue(
+            &mut pending_fail_queue,
+            &global_nodes,
+            &mut pending_deps,
+            &dependents,
+            &mut finalized,
+            &mut failed_by,
+            &mut results,
+            bad_spec_dir.as_path(),
+            &args.missing_dependency,
+            &mut fail_reason,
+        );
+
         let cancelled = cancellation_requested();
         while !cancelled && running < queue_workers && !ready.is_empty() {
             let key = ready.pop_front().unwrap_or_default();
@@ -1022,6 +1283,9 @@ fn run_build_batch_queue(
         let success = entry.status == "generated"
             || entry.status == "up-to-date"
             || entry.status == "skipped";
+        if success {
+            succeeded.insert(done_key.clone());
+        }
         if !success
             && args.missing_dependency == MissingDependencyPolicy::Fail
             && fail_reason.is_none()
@@ -1061,81 +1325,18 @@ fn run_build_batch_queue(
             }
         }
 
-        while let Some(failed_key) = fail_queue.pop_front() {
-            if finalized.contains(&failed_key) {
-                continue;
-            }
-            let Some(node) = global_nodes.get(&failed_key) else {
-                finalized.insert(failed_key);
-                continue;
-            };
-            let failed_keys = failed_by.get(&failed_key).cloned().unwrap_or_default();
-            let failed_names = failed_keys
-                .iter()
-                .filter_map(|k| global_nodes.get(k).map(|n| n.name.clone()))
-                .collect::<Vec<_>>();
-            let reason = if failed_names.is_empty() {
-                format!("blocked by failed dependencies for {}", node.name)
-            } else {
-                format!(
-                    "blocked by failed dependencies: {}",
-                    failed_names.join(", ")
-                )
-            };
-            let status = match args.missing_dependency {
-                MissingDependencyPolicy::Skip => "skipped",
-                _ => "quarantined",
-            }
-            .to_string();
-            if status == "quarantined" {
-                quarantine_note(bad_spec_dir.as_path(), &failed_key, &reason);
-            }
-            log_progress(format!(
-                "phase=batch-queue status={} key={} package={} reason={}",
-                status,
-                failed_key,
-                node.name,
-                compact_reason(&reason, 220)
-            ));
-            results.push(ReportEntry {
-                software: node.name.clone(),
-                priority: 0,
-                status: status.clone(),
-                reason: reason.clone(),
-                overlap_recipe: node.name.clone(),
-                overlap_reason: "dependency-closure".to_string(),
-                variant_dir: String::new(),
-                package_name: String::new(),
-                version: String::new(),
-                payload_spec_path: String::new(),
-                meta_spec_path: String::new(),
-                staged_build_sh: String::new(),
-            });
-            finalized.insert(failed_key.clone());
-            if args.missing_dependency == MissingDependencyPolicy::Fail && fail_reason.is_none() {
-                fail_reason = Some(reason.clone());
-            }
-
-            if let Some(children) = dependents.get(&failed_key) {
-                for child in children {
-                    if finalized.contains(child) {
-                        continue;
-                    }
-                    if let Some(pending) = pending_deps.get_mut(child)
-                        && *pending > 0
-                    {
-                        *pending -= 1;
-                    }
-                    failed_by
-                        .entry(child.clone())
-                        .or_default()
-                        .insert(failed_key.clone());
-                    if pending_deps.get(child).copied().unwrap_or(0) == 0 {
-                        fail_queue.push_back(child.clone());
-                    }
-                }
-            }
-        }
+        process_failed_dependency_queue(
+            &mut fail_queue,
+            &global_nodes,
+            &mut pending_deps,
+            &dependents,
+            &mut finalized,
+            &mut failed_by,
+            &mut results,
+            bad_spec_dir.as_path(),
+            &args.missing_dependency,
+            &mut fail_reason,
+        );
     }
 
     if finalized.len() < global_nodes.len() {
@@ -1177,12 +1378,12 @@ fn run_build_batch_queue(
         }
     }
 
-    let report_stem = if requested_packages.len() == 1 {
-        normalize_name(&requested_packages[0])
+    let report_stem = if requested_roots.len() == 1 {
+        normalize_name(&requested_roots[0])
     } else {
         format!(
             "batch_{}_{}",
-            requested_packages.len(),
+            requested_roots.len(),
             Utc::now().format("%Y%m%d%H%M%S")
         )
     };
@@ -1221,7 +1422,7 @@ fn run_build_batch_queue(
 
     log_progress(format!(
         "phase=batch-queue status=completed requested_roots={} node_results={} elapsed={}",
-        requested_packages.len(),
+        requested_roots.len(),
         results.len(),
         format_elapsed(build_started.elapsed())
     ));
@@ -1997,10 +2198,7 @@ fn summarize_conda_adapter_issue(
 ) -> String {
     let stderr_compact = compact_reason(stderr, 300);
     if stderr.contains("No module named 'conda_build'") {
-        return format!(
-            "status={} detail=conda_build_module_not_installed",
-            status
-        );
+        return format!("status={} detail=conda_build_module_not_installed", status);
     }
     if stderr.contains("command not found") {
         return format!("status={} detail=conda_tooling_not_installed", status);
@@ -3967,10 +4165,10 @@ fn should_keep_rpm_dependency_for_r(dep: &str) -> bool {
     if is_r_base_dependency_name(&normalized) {
         return true;
     }
-    // Keep all non-base R/Bioconductor deps as hard RPM dependencies so the
-    // DAG scheduler can build/install them before payload build. The R restore
-    // script remains as fallback, not as primary dependency resolution.
-    true
+    // Do not hard-require non-base R/Bioconductor dependency RPMs at rpmbuild
+    // time; resolve via DAG/local artifacts when present and R restore fallback
+    // otherwise. This avoids false negatives when EL repos don't provide r-*.
+    false
 }
 
 fn should_keep_rpm_dependency_for_perl(dep: &str) -> bool {
@@ -4577,15 +4775,22 @@ fn render_payload_spec(
         Vec::new()
     };
     let needs_isal = recipe_dep_mentions(parsed, "isa-l");
-    let needs_libdeflate = recipe_dep_mentions(parsed, "libdeflate");
+    let needs_libdeflate = recipe_dep_mentions(parsed, "libdeflate")
+        || recipe_dep_mentions(parsed, "libdeflate-devel");
     let needs_libhwy = recipe_dep_mentions(parsed, "libhwy");
+    let needs_jsoncpp =
+        recipe_dep_mentions(parsed, "jsoncpp") || recipe_dep_mentions(parsed, "jsoncpp-devel");
     let python_venv_setup = render_python_venv_setup_block(python_recipe, &python_requirements);
     let r_runtime_setup =
         render_r_runtime_setup_block(r_runtime_required, r_project_recipe, &r_cran_requirements);
     let rust_runtime_setup = render_rust_runtime_setup_block(rust_runtime_required);
     let nim_runtime_setup = render_nim_runtime_setup_block(nim_runtime_required);
-    let core_c_dep_bootstrap =
-        render_core_c_dep_bootstrap_block(needs_isal, needs_libdeflate, needs_libhwy);
+    let core_c_dep_bootstrap = render_core_c_dep_bootstrap_block(
+        needs_isal,
+        needs_libdeflate,
+        needs_libhwy,
+        needs_jsoncpp,
+    );
     let module_lua_env = render_module_lua_env_block(
         python_recipe,
         r_runtime_required,
@@ -4684,6 +4889,7 @@ mkdir -p %{bioconda_source_subdir}\n"
         build_requires.insert("libtiff-devel".to_string());
         build_requires.insert("libwebp-devel".to_string());
         build_requires.insert("zlib-devel".to_string());
+        build_requires.insert("hdf5-devel".to_string());
     }
     if rust_runtime_required {
         build_requires.insert(PHOREUS_RUST_PACKAGE.to_string());
@@ -4715,7 +4921,7 @@ mkdir -p %{bioconda_source_subdir}\n"
             .iter()
             .filter(|dep| !is_conda_only_dependency(dep))
             .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
-            .filter(|dep| !r_project_recipe || should_keep_rpm_dependency_for_r(dep))
+            .filter(|dep| !r_runtime_required || should_keep_rpm_dependency_for_r(dep))
             .map(|d| map_build_dependency(d))
             .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep)),
     );
@@ -4725,7 +4931,7 @@ mkdir -p %{bioconda_source_subdir}\n"
             .iter()
             .filter(|dep| !is_conda_only_dependency(dep))
             .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
-            .filter(|dep| !r_project_recipe || should_keep_rpm_dependency_for_r(dep))
+            .filter(|dep| !r_runtime_required || should_keep_rpm_dependency_for_r(dep))
             .map(|d| map_build_dependency(d))
             .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep)),
     );
@@ -4738,7 +4944,7 @@ mkdir -p %{bioconda_source_subdir}\n"
                 .filter(|dep| {
                     !is_python_ecosystem_dependency_name(&normalize_dependency_token(dep))
                 })
-                .filter(|dep| !r_project_recipe || should_keep_rpm_dependency_for_r(dep))
+                .filter(|dep| !r_runtime_required || should_keep_rpm_dependency_for_r(dep))
                 .map(|d| map_build_dependency(d)),
         );
     }
@@ -4784,7 +4990,7 @@ mkdir -p %{bioconda_source_subdir}\n"
                 .run_deps
                 .iter()
                 .filter(|dep| !is_conda_only_dependency(dep))
-                .filter(|dep| !r_project_recipe || should_keep_rpm_dependency_for_r(dep))
+                .filter(|dep| !r_runtime_required || should_keep_rpm_dependency_for_r(dep))
                 .map(|d| map_runtime_dependency(d))
                 .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep)),
         );
@@ -5193,6 +5399,14 @@ fi\n\
     export LDFLAGS=\"-L$hts_prefix/lib ${{LDFLAGS:-}}\"\n\
     export PKG_CONFIG_PATH=\"$hts_prefix/lib/pkgconfig${{PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}}\"\n\
     fi\n\
+    \n\
+    # Minimap2 build.sh may pass a quoted empty ARCH_OPTS token to make,\n\
+    # which GNU make treats as an invalid empty filename on EL platforms.\n\
+    # Normalize to shell expansion that vanishes when ARCH_OPTS is unset.\n\
+    if [[ \"%{{tool}}\" == \"minimap2\" ]]; then\n\
+    sed -i 's|\"\\$ARCH_OPTS\"|${{ARCH_OPTS:+$ARCH_OPTS}}|g' ./build.sh || true\n\
+    sed -i 's|\"${{ARCH_OPTS}}\"|${{ARCH_OPTS:+$ARCH_OPTS}}|g' ./build.sh || true\n\
+    fi\n\
     # Ensure CURSES_LIB is passed as an environment assignment to configure.\n\
     sed -i 's|^\\./configure |CURSES_LIB=\"$CURSES_LIB\" ./configure |' ./build.sh || true\n\
     # Normalize Bioconda's conda-oriented wide-curses flags for EL9 toolchains.\n\
@@ -5471,8 +5685,9 @@ fn render_core_c_dep_bootstrap_block(
     needs_isal: bool,
     needs_libdeflate: bool,
     needs_libhwy: bool,
+    needs_jsoncpp: bool,
 ) -> String {
-    if !needs_isal && !needs_libdeflate && !needs_libhwy {
+    if !needs_isal && !needs_libdeflate && !needs_libhwy && !needs_jsoncpp {
         return String::new();
     }
 
@@ -5572,6 +5787,36 @@ fi\n\
   cmake -S highway-1.2.0 -B highway-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"$PREFIX\" -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=ON -DHWY_ENABLE_TESTS=OFF\n\
   cmake --build highway-build -j\"${CPU_COUNT:-1}\"\n\
   cmake --install highway-build\n\
+  popd >/dev/null\n\
+fi\n\
+",
+        );
+    }
+
+    if needs_jsoncpp {
+        out.push_str(
+            "if [[ ! -e \"$PREFIX/include/json/json.h\" || ( ! -e \"$PREFIX/lib/libjsoncpp.so\" && ! -e \"$PREFIX/lib/libjsoncpp.a\" && ! -e \"$PREFIX/lib64/libjsoncpp.so\" ) ]]; then\n\
+  echo \"bioconda2rpm: bootstrapping jsoncpp into $PREFIX\" >&2\n\
+  if ! command -v cmake >/dev/null 2>&1; then\n\
+    if command -v dnf >/dev/null 2>&1; then dnf -y install cmake >/dev/null 2>&1 || true; fi\n\
+    if command -v microdnf >/dev/null 2>&1; then microdnf -y install cmake >/dev/null 2>&1 || true; fi\n\
+  fi\n\
+  pushd \"$third_party_root\" >/dev/null\n\
+  rm -rf jsoncpp-1.9.6\n\
+  if command -v curl >/dev/null 2>&1; then\n\
+    curl -L --fail --output jsoncpp-1.9.6.tar.gz https://github.com/open-source-parsers/jsoncpp/archive/refs/tags/1.9.6.tar.gz\n\
+  elif command -v wget >/dev/null 2>&1; then\n\
+    wget -O jsoncpp-1.9.6.tar.gz https://github.com/open-source-parsers/jsoncpp/archive/refs/tags/1.9.6.tar.gz\n\
+  else\n\
+    echo \"missing curl/wget for jsoncpp bootstrap\" >&2\n\
+    exit 44\n\
+  fi\n\
+  tar -xf jsoncpp-1.9.6.tar.gz\n\
+  rm -rf jsoncpp-build\n\
+  mkdir -p jsoncpp-build\n\
+  cmake -S jsoncpp-1.9.6 -B jsoncpp-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"$PREFIX\" -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=ON -DJSONCPP_WITH_TESTS=OFF -DJSONCPP_WITH_POST_BUILD_UNITTEST=OFF -DJSONCPP_WITH_PKGCONFIG_SUPPORT=ON\n\
+  cmake --build jsoncpp-build -j\"${CPU_COUNT:-1}\"\n\
+  cmake --install jsoncpp-build\n\
   popd >/dev/null\n\
 fi\n\
 ",
@@ -5874,7 +6119,7 @@ install_from_cran_archive <- function(pkg, lib) {{\n\
   if (!length(files)) return(FALSE)\n\
   tarball <- tail(sort(files), 1)\n\
   ok <- tryCatch({{\n\
-    install.packages(paste0(archive_url, tarball), repos = NULL, type = \"source\", lib = lib)\n\
+    install.packages(paste0(archive_url, tarball), repos = c(CRAN = \"https://cloud.r-project.org\"), dependencies = TRUE, type = \"source\", lib = lib)\n\
     TRUE\n\
   }}, error = function(e) FALSE)\n\
   ok\n\
@@ -6328,12 +6573,14 @@ fn map_build_dependency(dep: &str) -> String {
         // into the Phoreus prefix expected by fastp-style build scripts.
         "isa-l" => "isa-l".to_string(),
         "jansson" => "jansson-devel".to_string(),
-        "jsoncpp" => "jsoncpp-devel".to_string(),
+        "jsoncpp" => "jsoncpp".to_string(),
+        "jsoncpp-devel" => "jsoncpp".to_string(),
         "libcurl" => "libcurl-devel".to_string(),
         "libgd" => "gd-devel".to_string(),
         "libblas" => "openblas-devel".to_string(),
         // Keep libdeflate as a Bioconda/Phoreus dependency for prefix hydration.
         "libdeflate" => "libdeflate".to_string(),
+        "libdeflate-devel" => "libdeflate".to_string(),
         "liblzma-devel" => "xz-devel".to_string(),
         "liblapack" => "lapack-devel".to_string(),
         "libhwy" => "highway-devel".to_string(),
@@ -6348,6 +6595,7 @@ fn map_build_dependency(dep: &str) -> String {
         "libuuid" => "libuuid-devel".to_string(),
         "libopenssl-static" => "openssl-devel".to_string(),
         "lz4-c" => "lz4-devel".to_string(),
+        "lzo" | "lzo2" => "lzo-devel".to_string(),
         "mysql-connector-c" => "mariadb-connector-c-devel".to_string(),
         "ncurses" => "ncurses-devel".to_string(),
         "ninja" => "ninja-build".to_string(),
@@ -6429,10 +6677,12 @@ fn map_runtime_dependency(dep: &str) -> String {
         "libxfixes" => "libXfixes".to_string(),
         "libxxf86vm" => "libXxf86vm".to_string(),
         "libgd" => "gd".to_string(),
+        "libdeflate-devel" => "libdeflate".to_string(),
         "liblzma-devel" => "xz".to_string(),
         "liblapack" => "lapack".to_string(),
         "mesa-libgl-devel" => "mesa-libGL".to_string(),
         "mysql-connector-c" => "mariadb-connector-c".to_string(),
+        "lzo" | "lzo2" => "lzo".to_string(),
         "qt" => "qt5-qtbase qt5-qtsvg".to_string(),
         "llvmdev" => "llvm".to_string(),
         "ninja" => "ninja-build".to_string(),
@@ -7105,10 +7355,7 @@ fn map_perl_core_dependency(dep: &str) -> Option<String> {
 
 fn map_perl_provider_dependency(dep: &str) -> Option<String> {
     let normalized = normalize_dependency_token(dep);
-    let module = normalized
-        .strip_prefix("perl(")?
-        .strip_suffix(')')?
-        .trim();
+    let module = normalized.strip_prefix("perl(")?.strip_suffix(')')?.trim();
     if module.is_empty() {
         return None;
     }
@@ -8696,10 +8943,7 @@ mod tests {
             map_runtime_dependency("biopython"),
             "python3-biopython".to_string()
         );
-        assert_eq!(
-            map_build_dependency("libdeflate"),
-            "libdeflate".to_string()
-        );
+        assert_eq!(map_build_dependency("libdeflate"), "libdeflate".to_string());
         assert_eq!(
             map_build_dependency("libopenssl-static"),
             "openssl-devel".to_string()
@@ -8756,7 +9000,7 @@ mod tests {
             map_build_dependency("qt"),
             "qt5-qtbase-devel qt5-qtsvg-devel".to_string()
         );
-        assert_eq!(map_build_dependency("jsoncpp"), "jsoncpp-devel".to_string());
+        assert_eq!(map_build_dependency("jsoncpp"), "jsoncpp".to_string());
         assert_eq!(
             map_build_dependency("font-ttf-dejavu-sans-mono"),
             "dejavu-sans-mono-fonts".to_string()
@@ -9298,7 +9542,7 @@ requirements:
     }
 
     #[test]
-    fn r_project_payload_keeps_cran_rpm_dependencies_and_phoreus_r_runtime() {
+    fn r_project_payload_uses_phoreus_r_runtime_without_hard_cran_rpm_edges() {
         let parsed = ParsedMeta {
             package_name: "r-restfulr".to_string(),
             version: "0.0.16".to_string(),
@@ -9343,16 +9587,16 @@ requirements:
         );
         assert!(spec.contains(&format!("BuildRequires:  {}", PHOREUS_R_PACKAGE)));
         assert!(spec.contains(&format!("Requires:  {}", PHOREUS_R_PACKAGE)));
-        assert!(spec.contains("BuildRequires:  r-rcurl"));
-        assert!(spec.contains("BuildRequires:  r-yaml"));
-        assert!(spec.contains("Requires:  r-rcurl"));
-        assert!(spec.contains("Requires:  r-rjson"));
-        assert!(spec.contains("Requires:  r-xml"));
-        assert!(spec.contains("Requires:  r-yaml"));
+        assert!(!spec.contains("BuildRequires:  r-rcurl"));
+        assert!(!spec.contains("BuildRequires:  r-yaml"));
+        assert!(!spec.contains("Requires:  r-rcurl"));
+        assert!(!spec.contains("Requires:  r-rjson"));
+        assert!(!spec.contains("Requires:  r-xml"));
+        assert!(!spec.contains("Requires:  r-yaml"));
     }
 
     #[test]
-    fn r_project_payload_keeps_bioconductor_rpm_dependencies() {
+    fn r_project_payload_uses_phoreus_r_runtime_without_hard_bioconductor_rpm_edges() {
         let parsed = ParsedMeta {
             package_name: "bioconductor-rhtslib".to_string(),
             version: "3.2.0".to_string(),
@@ -9385,8 +9629,8 @@ requirements:
             false,
             false,
         );
-        assert!(spec.contains("BuildRequires:  bioconductor-zlibbioc"));
-        assert!(spec.contains("Requires:  bioconductor-zlibbioc"));
+        assert!(!spec.contains("BuildRequires:  bioconductor-zlibbioc"));
+        assert!(!spec.contains("Requires:  bioconductor-zlibbioc"));
     }
 
     #[test]

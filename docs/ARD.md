@@ -63,6 +63,9 @@ The product is structured as layered components:
   - each queued node represents a package payload/meta build unit
   - worker parallelism is bounded by queue worker count
   - node dispatch waits for successful completion of dependency nodes
+  - one authoritative process owns a workspace lock for each `--topdir`
+  - secondary local `build` invocations submit package names into the authoritative queue through a lock-coordinated request file
+  - forwarded package requests inherit authoritative force-rebuild policy
 - For generated priority specs, execution is strictly ordered per spec as:
   - SPEC generation
   - SRPM build (`rpmbuild -bs`) in container
