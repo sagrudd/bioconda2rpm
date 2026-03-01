@@ -4762,6 +4762,14 @@ fn pip_install_targets_local_source(line: &str) -> bool {
     let Some(install_idx) = tokens.iter().position(|t| *t == "install") else {
         return false;
     };
+    if tokens[..install_idx].iter().any(|t| {
+        matches!(
+            *t,
+            "if" | "then" | "fi" | "for" | "while" | "until" | "do" | "done" | "case" | "esac"
+        )
+    }) {
+        return false;
+    }
     if !tokens[..install_idx]
         .iter()
         .any(|t| matches!(*t, "pip" | "pip3" | "$PIP"))
@@ -12098,6 +12106,19 @@ requirements:
                 "$PYTHON -m pip install --no-deps --no-use-pep517 . -vvv --no-build-isolation"
             )
         );
+    }
+
+    #[test]
+    fn harden_build_script_does_not_double_wrap_existing_pep517_fallback_if_blocks() {
+        let raw = "\
+if ! $PYTHON -m pip install --no-deps --use-pep517 . -vvv --no-build-isolation; then
+  $PYTHON -m pip install --no-deps --no-use-pep517 . -vvv --no-build-isolation
+fi
+";
+        let hardened = harden_build_script_text(raw);
+        assert_eq!(hardened.matches("if ! ").count(), 1);
+        assert_eq!(hardened.matches("fi").count(), 1);
+        assert!(!hardened.contains("if ! if !"));
     }
 
     #[test]
