@@ -6414,6 +6414,9 @@ EOF\n\
     perl -0pi -e 's@(^\\s*chmod\\s+u\\+w\\s+.*bdftogd\\b.*)$@[ -e \"$PREFIX/bin/bdftogd\" ] && $1 || true@mg' ./build.sh || true\n\
     fi\n\
     if [[ \"%{{tool}}\" == \"perl-bio-samtools\" ]]; then\n\
+    # Source unpack creates a compatibility top-level symlink for single-root\n\
+    # archives; Bio::DB::Sam's File::Find traversal treats this as recursion.\n\
+    find . -maxdepth 1 -type l -name 'Bio-SamTools-*' -delete || true\n\
     # Bio::DB::Sam expects legacy samtools headers (bam.h) and static libbam.a.\n\
     # Modern htslib/samtools builds no longer provide this layout, so bootstrap\n\
     # samtools 0.1.19 into PREFIX when missing.\n\
@@ -13495,6 +13498,7 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"perl-bio-samtools\" ]]; then"));
+        assert!(spec.contains("find . -maxdepth 1 -type l -name 'Bio-SamTools-*' -delete || true"));
         assert!(spec.contains("dnf -y install ncurses-devel"));
         assert!(spec.contains("sam_legacy_ver=0.1.19"));
         assert!(spec.contains("downloads.sourceforge.net/project/samtools/samtools/${sam_legacy_ver}/samtools-${sam_legacy_ver}.tar.bz2"));
