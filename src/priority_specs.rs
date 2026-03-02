@@ -6187,6 +6187,9 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     export PERL_LOCAL_LIB_ROOT=\"$PREFIX${{PERL_LOCAL_LIB_ROOT:+:$PERL_LOCAL_LIB_ROOT}}\"\n\
     export PERL_MB_OPT=\"--install_base $PREFIX\"\n\
     export PERL_MM_OPT=\"INSTALL_BASE=$PREFIX\"\n\
+    mkdir -p \"$PREFIX/include\" \"$PREFIX/lib\" || true\n\
+    if [[ -d /usr/include/libxml2 ]]; then ln -snf /usr/include/libxml2 \"$PREFIX/include/libxml2\"; fi\n\
+    sed -i 's/ -liconv -licui18n -licuuc -licudata//g' ./build.sh || true\n\
     if [[ -f Makefile.PL ]]; then\n\
       perl -0pi -e 's@^use Alien::Base::Wrapper qw\\( Alien::Libxml2 \\);\\n@BEGIN {{ eval {{ require Alien::Base::Wrapper; Alien::Base::Wrapper->import(qw(Alien::Libxml2)); 1 }} or do {{ package Alien::Base::Wrapper; sub mm_args {{ return (); }} 1; }}; }}\\n@m' Makefile.PL || true\n\
     fi\n\
@@ -12762,6 +12765,8 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"perl-xml-libxml\" ]]; then"));
+        assert!(spec.contains("ln -snf /usr/include/libxml2 \"$PREFIX/include/libxml2\""));
+        assert!(spec.contains("sed -i 's/ -liconv -licui18n -licuuc -licudata//g' ./build.sh"));
         assert!(spec.contains("perl -MAlien::Base::Wrapper -e1"));
         assert!(spec.contains("perl -MAlien::Libxml2 -e1"));
         assert!(spec.contains("perl -MXML::SAX -e1"));
