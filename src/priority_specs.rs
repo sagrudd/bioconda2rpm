@@ -6300,6 +6300,8 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     if [[ \"%{{tool}}\" == \"vcflib\" ]]; then\n\
     sed -i 's|-DZIG=ON|-DZIG=OFF|g' ./build.sh || true\n\
     export CMAKE_ARGS=\"${{CMAKE_ARGS:-}} -DZIG=OFF\"\n\
+    unset VERSION || true\n\
+    export CFLAGS=\"-DHTSCODECS_VERSION_TEXT=\\\"unknown\\\" ${{CFLAGS:-}}\"\n\
     hts_prefix=$(find /usr/local/phoreus/htslib -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1 || true)\n\
     tabixpp_prefix=$(find /usr/local/phoreus/tabixpp -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1 || true)\n\
     if [[ -n \"$hts_prefix\" ]]; then\n\
@@ -12816,6 +12818,47 @@ requirements:
         assert!(spec.contains("ln -sf /usr/lib64/liblzma.so.5 /usr/lib64/liblzma.so"));
         assert!(spec.contains("-idirafter /usr/include"));
         assert!(spec.contains("find . -type f -name flags.make | while IFS= read -r fm; do"));
+    }
+
+    #[test]
+    fn vcflib_spec_disables_zig_and_sets_htscodecs_version_fallback() {
+        let parsed = ParsedMeta {
+            package_name: "vcflib".to_string(),
+            version: "1.0.14".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/vcflib.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/vcflib".to_string(),
+            license: "MIT".to_string(),
+            summary: "vcflib".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("cmake -S . -B build -DZIG=ON".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["cmake".to_string()],
+            host_dep_specs_raw: vec!["htslib".to_string(), "tabixpp".to_string()],
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::from(["cmake".to_string()]),
+            host_deps: BTreeSet::from(["htslib".to_string(), "tabixpp".to_string()]),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "vcflib",
+            &parsed,
+            "bioconda-vcflib-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"vcflib\" ]]; then"));
+        assert!(spec.contains("sed -i 's|-DZIG=ON|-DZIG=OFF|g' ./build.sh || true"));
+        assert!(spec.contains("unset VERSION || true"));
+        assert!(spec.contains("export CFLAGS=\"-DHTSCODECS_VERSION_TEXT=\\\"unknown\\\" ${CFLAGS:-}\""));
     }
 
     #[test]
