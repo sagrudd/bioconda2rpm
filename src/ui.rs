@@ -8,7 +8,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Wrap};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -451,24 +451,11 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
     // Table has: top border + header + bottom border.
     let visible_capacity = left[0].height.saturating_sub(3) as usize;
     let visible_capacity = visible_capacity.max(1);
-    let is_completed = |status: &str| matches!(status, "generated" | "up-to-date" | "skipped");
-    let mut primary = rows
-        .iter()
-        .filter(|(_, ps)| !is_completed(&ps.status))
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut secondary = rows
+    let mut rows = rows
         .into_iter()
-        .filter(|(_, ps)| is_completed(&ps.status))
+        .filter(|(_, ps)| !is_passing_status(&ps.status) && !is_failing_status(&ps.status))
         .collect::<Vec<_>>();
-    if primary.len() < visible_capacity {
-        let remaining = visible_capacity - primary.len();
-        secondary.truncate(remaining);
-        primary.extend(secondary);
-    } else {
-        primary.truncate(visible_capacity);
-    }
-    let rows = primary;
+    rows.truncate(visible_capacity);
     let table_rows = rows.into_iter().map(|(pkg, ps)| {
         let style = match ps.status.as_str() {
             "generated" => Style::default().fg(Color::Green),
@@ -526,26 +513,22 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
     frame.render_widget(summary, left[2]);
 
     let (passing, failing) = state.recent_pass_fail();
-    let passing_text =
-        render_recent_outcome_panel(&passing, right[0].height, "No passing builds yet");
-    let passing_panel = Paragraph::new(passing_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Passing Builds (Recent)"),
-        )
-        .wrap(Wrap { trim: true });
+    let passing_items =
+        render_recent_outcome_items(&passing, right[0].height, "No passing builds yet");
+    let passing_panel = List::new(passing_items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Passing Builds (Recent)"),
+    );
     frame.render_widget(passing_panel, right[0]);
 
-    let failing_text =
-        render_recent_outcome_panel(&failing, right[1].height, "No failing builds yet");
-    let failing_panel = Paragraph::new(failing_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Failing Builds (Recent)"),
-        )
-        .wrap(Wrap { trim: true });
+    let failing_items =
+        render_recent_outcome_items(&failing, right[1].height, "No failing builds yet");
+    let failing_panel = List::new(failing_items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Failing Builds (Recent)"),
+    );
     frame.render_widget(failing_panel, right[1]);
 }
 
@@ -567,20 +550,35 @@ fn is_failing_status(status: &str) -> bool {
     matches!(status, "quarantined" | "blocked" | "failed")
 }
 
-fn render_recent_outcome_panel(
+fn render_recent_outcome_items(
     entries: &[(String, PackageState)],
     panel_height: u16,
     empty_message: &str,
-) -> String {
+) -> Vec<ListItem<'static>> {
     let capacity = panel_height.saturating_sub(2) as usize;
     let capacity = capacity.max(1);
     if entries.is_empty() {
-        return empty_message.to_string();
+        return vec![
+            ListItem::new(empty_message.to_string()).style(Style::default().fg(Color::DarkGray)),
+        ];
     }
     entries
         .iter()
         .take(capacity)
-        .map(|(pkg, ps)| format!("{pkg} | {} | {}", ps.status, ps.detail))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .map(|(pkg, ps)| {
+            let line = if ps.detail.is_empty() {
+                pkg.clone()
+            } else {
+                format!("{pkg} ({})", ps.detail)
+            };
+            let style = if is_passing_status(&ps.status) {
+                Style::default().fg(Color::Green)
+            } else if is_failing_status(&ps.status) {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default()
+            };
+            ListItem::new(line).style(style)
+        })
+        .collect()
 }
