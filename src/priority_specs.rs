@@ -6417,6 +6417,11 @@ EOF\n\
     # Source unpack creates a compatibility top-level symlink for single-root\n\
     # archives; Bio::DB::Sam's File::Find traversal treats this as recursion.\n\
     find . -maxdepth 1 -type l -name 'Bio-SamTools-*' -delete || true\n\
+    # Build.PL carries '-Wformat=0', which conflicts with RPM hardening's\n\
+    # '-Werror=format-security'; normalize to keep security checks enabled.\n\
+    if [[ -f Build.PL ]]; then\n\
+      sed -i 's/-Wformat=0/-Wformat/g' Build.PL || true\n\
+    fi\n\
     # Bio::DB::Sam expects legacy samtools headers (bam.h) and static libbam.a.\n\
     # Modern htslib/samtools builds no longer provide this layout, so bootstrap\n\
     # samtools 0.1.19 into PREFIX when missing.\n\
@@ -6446,7 +6451,7 @@ EOF\n\
       make -C \"$sam_legacy_root\" -j\"${{CPU_COUNT:-1}}\" || make -C \"$sam_legacy_root\" -j1\n\
       mkdir -p \"$PREFIX/include\" \"$PREFIX/lib\"\n\
       cp -f \"$sam_legacy_root/libbam.a\" \"$PREFIX/lib/libbam.a\"\n\
-      for hdr in bam.h bgzf.h razf.h faidx.h khash.h kseq.h; do\n\
+      for hdr in sam.h bam.h bgzf.h razf.h faidx.h khash.h kseq.h; do\n\
         [[ -f \"$sam_legacy_root/$hdr\" ]] && cp -f \"$sam_legacy_root/$hdr\" \"$PREFIX/include/$hdr\"\n\
       done\n\
     fi\n\
@@ -13498,12 +13503,13 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"perl-bio-samtools\" ]]; then"));
+        assert!(spec.contains("sed -i 's/-Wformat=0/-Wformat/g' Build.PL || true"));
         assert!(spec.contains("find . -maxdepth 1 -type l -name 'Bio-SamTools-*' -delete || true"));
         assert!(spec.contains("dnf -y install ncurses-devel"));
         assert!(spec.contains("sam_legacy_ver=0.1.19"));
         assert!(spec.contains("downloads.sourceforge.net/project/samtools/samtools/${sam_legacy_ver}/samtools-${sam_legacy_ver}.tar.bz2"));
         assert!(spec.contains("cp -f \"$sam_legacy_root/libbam.a\" \"$PREFIX/lib/libbam.a\""));
-        assert!(spec.contains("for hdr in bam.h bgzf.h razf.h faidx.h khash.h kseq.h; do"));
+        assert!(spec.contains("for hdr in sam.h bam.h bgzf.h razf.h faidx.h khash.h kseq.h; do"));
     }
 
     #[test]
