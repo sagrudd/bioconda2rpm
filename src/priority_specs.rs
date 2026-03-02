@@ -7255,6 +7255,20 @@ PPLACER_BIOC2RPM_SH\n\
     # Normalize to canonical CPU_COUNT policy rather than fixed thread counts.\n\
     sed -i -E 's/THREADS=\"-j[0-9]+\"/THREADS=\"-j${{CPU_COUNT:-1}}\"/g' ./build.sh || true\n\
     \n\
+    # FAMSA release tarballs can expose the executable with non-lowercase naming\n\
+    # (e.g. FAMSA). Normalize to ./famsa so meta-script install steps are stable.\n\
+    if [[ \"%{{tool}}\" == \"famsa\" ]]; then\n\
+    if [[ ! -x ./famsa && -x ./FAMSA ]]; then\n\
+      ln -sf ./FAMSA ./famsa || true\n\
+    fi\n\
+    if [[ ! -x ./famsa ]]; then\n\
+      famsa_candidate=\"$(find . -maxdepth 3 -type f \\( -iname 'famsa' -o -iname 'famsa-*' -o -iname 'famsa_*' \\) -perm -u+x | head -n 1 || true)\"\n\
+      if [[ -n \"$famsa_candidate\" ]]; then\n\
+        ln -sf \"$famsa_candidate\" ./famsa || true\n\
+      fi\n\
+    fi\n\
+    fi\n\
+    \n\
     # Capture a pristine buildsrc snapshot so serial retries run from a clean tree,\n\
     # not from a partially mutated/failed first attempt.\n\
     chmod -R u+rwX . 2>/dev/null || true\n\
@@ -13736,6 +13750,50 @@ requirements:
         assert!(spec.contains("export CPPFLAGS=\"-I$PREFIX/include ${CPPFLAGS:-}\""));
         assert!(spec.contains("BuildRequires:  argtable-devel"));
         assert!(spec.contains("Requires:  argtable"));
+    }
+
+    #[test]
+    fn famsa_spec_normalizes_binary_name_before_meta_install_script() {
+        let parsed = ParsedMeta {
+            package_name: "famsa".to_string(),
+            version: "2.4.1".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/famsa.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/famsa".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "famsa".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "mkdir -p \"${PREFIX}/bin\"\ncp -v famsa \"${PREFIX}/bin/\"".to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "famsa",
+            &parsed,
+            "bioconda-famsa-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"famsa\" ]]; then"));
+        assert!(spec.contains("if [[ ! -x ./famsa && -x ./FAMSA ]]; then"));
+        assert!(spec.contains(
+            "famsa_candidate=\"$(find . -maxdepth 3 -type f \\( -iname 'famsa' -o -iname 'famsa-*' -o -iname 'famsa_*' \\) -perm -u+x | head -n 1 || true)\""
+        ));
     }
 
     #[test]
