@@ -5607,7 +5607,7 @@ mkdir -p %{bioconda_source_subdir}\n"
         build_requires.insert("boost-devel".to_string());
         build_requires.insert("openssl-devel".to_string());
     }
-    if build_script_mentions_javac {
+    if build_script_mentions_javac || software_slug == "minced" {
         if build_requires.remove("java-21-openjdk") {
             build_requires.insert("java-21-openjdk-devel".to_string());
         } else if build_requires.remove("java-17-openjdk") {
@@ -13813,6 +13813,46 @@ requirements:
             summary: "minced".to_string(),
             source_patches: Vec::new(),
             build_script: Some("javac -g CRISPR.java\nmake".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["openjdk".to_string()],
+            run_dep_specs_raw: vec!["openjdk".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::from(["java-11-openjdk".to_string()]),
+            run_deps: BTreeSet::from(["java-11-openjdk".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "minced",
+            &parsed,
+            "bioconda-minced-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("BuildRequires:  java-11-openjdk-devel"));
+        assert!(!spec.contains("BuildRequires:  java-11-openjdk\n"));
+        assert!(spec.contains("Requires:  java-11-openjdk"));
+    }
+
+    #[test]
+    fn minced_spec_promotes_openjdk_runtime_to_devel_without_explicit_javac_token() {
+        let parsed = ParsedMeta {
+            package_name: "minced".to_string(),
+            version: "0.4.2".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/minced-0.4.2.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/minced".to_string(),
+            license: "GPL-3.0".to_string(),
+            summary: "minced".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("make".to_string()),
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["openjdk".to_string()],
