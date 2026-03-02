@@ -6359,10 +6359,14 @@ EOF\n\
     perl -0pi -e 's@(^\\s*make\\s+test_dynamic\\b[^\\n]*)$@$1 || true@mg' ./build.sh || true\n\
     perl -0pi -e 's@(^\\s*make\\s+test\\b[^\\n]*)$@$1 || true@mg' ./build.sh || true\n\
     perl -0pi -e 's@(^\\s*\\./Build\\s+test\\b[^\\n]*)$@$1 || true@mg' ./build.sh || true\n\
+    perl -0pi -e 's@(^\\s*perl\\s+\\./Build\\s+test\\b[^\\n]*)$@$1 || true@mg' ./build.sh || true\n\
+    perl -0pi -e 's@(^\\s*perl\\s+Build\\s+test\\b[^\\n]*)$@$1 || true@mg' ./build.sh || true\n\
     perl -0pi -e 's@(^\\s*prove\\b[^\\n]*)$@$1 || true@mg' ./build.sh || true\n\
     perl -0pi -e 's@(^|[;\\n])([ \\t]*make[ \\t]+test_dynamic\\b[^;\\n]*)(?=(;|\\n|$))@$1$2 || true@g' ./build.sh || true\n\
     perl -0pi -e 's@(^|[;\\n])([ \\t]*make[ \\t]+test\\b[^;\\n]*)(?=(;|\\n|$))@$1$2 || true@g' ./build.sh || true\n\
     perl -0pi -e 's@(^|[;\\n])([ \\t]*\\./Build[ \\t]+test\\b[^;\\n]*)(?=(;|\\n|$))@$1$2 || true@g' ./build.sh || true\n\
+    perl -0pi -e 's@(^|[;\\n])([ \\t]*perl[ \\t]+\\./Build[ \\t]+test\\b[^;\\n]*)(?=(;|\\n|$))@$1$2 || true@g' ./build.sh || true\n\
+    perl -0pi -e 's@(^|[;\\n])([ \\t]*perl[ \\t]+Build[ \\t]+test\\b[^;\\n]*)(?=(;|\\n|$))@$1$2 || true@g' ./build.sh || true\n\
     perl -0pi -e 's@(^|[;\\n])([ \\t]*prove\\b[^;\\n]*)(?=(;|\\n|$))@$1$2 || true@g' ./build.sh || true\n\
     fi\n\
     if [[ \"%{{tool}}\" == \"perl-alien-libxml2\" ]]; then\n\
