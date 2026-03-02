@@ -8557,6 +8557,7 @@ fn map_build_dependency(dep: &str) -> String {
     }
     match dep {
         "autoconf" => "autoconf271".to_string(),
+        "argtable2" => "argtable-devel".to_string(),
         "boost-cpp" => "boost-devel".to_string(),
         "bzip2" => "bzip2-devel".to_string(),
         "capnproto" | "capnp" => "capnproto".to_string(),
@@ -8695,6 +8696,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         return "gsl".to_string();
     }
     match dep {
+        "argtable2" => "argtable".to_string(),
         "k8" => "nodejs".to_string(),
         "boost-cpp" => "boost".to_string(),
         "libboost" | "libboost-devel" => "boost".to_string(),
@@ -11186,6 +11188,10 @@ mod tests {
     fn dependency_mapping_handles_conda_aliases() {
         assert_eq!(map_build_dependency("boost-cpp"), "boost-devel".to_string());
         assert_eq!(map_build_dependency("autoconf"), "autoconf271".to_string());
+        assert_eq!(
+            map_build_dependency("argtable2"),
+            "argtable-devel".to_string()
+        );
         assert_eq!(map_build_dependency("hdf5"), "hdf5".to_string());
         assert_eq!(map_build_dependency("hdf5-devel"), "hdf5".to_string());
         assert_eq!(map_build_dependency("capnproto"), "capnproto".to_string());
@@ -11203,6 +11209,7 @@ mod tests {
             "libX11-devel".to_string()
         );
         assert_eq!(map_runtime_dependency("boost-cpp"), "boost".to_string());
+        assert_eq!(map_runtime_dependency("argtable2"), "argtable".to_string());
         assert_eq!(map_runtime_dependency("capnproto"), "capnproto".to_string());
         assert_eq!(map_runtime_dependency("cffi"), "python3-cffi".to_string());
         assert_eq!(map_runtime_dependency("xerces-c"), "xerces-c".to_string());
