@@ -282,19 +282,62 @@ fn push_version_part(parts: &mut Vec<VersionPart>, raw: &str, numeric: bool) {
 }
 
 fn render_meta_yaml_for_ingress(raw: &str) -> String {
+    let assignments = collect_jinja_set_assignments(raw);
     raw.lines()
         .filter_map(|line| {
             let trimmed = line.trim_start();
             if trimmed.starts_with("{%") || trimmed.starts_with("{#") {
                 return None;
             }
-            Some(replace_jinja_expressions(line))
+            Some(replace_jinja_expressions(line, &assignments))
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn replace_jinja_expressions(line: &str) -> String {
+fn collect_jinja_set_assignments(raw: &str) -> HashMap<String, String> {
+    let mut assignments = HashMap::<String, String>::new();
+    for line in raw.lines() {
+        if let Some((key, value)) = parse_jinja_set_assignment(line) {
+            assignments.insert(key, value);
+        }
+    }
+    assignments
+}
+
+fn parse_jinja_set_assignment(line: &str) -> Option<(String, String)> {
+    let trimmed = line.trim();
+    if !(trimmed.starts_with("{%") && trimmed.ends_with("%}")) {
+        return None;
+    }
+    let inner = trimmed
+        .strip_prefix("{%")?
+        .strip_suffix("%}")?
+        .trim()
+        .strip_prefix("set")?
+        .trim();
+    let (lhs, rhs) = inner.split_once('=')?;
+    let key = lhs.trim();
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || value == '_')
+    {
+        return None;
+    }
+    let value = rhs.trim().trim_end_matches('-').trim();
+    let value = value
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string();
+    if value.is_empty() {
+        return None;
+    }
+    Some((key.to_string(), value))
+}
+
+fn replace_jinja_expressions(line: &str, assignments: &HashMap<String, String>) -> String {
     let mut output = String::with_capacity(line.len());
     let mut remaining = line;
     while let Some(start) = remaining.find("{{") {
@@ -305,15 +348,55 @@ fn replace_jinja_expressions(line: &str) -> String {
             return output;
         };
         let expression = after_start[..end].trim();
-        let replacement = expression
-            .split(|ch: char| !ch.is_ascii_alphanumeric() && !matches!(ch, '-' | '_' | '.'))
-            .rfind(|value| !value.is_empty())
-            .unwrap_or("value");
+        let replacement = resolve_jinja_expression_value(expression, assignments);
         output.push_str(replacement);
         remaining = &after_start[end + 2..];
     }
     output.push_str(remaining);
     output
+}
+
+fn resolve_jinja_expression_value<'a>(
+    expression: &'a str,
+    assignments: &'a HashMap<String, String>,
+) -> &'a str {
+    let unfiltered = expression.split('|').next().unwrap_or(expression).trim();
+    if let Some(identifier) = extract_identifier(unfiltered)
+        && let Some(value) = assignments.get(identifier)
+    {
+        return value.as_str();
+    }
+    expression
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && !matches!(ch, '-' | '_' | '.'))
+        .rfind(|value| !value.is_empty())
+        .unwrap_or("value")
+}
+
+fn extract_identifier(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut end = 0usize;
+    for (index, ch) in trimmed.char_indices() {
+        if index == 0 {
+            if !(ch.is_ascii_alphabetic() || ch == '_') {
+                return None;
+            }
+            end = ch.len_utf8();
+            continue;
+        }
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            end = index + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if end == 0 {
+        None
+    } else {
+        Some(&trimmed[..end])
+    }
 }
 
 fn yaml_lookup<'a>(root: &'a Value, path: &[&str]) -> Option<&'a Value> {
@@ -775,6 +858,57 @@ about:
         let metadata = lookup_recipe_metadata(&recipes_root, "samtools").expect("lookup");
         assert_eq!(metadata.latest_release.as_deref(), Some("1.22"));
         assert!(metadata.meta_yaml_path.ends_with("1.22/meta.yaml"));
+    }
+
+    #[test]
+    fn lookup_recipe_metadata_resolves_jinja_set_version_over_legacy_subdirs() {
+        let temp = tempdir().expect("tmp");
+        let repo_root = temp.path().join("bioconda-recipes");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let repo = Repository::init(&repo_root).expect("init repo");
+        let recipes_root = repo_root.join("recipes");
+        let recipe_dir = recipes_root.join("hmmer");
+        fs::create_dir_all(recipe_dir.join("3.0")).expect("create variant 3.0");
+
+        commit_file(
+            &repo,
+            &repo_root,
+            Path::new("recipes/hmmer/meta.yaml"),
+            r#"
+{% set name = "hmmer" %}
+{% set version = "3.4" %}
+package:
+  name: {{ name }}
+  version: {{ version }}
+about:
+  home: "http://hmmer.org"
+  license: "BSD-3-Clause"
+"#,
+            "seed hmmer direct recipe",
+            1_706_745_600,
+        )
+        .expect("commit direct");
+        commit_file(
+            &repo,
+            &repo_root,
+            Path::new("recipes/hmmer/3.0/meta.yaml"),
+            r#"
+package:
+  name: hmmer
+  version: "3.0"
+about:
+  home: "http://hmmer.org/"
+  license: "BSD-3-Clause"
+"#,
+            "seed hmmer 3.0 recipe",
+            1_706_832_000,
+        )
+        .expect("commit 3.0");
+
+        let metadata = lookup_recipe_metadata(&recipes_root, "hmmer").expect("lookup");
+        assert_eq!(metadata.recipe_name, "hmmer");
+        assert_eq!(metadata.latest_release.as_deref(), Some("3.4"));
+        assert!(metadata.meta_yaml_path.ends_with("hmmer/meta.yaml"));
     }
 
     #[test]
