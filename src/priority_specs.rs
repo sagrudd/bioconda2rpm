@@ -6485,6 +6485,39 @@ EOF\n\
     fi\n\
     fi\n\
     \n\
+    # clustalo requires argtable2 headers/libs, but EL profiles may not expose\n\
+    # an installable RPM provider. Bootstrap a local argtable2 prefix fallback.\n\
+    if [[ \"%{{tool}}\" == \"clustalo\" ]]; then\n\
+    if [[ ! -f /usr/include/argtable2.h && ! -f /usr/local/include/argtable2.h && ! -f \"$PREFIX/include/argtable2.h\" ]]; then\n\
+      argtable_ver=2.13\n\
+      argtable_url=\"https://downloads.sourceforge.net/project/argtable/argtable2/argtable2-${{argtable_ver}}/argtable2-${{argtable_ver}}.tar.gz\"\n\
+      argtable_src=\"$(pwd)/.bioconda2rpm-argtable2-src\"\n\
+      argtable_archive=\"$argtable_src/argtable2-${{argtable_ver}}.tar.gz\"\n\
+      rm -rf \"$argtable_src\"\n\
+      mkdir -p \"$argtable_src\"\n\
+      if command -v curl >/dev/null 2>&1; then\n\
+        curl -L --fail -o \"$argtable_archive\" \"$argtable_url\"\n\
+      elif command -v wget >/dev/null 2>&1; then\n\
+        wget -O \"$argtable_archive\" \"$argtable_url\"\n\
+      else\n\
+        echo \"missing curl/wget for argtable2 bootstrap\" >&2\n\
+        exit 44\n\
+      fi\n\
+      tar -xf \"$argtable_archive\" -C \"$argtable_src\" --strip-components=1\n\
+      if [[ -x \"$argtable_src/configure\" ]]; then\n\
+        (cd \"$argtable_src\" && ./configure --prefix=\"$PREFIX\" && make -j\"${{CPU_COUNT:-1}}\" && make install)\n\
+      else\n\
+        echo \"argtable2 bootstrap missing configure script\" >&2\n\
+        exit 45\n\
+      fi\n\
+    fi\n\
+    export CPPFLAGS=\"-I$PREFIX/include ${{CPPFLAGS:-}}\"\n\
+    export CFLAGS=\"-I$PREFIX/include ${{CFLAGS:-}}\"\n\
+    export CXXFLAGS=\"-I$PREFIX/include ${{CXXFLAGS:-}}\"\n\
+    export LDFLAGS=\"-L$PREFIX/lib -L$PREFIX/lib64 ${{LDFLAGS:-}}\"\n\
+    export PKG_CONFIG_PATH=\"$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig${{PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}}\"\n\
+    fi\n\
+    \n\
     # advntr vendors legacy pomegranate/Cython code that is incompatible with\n\
     # Cython 3 and NumPy 2 metadata-generation defaults.\n\
     if [[ \"%{{tool}}\" == \"advntr\" ]]; then\n\
@@ -13660,6 +13693,49 @@ requirements:
         assert!(spec.contains("BuildRequires:  libX11-devel"));
         assert!(spec.contains("Requires:  qt6-qtbase"));
         assert!(spec.contains("Requires:  qt6-qtsvg"));
+    }
+
+    #[test]
+    fn clustalo_spec_bootstraps_argtable2_when_headers_absent() {
+        let parsed = ParsedMeta {
+            package_name: "clustalo".to_string(),
+            version: "1.2.4".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/clustalo-1.2.4.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/clustalo".to_string(),
+            license: "GPL-2.0-or-later".to_string(),
+            summary: "clustalo".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("./configure && make".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["argtable2".to_string()],
+            host_dep_specs_raw: vec!["argtable2".to_string()],
+            run_dep_specs_raw: vec!["argtable2".to_string()],
+            build_deps: BTreeSet::from(["argtable2".to_string()]),
+            host_deps: BTreeSet::from(["argtable2".to_string()]),
+            run_deps: BTreeSet::from(["argtable2".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "clustalo",
+            &parsed,
+            "bioconda-clustalo-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"clustalo\" ]]; then"));
+        assert!(spec.contains("argtable_ver=2.13"));
+        assert!(spec.contains("downloads.sourceforge.net/project/argtable/argtable2"));
+        assert!(spec.contains("export CPPFLAGS=\"-I$PREFIX/include ${CPPFLAGS:-}\""));
+        assert!(spec.contains("BuildRequires:  argtable-devel"));
+        assert!(spec.contains("Requires:  argtable"));
     }
 
     #[test]
