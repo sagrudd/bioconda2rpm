@@ -98,6 +98,14 @@ pub fn is_valid_recipe_name(recipe_name: &str) -> bool {
     normalize_recipe_name(recipe_name).is_some()
 }
 
+pub fn recipe_exists(recipe_root: &Path, recipe_name: &str) -> Result<bool> {
+    let Some(normalized_name) = normalize_recipe_name(recipe_name) else {
+        return Ok(false);
+    };
+    let recipe_dir = recipe_root.join(normalized_name);
+    recipe_dir_contains_meta(&recipe_dir)
+}
+
 fn normalize_recipe_name(recipe_name: &str) -> Option<String> {
     let trimmed = recipe_name.trim();
     if trimmed.is_empty() {
@@ -118,6 +126,33 @@ fn normalize_recipe_name(recipe_name: &str) -> Option<String> {
         return None;
     }
     Some(lowered)
+}
+
+fn recipe_dir_contains_meta(recipe_dir: &Path) -> Result<bool> {
+    if !recipe_dir.is_dir() {
+        return Ok(false);
+    }
+
+    for meta_name in ["meta.yaml", "meta.yml"] {
+        if recipe_dir.join(meta_name).is_file() {
+            return Ok(true);
+        }
+    }
+
+    let entries = fs::read_dir(recipe_dir)
+        .with_context(|| format!("read recipe directory {}", recipe_dir.display()))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        for meta_name in ["meta.yaml", "meta.yml"] {
+            if path.join(meta_name).is_file() {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn resolve_recipe_meta_yaml_path(recipe_root: &Path, recipe_name: &str) -> Result<PathBuf> {
@@ -998,5 +1033,29 @@ package:
         assert!(!is_valid_recipe_name("Blast"));
         assert!(!is_valid_recipe_name("blast!"));
         assert!(!is_valid_recipe_name(""));
+    }
+
+    #[test]
+    fn recipe_exists_accepts_direct_and_nested_meta_files() {
+        let temp = tempdir().expect("tmp");
+        let recipes_root = temp.path().join("recipes");
+        fs::create_dir_all(&recipes_root).expect("create recipes root");
+
+        let blast = recipes_root.join("blast");
+        fs::create_dir_all(&blast).expect("create blast");
+        fs::write(blast.join("meta.yaml"), "package:\n  name: blast\n").expect("write blast");
+
+        let hmmer = recipes_root.join("hmmer");
+        fs::create_dir_all(hmmer.join("3.4")).expect("create hmmer variant");
+        fs::write(
+            hmmer.join("3.4").join("meta.yml"),
+            "package:\n  name: hmmer\n",
+        )
+        .expect("write hmmer variant");
+
+        assert!(recipe_exists(&recipes_root, "blast").expect("blast exists"));
+        assert!(recipe_exists(&recipes_root, "hmmer").expect("hmmer exists"));
+        assert!(!recipe_exists(&recipes_root, "missing").expect("missing false"));
+        assert!(!recipe_exists(&recipes_root, "InvalidName").expect("invalid false"));
     }
 }
