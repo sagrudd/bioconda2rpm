@@ -5549,12 +5549,11 @@ mkdir -p %{bioconda_source_subdir}\n"
         build_requires.insert("perl(Test::Needs)".to_string());
         build_requires.insert("perl(Module::Build::Tiny)".to_string());
     }
-    // HEURISTIC-TEMP(issue=HEUR-0019): phoreus-perl-alien-libxml2 noarch shim
-    // can outrank payload versions and drop perl(Alien::Libxml2) virtual
-    // provides; depend on payload capability explicitly for perl-xml-libxml.
+    // HEURISTIC-TEMP(issue=HEUR-0019): perl-xml-libxml can build against
+    // explicit LIBS/INC flags without Alien::Libxml2; drop this edge to avoid
+    // resolver churn when alternate provider shims are present.
     if software_slug == "perl-xml-libxml" {
         build_requires.remove("perl(Alien::Libxml2)");
-        build_requires.insert("phoreus-perl-alien-libxml2-0.20".to_string());
     }
     build_requires.remove(PHOREUS_PYTHON_PACKAGE);
     build_requires.remove(PHOREUS_PYTHON_PACKAGE_312);
@@ -5625,7 +5624,6 @@ mkdir -p %{bioconda_source_subdir}\n"
     }
     if software_slug == "perl-xml-libxml" {
         runtime_requires.remove("perl(Alien::Libxml2)");
-        runtime_requires.insert("phoreus-perl-alien-libxml2-0.20".to_string());
     }
 
     let build_requires_lines = format_dep_lines("BuildRequires", &build_requires);
@@ -6189,6 +6187,9 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     export PERL_LOCAL_LIB_ROOT=\"$PREFIX${{PERL_LOCAL_LIB_ROOT:+:$PERL_LOCAL_LIB_ROOT}}\"\n\
     export PERL_MB_OPT=\"--install_base $PREFIX\"\n\
     export PERL_MM_OPT=\"INSTALL_BASE=$PREFIX\"\n\
+    if [[ -f Makefile.PL ]]; then\n\
+      perl -0pi -e 's@^use Alien::Base::Wrapper qw\\( Alien::Libxml2 \\);\\n@BEGIN {{ eval {{ require Alien::Base::Wrapper; Alien::Base::Wrapper->import(qw(Alien::Libxml2)); 1 }} or do {{ package Alien::Base::Wrapper; sub mm_args {{ return (); }} 1; }}; }}\\n@m' Makefile.PL || true\n\
+    fi\n\
     if ! perl -MAlien::Base::Wrapper -e1 >/dev/null 2>&1 || ! perl -MAlien::Libxml2 -e1 >/dev/null 2>&1 || ! perl -MXML::SAX -e1 >/dev/null 2>&1 || ! perl -MXML::NamespaceSupport -e1 >/dev/null 2>&1; then\n\
       if command -v dnf >/dev/null 2>&1; then dnf -y install perl-App-cpanminus openssl-devel ca-certificates perl-LWP-Protocol-https perl-XML-SAX perl-XML-NamespaceSupport >/dev/null 2>&1 || true; fi\n\
       if command -v microdnf >/dev/null 2>&1; then microdnf -y install perl-App-cpanminus openssl-devel ca-certificates perl-LWP-Protocol-https perl-XML-SAX perl-XML-NamespaceSupport >/dev/null 2>&1 || true; fi\n\
@@ -9064,6 +9065,8 @@ fn perl_module_name_from_conda(dep: &str) -> Option<String> {
             "json" => "JSON".to_string(),
             "lwp" => "LWP".to_string(),
             "mime" => "MIME".to_string(),
+            "namespacesupport" => "NamespaceSupport".to_string(),
+            "sax" => "SAX".to_string(),
             "ssl" => "SSL".to_string(),
             "ssleay" => "SSLeay".to_string(),
             "uri" => "URI".to_string(),
@@ -12777,7 +12780,7 @@ requirements:
     }
 
     #[test]
-    fn perl_xml_libxml_prefers_payload_alien_libxml2_capability() {
+    fn perl_xml_libxml_drops_alien_libxml2_virtual_dependency() {
         let mut host_deps = BTreeSet::new();
         host_deps.insert("perl(Alien::Libxml2)".to_string());
         host_deps.insert("perl(XML::Sax)".to_string());
@@ -12822,11 +12825,9 @@ requirements:
             false,
         );
 
-        assert!(spec.contains("BuildRequires:  phoreus-perl-alien-libxml2-0.20"));
         assert!(!spec.contains("BuildRequires:  perl(Alien::Libxml2)"));
         assert!(spec.contains("BuildRequires:  perl(XML::SAX)"));
         assert!(spec.contains("BuildRequires:  perl(XML::NamespaceSupport)"));
-        assert!(spec.contains("Requires:  phoreus-perl-alien-libxml2-0.20"));
         assert!(!spec.contains("Requires:  perl(Alien::Libxml2)"));
     }
 
