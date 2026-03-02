@@ -7320,6 +7320,22 @@ PPLACER_BIOC2RPM_SH\n\
     # Capture a pristine buildsrc snapshot so serial retries run from a clean tree,\n\
     # not from a partially mutated/failed first attempt.\n\
     chmod -R u+rwX . 2>/dev/null || true\n\
+    # Single-root tarball compatibility may add a top-level symlink back to '.'.\n\
+    # Some Perl build tooling (File::Find) treats that as a recursive loop.\n\
+    # Remove only those self-referential aliases before invoking build.sh.\n\
+    while IFS= read -r -d '' top_link; do\n\
+    top_target=$(readlink \"$top_link\" || true)\n\
+    [[ -n \"$top_target\" ]] || continue\n\
+    if [[ \"$top_target\" == \".\" || \"$top_target\" == \"./\" ]]; then\n\
+      rm -f \"$top_link\"\n\
+      continue\n\
+    fi\n\
+    if command -v realpath >/dev/null 2>&1; then\n\
+      if [[ \"$(realpath -m \"$top_link\" 2>/dev/null || true)\" == \"$(pwd)\" ]]; then\n\
+        rm -f \"$top_link\"\n\
+      fi\n\
+    fi\n\
+    done < <(find . -mindepth 1 -maxdepth 1 -type l -print0)\n\
     retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\"\n\
     rm -f \"$retry_snapshot\"\n\
     tar --exclude='.bioconda2rpm-retry-snapshot.tar' -cf \"$retry_snapshot\" .\n\
@@ -13516,6 +13532,46 @@ requirements:
         assert!(spec.contains("sed -i -E 's|^CFLAGS[[:space:]]*=.*$|& -fPIC|' \"$sam_legacy_root/Makefile\" || true"));
         assert!(spec.contains("cp -f \"$sam_legacy_root/libbam.a\" \"$PREFIX/lib/libbam.a\""));
         assert!(spec.contains("for hdr in sam.h bam.h bgzf.h razf.h faidx.h khash.h kseq.h; do"));
+    }
+
+    #[test]
+    fn perl_payload_spec_removes_top_level_self_symlink_before_build() {
+        let parsed = ParsedMeta {
+            package_name: "perl-canary-stability".to_string(),
+            version: "2013".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/perl-canary-stability.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/perl-canary-stability".to_string(),
+            license: "Perl_5".to_string(),
+            summary: "perl-canary-stability".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("perl Makefile.PL\nmake\nmake install".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "perl-canary-stability",
+            &parsed,
+            "bioconda-perl-canary-stability-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("while IFS= read -r -d '' top_link; do"));
+        assert!(spec.contains("if [[ \"$top_target\" == \".\" || \"$top_target\" == \"./\" ]]; then"));
+        assert!(spec.contains("done < <(find . -mindepth 1 -maxdepth 1 -type l -print0)"));
     }
 
     #[test]
