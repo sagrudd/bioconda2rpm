@@ -6587,6 +6587,8 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     # pplacer's build script expects opam, but EL9 repos used in these\n\
     # containers can omit an opam package. Bootstrap a release binary.\n\
     if [[ \"%{{tool}}\" == \"pplacer\" ]]; then\n\
+    export CFLAGS=\"-std=gnu99 -Drestrict=__restrict__ ${{CFLAGS:-}}\"\n\
+    export CPPFLAGS=\"-Drestrict=__restrict__ ${{CPPFLAGS:-}}\"\n\
     if ! command -v opam >/dev/null 2>&1; then\n\
       opam_ver=2.1.6\n\
       case \"$(uname -m)\" in\n\
@@ -12854,6 +12856,7 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"pplacer\" ]]; then"));
+        assert!(spec.contains("export CFLAGS=\"-std=gnu99 -Drestrict=__restrict__ ${CFLAGS:-}\""));
         assert!(spec.contains("opam_ver=2.1.6"));
         assert!(spec.contains("https://github.com/ocaml/opam/releases/download/${opam_ver}/opam-${opam_ver}-${opam_arch}-linux"));
         assert!(spec.contains("curl -L --fail -o /usr/local/bin/opam \"$opam_url\" || true"));
