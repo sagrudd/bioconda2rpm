@@ -6883,18 +6883,6 @@ if [[ \"$(uname)\" == \"Darwin\" ]]; then\n\
 fi\n\
 \n\
 OCAML_VERSION=4.14.2\n\
-if ! command -v rsync >/dev/null 2>&1; then\n\
-  if command -v dnf >/dev/null 2>&1; then\n\
-    dnf -y install rsync >/dev/null 2>&1 || true\n\
-  fi\n\
-  if command -v microdnf >/dev/null 2>&1; then\n\
-    microdnf -y install rsync >/dev/null 2>&1 || true\n\
-  fi\n\
-fi\n\
-# mcl.12-068 (pulled by pplacer's opam repo) needs legacy common-symbol\n\
-# handling with modern GCC to avoid multiple-definition link failures.\n\
-export CFLAGS=\"${{CFLAGS:-}} -fcommon\"\n\
-export CXXFLAGS=\"${{CXXFLAGS:-}} -fcommon\"\n\
 opam init --disable-sandboxing -y --compiler=\"${{OCAML_VERSION}}\"\n\
 eval \"$(opam env)\"\n\
 opam repo add pplacer-deps http://matsen.github.io/pplacer-opam-repository\n\
@@ -6912,27 +6900,39 @@ opam install --assume-depexts -y \\\n\
   camlzip.1.11 \\\n\
   ocamlfind\n\
 \n\
-# Build mcl from local patched source so legacy C code compiles on EL9.\n\
-rm -rf ./mcl.12-068\n\
-opam source mcl.12-068\n\
-if [[ -d ./mcl.12-068 ]]; then\n\
-  cat > ./mcl.12-068/opam <<'MCL_BIOC2RPM_OPAM'\n\
-opam-version: \"1\"\n\
-maintainer: \"cmccoy@fhcrc.org\"\n\
-build: [\n\
-  [\"sh\" \"-ec\" \"perl -i -pe 's/\\\\bconst mclv\\\\* restrict\\\\b/const mclv* restrict_v/g; s/\\\\brestrict\\\\b/restrict_v/g' src/impala/matrix.c; perl -i -pe 's/^dim /extern dim /; s/^double /extern double /' src/impala/iface.h\"]\n\
-  [\"env\" \"OCAMLPARAM=_,alert=-deprecated\" \"CFLAGS=-fcommon\" \"CXXFLAGS=-fcommon\" \"ocaml\" \"setup.ml\" \"-configure\" \"--prefix\" prefix]\n\
-  [\"env\" \"OCAMLPARAM=_,alert=-deprecated\" \"CFLAGS=-fcommon\" \"CXXFLAGS=-fcommon\" \"ocaml\" \"setup.ml\" \"-build\"]\n\
-  [\"env\" \"OCAMLPARAM=_,alert=-deprecated\" \"CFLAGS=-fcommon\" \"CXXFLAGS=-fcommon\" \"ocaml\" \"setup.ml\" \"-install\"]\n\
-]\n\
-remove: [\n\
-  [\"ocamlfind\" \"remove\" \"mcl\"]\n\
-]\n\
-depends: [\"ocamlfind\"]\n\
-MCL_BIOC2RPM_OPAM\n\
-  eval \"$(opam env)\"\n\
-  opam install --assume-depexts -y ./mcl.12-068\n\
+# Bioconda provides mcl as a second source; when it is absent in the unpacked\n\
+# tree (common in direct GitHub tarballs), bootstrap the pinned commit.\n\
+MCL_COMMIT=b1f7a969371d434eaa6848bdbb79a851de617c1f\n\
+if [[ ! -f ./mcl/configure || ! -f ./mcl/src/impala/matrix.c ]]; then\n\
+  rm -rf ./mcl\n\
+  mcl_url=\"https://github.com/fhcrc/mcl/archive/${{MCL_COMMIT}}.tar.gz\"\n\
+  mcl_archive=\"/tmp/mcl-${{MCL_COMMIT}}.tar.gz\"\n\
+  if command -v curl >/dev/null 2>&1; then\n\
+    curl -L --fail -o \"$mcl_archive\" \"$mcl_url\"\n\
+  elif command -v wget >/dev/null 2>&1; then\n\
+    wget -O \"$mcl_archive\" \"$mcl_url\"\n\
+  else\n\
+    echo \"pplacer build requires curl or wget to fetch mcl source\" >&2\n\
+    exit 1\n\
+  fi\n\
+  mkdir -p ./mcl\n\
+  tar -xf \"$mcl_archive\" --strip-components=1 -C ./mcl\n\
 fi\n\
+\n\
+if [[ ! -f ./mcl/configure || ! -f ./mcl/src/impala/matrix.c ]]; then\n\
+  echo \"pplacer build could not materialize mcl source tree\" >&2\n\
+  exit 1\n\
+fi\n\
+\n\
+# Patch legacy mcl C sources for modern GCC/EL9.\n\
+perl -i -pe 's/\\bconst mclv\\* restrict\\b/const mclv* restrict_v/g; s/\\brestrict\\b/restrict_v/g' ./mcl/src/impala/matrix.c\n\
+perl -i -pe 's/^dim /extern dim /; s/^double /extern double /' ./mcl/src/impala/iface.h\n\
+\n\
+pushd ./mcl >/dev/null\n\
+eval \"$(opam env)\"\n\
+./configure\n\
+make -j\"${{CPU_COUNT:-1}}\" CFLAGS=\"-fcommon ${{CFLAGS:-}}\" CXXFLAGS=\"-fcommon ${{CXXFLAGS:-}}\"\n\
+popd >/dev/null\n\
 \n\
 eval \"$(opam env)\"\n\
 dune build\n\
@@ -13673,13 +13673,15 @@ requirements:
         assert!(spec.contains("curl -L --fail -o /usr/local/bin/opam \"$opam_url\" || true"));
         assert!(spec.contains("cat > ./build.sh <<'PPLACER_BIOC2RPM_SH'"));
         assert!(spec.contains("opam install --assume-depexts -y"));
-        assert!(spec.contains("opam source mcl.12-068"));
-        assert!(spec.contains("cat > ./mcl.12-068/opam <<'MCL_BIOC2RPM_OPAM'"));
-        assert!(spec.contains("src/impala/matrix.c; perl -i -pe"));
+        assert!(spec.contains("MCL_COMMIT=b1f7a969371d434eaa6848bdbb79a851de617c1f"));
+        assert!(
+            spec.contains("mcl_url=\"https://github.com/fhcrc/mcl/archive/${MCL_COMMIT}.tar.gz\"")
+        );
+        assert!(spec.contains("tar -xf \"$mcl_archive\" --strip-components=1 -C ./mcl"));
+        assert!(spec.contains("perl -i -pe 's/\\bconst mclv\\* restrict\\b/const mclv* restrict_v/g; s/\\brestrict\\b/restrict_v/g' ./mcl/src/impala/matrix.c"));
         assert!(spec.contains("s/^dim /extern dim /; s/^double /extern double /"));
-        assert!(spec.contains("src/impala/iface.h"));
-        assert!(spec.contains("[\"env\" \"OCAMLPARAM=_,alert=-deprecated\" \"CFLAGS=-fcommon\" \"CXXFLAGS=-fcommon\" \"ocaml\" \"setup.ml\" \"-build\"]"));
-        assert!(spec.contains("opam install --assume-depexts -y ./mcl.12-068"));
+        assert!(spec.contains("./mcl/src/impala/iface.h"));
+        assert!(spec.contains("make -j\"${CPU_COUNT:-1}\" CFLAGS=\"-fcommon ${CFLAGS:-}\" CXXFLAGS=\"-fcommon ${CXXFLAGS:-}\""));
     }
 
     #[test]
