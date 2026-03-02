@@ -6058,6 +6058,25 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
           [[ -e \"$inc_dir\" ]] || continue\n\
           ln -snf \"$inc_dir\" \"$PREFIX/include/$(basename \"$inc_dir\")\"\n\
         done\n\
+        if [[ -d \"$PREFIX/include/kapp\" && ! -e \"$PREFIX/include/kapp/main.h\" && -f \"$PREFIX/include/kapp/vdbapp.h\" ]]; then\n\
+          cat > \"$PREFIX/include/kapp/main.h\" <<'EOF'\n\
+#ifndef KAPP_MAIN_H\n\
+#define KAPP_MAIN_H\n\
+#include <kapp/args.h>\n\
+#include <kapp/vdbapp.h>\n\
+#ifdef __cplusplus\n\
+extern \"C\" {{\n\
+#endif\n\
+extern const char UsageDefaultName[];\n\
+#ifdef __cplusplus\n\
+}}\n\
+#endif\n\
+#ifndef KAppVersion\n\
+#define KAppVersion GetKAppVersion\n\
+#endif\n\
+#endif\n\
+EOF\n\
+        fi\n\
       fi\n\
       vdb_lib_root=\"$vdb_prefix/lib\"\n\
       if [[ ! -d \"$vdb_lib_root\" && -d \"$vdb_prefix/lib64\" ]]; then\n\
@@ -6068,7 +6087,20 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
           [[ -e \"$lib_file\" ]] || continue\n\
           ln -snf \"$lib_file\" \"$PREFIX/lib/$(basename \"$lib_file\")\"\n\
         done\n\
+        for lib_file in \"$vdb_lib_root\"/lib*.a*; do\n\
+          [[ -e \"$lib_file\" ]] || continue\n\
+          ln -snf \"$lib_file\" \"$PREFIX/lib/$(basename \"$lib_file\")\"\n\
+        done\n\
+        for vdbapp_lib in \"$PREFIX/lib\"/libvdbapp.so* \"$PREFIX/lib\"/libvdbapp.a* \"$PREFIX/lib\"/libvdbapp-static.a; do\n\
+          [[ -e \"$vdbapp_lib\" ]] || continue\n\
+          kapp_lib=\"$PREFIX/lib/$(basename \"$vdbapp_lib\" | sed 's/^libvdbapp/libkapp/')\"\n\
+          [[ -e \"$kapp_lib\" ]] || ln -snf \"$vdbapp_lib\" \"$kapp_lib\"\n\
+        done\n\
       fi\n\
+      find sra-tools -type f \\( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \\) -print0 2>/dev/null | while IFS= read -r -d '' src_file; do\n\
+        sed -i -E 's/\\brc_t([[:space:]]+CC)?[[:space:]]+KMain[[:space:]]*\\(/int main(/g' \"$src_file\" || true\n\
+      done\n\
+      export LDFLAGS=\"${{LDFLAGS:-}} -Wl,--allow-multiple-definition\"\n\
     fi\n\
     fi\n\
     \n\
@@ -12902,6 +12934,17 @@ requirements:
         assert!(spec.contains("if [[ \"%{tool}\" == \"sra-tools\" ]]; then"));
         assert!(spec.contains("vdb_prefix=$(find /usr/local/phoreus/ncbi-vdb"));
         assert!(spec.contains("ln -snf \"$inc_dir\" \"$PREFIX/include/$(basename \"$inc_dir\")\""));
+        assert!(spec.contains("cat > \"$PREFIX/include/kapp/main.h\" <<'EOF'"));
+        assert!(spec.contains("#include <kapp/args.h>"));
+        assert!(spec.contains("#include <kapp/vdbapp.h>"));
+        assert!(spec.contains("extern \"C\" {"));
+        assert!(spec.contains("extern const char UsageDefaultName[];"));
+        assert!(spec.contains("#define KAppVersion GetKAppVersion"));
+        assert!(spec.contains("for lib_file in \"$vdb_lib_root\"/lib*.a*; do"));
+        assert!(spec.contains("basename \"$vdbapp_lib\" | sed 's/^libvdbapp/libkapp/'"));
+        assert!(spec.contains("find sra-tools -type f \\( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \\) -print0"));
+        assert!(spec.contains("sed -i -E 's/\\brc_t([[:space:]]+CC)?[[:space:]]+KMain[[:space:]]*\\(/int main(/g' \"$src_file\""));
+        assert!(spec.contains("export LDFLAGS=\"${LDFLAGS:-} -Wl,--allow-multiple-definition\""));
         assert!(spec.contains("ln -snf \"$lib_file\" \"$PREFIX/lib/$(basename \"$lib_file\")\""));
     }
 
