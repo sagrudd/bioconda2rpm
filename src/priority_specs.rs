@@ -6418,6 +6418,13 @@ EOF\n\
     # Modern htslib/samtools builds no longer provide this layout, so bootstrap\n\
     # samtools 0.1.19 into PREFIX when missing.\n\
     if [[ ! -f \"$PREFIX/lib/libbam.a\" || ! -f \"$PREFIX/include/bam.h\" ]]; then\n\
+      if [[ ! -f /usr/include/curses.h ]]; then\n\
+        if command -v dnf >/dev/null 2>&1; then dnf -y install ncurses-devel >/dev/null 2>&1 || true; fi\n\
+        if command -v microdnf >/dev/null 2>&1; then microdnf -y install ncurses-devel >/dev/null 2>&1 || true; fi\n\
+      fi\n\
+      if [[ ! -f /usr/include/curses.h && -f /usr/include/ncursesw/curses.h ]]; then\n\
+        ln -snf /usr/include/ncursesw/curses.h /usr/include/curses.h || true\n\
+      fi\n\
       sam_legacy_ver=0.1.19\n\
       sam_legacy_url=\"https://downloads.sourceforge.net/project/samtools/samtools/${{sam_legacy_ver}}/samtools-${{sam_legacy_ver}}.tar.bz2\"\n\
       sam_legacy_root=\"$(pwd)/.bioconda2rpm-samtools-legacy\"\n\
@@ -13488,6 +13495,7 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"perl-bio-samtools\" ]]; then"));
+        assert!(spec.contains("dnf -y install ncurses-devel"));
         assert!(spec.contains("sam_legacy_ver=0.1.19"));
         assert!(spec.contains("downloads.sourceforge.net/project/samtools/samtools/${sam_legacy_ver}/samtools-${sam_legacy_ver}.tar.bz2"));
         assert!(spec.contains("cp -f \"$sam_legacy_root/libbam.a\" \"$PREFIX/lib/libbam.a\""));
