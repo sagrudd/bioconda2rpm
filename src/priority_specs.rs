@@ -6448,6 +6448,7 @@ EOF\n\
         exit 1\n\
       fi\n\
       tar -xf \"$sam_legacy_archive\" -C \"$sam_legacy_root\" --strip-components=1\n\
+      sed -i -E 's|^CFLAGS[[:space:]]*=.*$|& -fPIC|' \"$sam_legacy_root/Makefile\" || true\n\
       make -C \"$sam_legacy_root\" -j\"${{CPU_COUNT:-1}}\" || make -C \"$sam_legacy_root\" -j1\n\
       mkdir -p \"$PREFIX/include\" \"$PREFIX/lib\"\n\
       cp -f \"$sam_legacy_root/libbam.a\" \"$PREFIX/lib/libbam.a\"\n\
@@ -13508,6 +13509,7 @@ requirements:
         assert!(spec.contains("dnf -y install ncurses-devel"));
         assert!(spec.contains("sam_legacy_ver=0.1.19"));
         assert!(spec.contains("downloads.sourceforge.net/project/samtools/samtools/${sam_legacy_ver}/samtools-${sam_legacy_ver}.tar.bz2"));
+        assert!(spec.contains("sed -i -E 's|^CFLAGS[[:space:]]*=.*$|& -fPIC|' \"$sam_legacy_root/Makefile\" || true"));
         assert!(spec.contains("cp -f \"$sam_legacy_root/libbam.a\" \"$PREFIX/lib/libbam.a\""));
         assert!(spec.contains("for hdr in sam.h bam.h bgzf.h razf.h faidx.h khash.h kseq.h; do"));
     }
