@@ -1,7 +1,7 @@
 # bioconda2rpm Product SRS
 
-Version: 0.1
-Date: February 27, 2026
+Version: 0.2
+Date: March 2, 2026
 Status: Draft (decision-aligned baseline)
 
 ## 1. Purpose
@@ -161,6 +161,13 @@ FR-021 Precompiled binary preference policy
 - For packages under this policy, source-based de novo builds shall be bypassed.
 - If upstream precompiled binaries do not exist for the active target architecture, the package shall be quarantined with architecture-policy metadata.
 
+FR-021a Legacy build-helper bootstrap and transitive-source compatibility policy
+- The system shall support package-specific, policy-governed bootstrap of legacy build-helper tooling when controlled build repositories do not provide required helpers (for example, `opam` for `pplacer`).
+- Bootstrap helper selection shall be deterministic and pinned by version and architecture mapping.
+- Bootstrap helper tooling shall remain build-scoped and shall not be installed into final payload prefixes.
+- When legacy transitive dependencies require compatibility rewrites (for example, keyword-collision fixes in old C code), the rewrite shall be deterministic, executed before configure/build phases, and captured in generated spec/build logs for auditability.
+- If helper bootstrap or compatibility rewrite prerequisites cannot be satisfied deterministically, the package shall be quarantined.
+
 FR-022 Rust runtime and cargo policy
 - The system shall provide a bootstrap runtime package `phoreus-rust-1.92` pinned to Rust `1.92.0`.
 - Rust ecosystem dependencies (`rust`, `rustc`, `cargo`, `rustup`, `rust-*`, `cargo-*`) shall map to `phoreus-rust-1.92` rather than distro toolchain packages.
@@ -203,6 +210,7 @@ NFR-002 Determinism
 
 NFR-003 Traceability
 - Quarantine, resolution, and build decisions shall be recorded in structured reports, including dependency resolution graphs with source attribution (`installed`, `local_rpm`, `repo`, `unresolved`).
+- Build-script rewrites and transitive-source compatibility patches executed by package policy shall be report-visible and reproducibly attributable to generated spec logic.
 
 NFR-004 Maintainability
 - CLI behavior shall be covered by unit tests for parsing defaults and overrides.

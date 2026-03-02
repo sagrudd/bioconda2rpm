@@ -1,7 +1,7 @@
 # bioconda2rpm Product ARD
 
-Version: 0.1
-Date: February 27, 2026
+Version: 0.2
+Date: March 2, 2026
 Status: Draft (decision-aligned baseline)
 
 ## 1. Objective
@@ -63,6 +63,9 @@ The product is structured as layered components:
 - Rust/Cargo execution is rooted in `/usr/local/phoreus/rust/1.92` and follows global build concurrency policy (serial/adaptive) with deterministic single-core fallback.
 - For Nim ecosystem dependencies, routes dependency mapping through a Phoreus Nim runtime package (`phoreus-nim-2.2`) rather than distro Nim package names.
 - Supports policy-driven precompiled-binary overrides for selected packages (for example, `k8`) to bypass fragile source bootstrap chains when upstream recommends prebuilt artefacts.
+- Supports policy-governed build-helper bootstrapping and deterministic build-shim replacement for legacy ecosystems when approved repos lack required helper tooling (for example, `pplacer` requiring `opam`).
+- Build-helper bootstrapping logic is constrained to build-container scope, must use pinned upstream versions with architecture mapping, and must not leak helper binaries into packaged payload prefixes.
+- Transitive-source compatibility rewrites used during helper bootstrap (for example, legacy `mcl` keyword fixes) must be deterministic, applied before configure/build phases, and fully auditable in generated spec/build logs.
 
 6. Build Execution Layer
 - Runs stage-selected build steps (`spec`/`srpm`/`rpm`) in containers.
@@ -167,6 +170,7 @@ Current baseline includes:
 - Package-specific heuristics are controlled exceptions, not a default implementation pattern.
 - Any retained package-specific heuristic must be tagged with `HEURISTIC-TEMP(issue=...)` and associated retirement tracking.
 - Build-time tests enforce that untagged package-specific heuristic blocks are rejected.
+- Heuristics that rewrite build scripts or patch transitive sources must preserve charter traceability requirements: explicit rationale, reproducible transformation, and report-visible evidence.
 
 ## 10. Regression Campaign Architecture
 
