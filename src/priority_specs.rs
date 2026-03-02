@@ -4269,7 +4269,9 @@ fn select_phoreus_python_runtime(parsed: &ParsedMeta, python_recipe: bool) -> Ph
     let compatible_runtimes: Vec<PhoreusPythonRuntime> = PHOREUS_PYTHON_RUNTIMES
         .iter()
         .copied()
-        .filter(|runtime| !recipe_python_runtime_incompatible_with(parsed, runtime.major, runtime.minor))
+        .filter(|runtime| {
+            !recipe_python_runtime_incompatible_with(parsed, runtime.major, runtime.minor)
+        })
         .collect();
 
     if compatible_runtimes.is_empty() {
@@ -4567,10 +4569,7 @@ fn should_keep_rpm_dependency_for_perl(dep: &str) -> bool {
     // perl build scripts (for example Build test / make test).
     if matches!(
         normalized.as_str(),
-        "perl-test-fatal"
-            | "perl-test-requires"
-            | "perl(test::fatal)"
-            | "perl(test::requires)"
+        "perl-test-fatal" | "perl-test-requires" | "perl(test::fatal)" | "perl(test::requires)"
     ) {
         return true;
     }
@@ -8150,7 +8149,11 @@ fn split_inline_patch_selector(entry: &str) -> (&str, Option<&str>) {
         return (trimmed, None);
     }
     let before = &trimmed[..open_idx];
-    if !before.chars().last().is_some_and(|c| c.is_ascii_whitespace()) {
+    if !before
+        .chars()
+        .last()
+        .is_some_and(|c| c.is_ascii_whitespace())
+    {
         return (trimmed, None);
     }
     let selector = trimmed[(open_idx + 1)..(trimmed.len() - 1)].trim();
@@ -10898,15 +10901,12 @@ mod tests {
         assert_eq!(map_build_dependency("autoconf"), "autoconf271".to_string());
         assert_eq!(map_build_dependency("hdf5"), "hdf5".to_string());
         assert_eq!(map_build_dependency("hdf5-devel"), "hdf5".to_string());
+        assert_eq!(map_build_dependency("capnproto"), "capnproto".to_string());
+        assert_eq!(map_build_dependency("cffi"), "python3-cffi".to_string());
         assert_eq!(
-            map_build_dependency("capnproto"),
-            "capnproto".to_string()
+            map_build_dependency("xerces-c"),
+            "xerces-c-devel".to_string()
         );
-        assert_eq!(
-            map_build_dependency("cffi"),
-            "python3-cffi".to_string()
-        );
-        assert_eq!(map_build_dependency("xerces-c"), "xerces-c-devel".to_string());
         assert_eq!(
             map_build_dependency("qt6-main"),
             "qt6-qtbase-devel qt6-qtsvg-devel".to_string()
@@ -10971,7 +10971,10 @@ mod tests {
         );
         assert_eq!(map_build_dependency("libuuid"), "libuuid-devel".to_string());
         assert_eq!(map_build_dependency("libhwy"), "highway-devel".to_string());
-        assert_eq!(map_build_dependency("libboost-devel"), "boost-devel".to_string());
+        assert_eq!(
+            map_build_dependency("libboost-devel"),
+            "boost-devel".to_string()
+        );
         assert_eq!(
             map_build_dependency("libblas"),
             "openblas-devel".to_string()
@@ -11042,7 +11045,10 @@ mod tests {
         assert_eq!(map_runtime_dependency("ninja"), "ninja-build".to_string());
         assert_eq!(map_runtime_dependency("libzlib"), "zlib".to_string());
         assert_eq!(map_runtime_dependency("libcblas"), "openblas".to_string());
-        assert_eq!(map_runtime_dependency("libopenblas"), "openblas".to_string());
+        assert_eq!(
+            map_runtime_dependency("libopenblas"),
+            "openblas".to_string()
+        );
         assert_eq!(
             map_runtime_dependency("zlib-ng"),
             "zlib-ng-compat".to_string()
@@ -11230,8 +11236,11 @@ requirements:
         let sources_dir = tmp.path().join("SOURCES");
         fs::create_dir_all(&recipe_dir).expect("create recipe dir");
         fs::create_dir_all(&sources_dir).expect("create sources dir");
-        fs::write(recipe_dir.join("meta.yaml"), "package: {name: plink, version: 1.0}")
-            .expect("write meta");
+        fs::write(
+            recipe_dir.join("meta.yaml"),
+            "package: {name: plink, version: 1.0}",
+        )
+        .expect("write meta");
 
         let resolved = ResolvedRecipe {
             recipe_name: "plink".to_string(),
@@ -11261,10 +11270,16 @@ requirements:
         let sources_dir = tmp.path().join("SOURCES");
         fs::create_dir_all(&recipe_dir).expect("create recipe dir");
         fs::create_dir_all(&sources_dir).expect("create sources dir");
-        fs::write(recipe_dir.join("meta.yaml"), "package: {name: plink, version: 1.0}")
-            .expect("write meta");
-        fs::write(recipe_dir.join("signed_int64_osx.patch"), "diff --git a/a b/a\n")
-            .expect("write patch");
+        fs::write(
+            recipe_dir.join("meta.yaml"),
+            "package: {name: plink, version: 1.0}",
+        )
+        .expect("write meta");
+        fs::write(
+            recipe_dir.join("signed_int64_osx.patch"),
+            "diff --git a/a b/a\n",
+        )
+        .expect("write patch");
 
         let resolved = ResolvedRecipe {
             recipe_name: "plink".to_string(),
@@ -11412,11 +11427,17 @@ requirements:
         assert!(spec.contains("patch_trim_tmp=\"\""));
         assert!(spec.contains("awk 'BEGIN{emit=0}"));
         assert!(spec.contains("patch_rel=\"${patch_rel#b/}\""));
-        assert!(spec.contains("for maybe_dir in userApps Source_code_including_submodules source src; do"));
+        assert!(
+            spec.contains(
+                "for maybe_dir in userApps Source_code_including_submodules source src; do"
+            )
+        );
         assert!(spec.contains("find . -mindepth 1 -maxdepth 1 -type d -print"));
-        assert!(spec.contains(
-            "patch --binary --forward --batch -p\"$patch_strip\" -i \"$patch_input\""
-        ));
+        assert!(
+            spec.contains(
+                "patch --binary --forward --batch -p\"$patch_strip\" -i \"$patch_input\""
+            )
+        );
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(spec.contains("retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\""));
         assert!(spec.contains("export CPU_COUNT=\"${BIOCONDA2RPM_CPU_COUNT:-1}\""));
@@ -11427,11 +11448,17 @@ requirements:
         assert!(
             spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name include")
         );
-        assert!(spec.contains("export BUILD_PREFIX=\"${BUILD_PREFIX:-$(pwd)/.bioconda2rpm-build-prefix}\""));
+        assert!(spec.contains(
+            "export BUILD_PREFIX=\"${BUILD_PREFIX:-$(pwd)/.bioconda2rpm-build-prefix}\""
+        ));
         assert!(spec.contains("mkdir -p \"$BUILD_PREFIX/bin\""));
         assert!(spec.contains("ln -snf \"$(command -v m4)\" \"$BUILD_PREFIX/bin/m4\" || true"));
-        assert!(spec.contains("mkdir -p \"$BUILD_PREFIX/share/gnuconfig\" \"$PREFIX/share/gnuconfig\""));
-        assert!(spec.contains("cp -f \"$cfg_dir/config.guess\" \"$PREFIX/share/gnuconfig/config.guess\" || true"));
+        assert!(
+            spec.contains("mkdir -p \"$BUILD_PREFIX/share/gnuconfig\" \"$PREFIX/share/gnuconfig\"")
+        );
+        assert!(spec.contains(
+            "cp -f \"$cfg_dir/config.guess\" \"$PREFIX/share/gnuconfig/config.guess\" || true"
+        ));
         assert!(spec.contains("export CPATH=\"/usr/include${CPATH:+:$CPATH}\""));
         assert!(spec.contains("export CPATH=\"${CPATH:+$CPATH:}$dep_include\""));
         assert!(spec.contains("linux|asm|asm-generic) continue ;;"));
@@ -11441,7 +11468,9 @@ requirements:
         assert!(spec.contains("if [[ \"${CONFIG_SITE:-}\" == \"NONE\" ]]; then"));
         assert!(spec.contains("cat config.log; exit 1;"));
         assert!(spec.contains("CURSES_LIB=\"${CURSES_LIB:-}\" ./configure"));
-        assert!(spec.contains("find \"$RECIPE_DIR\" -maxdepth 1 -type f -name '*.sh' -exec chmod 0755"));
+        assert!(
+            spec.contains("find \"$RECIPE_DIR\" -maxdepth 1 -type f -name '*.sh' -exec chmod 0755")
+        );
         assert!(spec.contains("export PKG_NAME=\"${PKG_NAME:-blast}\""));
         assert!(spec.contains("export PKG_VERSION=\"${PKG_VERSION:-2.5.0}\""));
         assert!(spec.contains("export PKG_BUILDNUM=\"${PKG_BUILDNUM:-0}\""));
@@ -11813,7 +11842,9 @@ requirements:
     fn r_runtime_setup_skips_known_unavailable_optional_cran_packages() {
         let block = render_r_runtime_setup_block(true, false, &["cghflasso".to_string()]);
         assert!(block.contains("optional_unavailable_keys <- normalize_pkg_key(c(\"cghflasso\"))"));
-        assert!(block.contains("req <- req[!(normalize_pkg_key(req) %in% optional_unavailable_keys)]"));
+        assert!(
+            block.contains("req <- req[!(normalize_pkg_key(req) %in% optional_unavailable_keys)]")
+        );
     }
 
     #[test]
@@ -11914,7 +11945,11 @@ requirements:
         assert!(spec.contains("Requires:  bioconductor-zlibbioc"));
         assert!(spec.contains("install_from_local_phoreus_rpm <- function(pkg)"));
         assert!(spec.contains("version_for_file <- function(file, pkg)"));
-        assert!(spec.contains("tryCatch(package_version(v), error = function(e) package_version(\"0\"))"));
+        assert!(
+            spec.contains(
+                "tryCatch(package_version(v), error = function(e) package_version(\"0\"))"
+            )
+        );
         assert!(spec.contains("paste(sprintf(\"%08d\", parts), collapse = \".\")"));
         assert!(spec.contains("/work/targets/*/RPMS/*/phoreus-bioconductor-%s-*.rpm"));
     }
@@ -12304,7 +12339,9 @@ requirements:
             license: "MIT".to_string(),
             summary: "busco".to_string(),
             source_patches: Vec::new(),
-            build_script: Some("$PYTHON -m pip install . --no-deps --no-build-isolation".to_string()),
+            build_script: Some(
+                "$PYTHON -m pip install . --no-deps --no-build-isolation".to_string(),
+            ),
             noarch_python: true,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec![
@@ -12453,7 +12490,9 @@ requirements:
             license: "GPL-2.0-only".to_string(),
             summary: "spades".to_string(),
             source_patches: Vec::new(),
-            build_script: Some("PREFIX=\"${PREFIX}\" ./spades_compile.sh -rj\"${CPU_COUNT}\"".to_string()),
+            build_script: Some(
+                "PREFIX=\"${PREFIX}\" ./spades_compile.sh -rj\"${CPU_COUNT}\"".to_string(),
+            ),
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -12495,7 +12534,9 @@ requirements:
             license: "MIT".to_string(),
             summary: "hifiasm".to_string(),
             source_patches: Vec::new(),
-            build_script: Some("make INCLUDES=\"-I$PREFIX/include\" CXXFLAGS=\"${CXXFLAGS} -O3\"".to_string()),
+            build_script: Some(
+                "make INCLUDES=\"-I$PREFIX/include\" CXXFLAGS=\"${CXXFLAGS} -O3\"".to_string(),
+            ),
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -12574,7 +12615,9 @@ requirements:
             package_name: "ucsc-fatotwobit".to_string(),
             version: "482".to_string(),
             build_number: "0".to_string(),
-            source_url: "https://hgdownload.cse.ucsc.edu/admin/exe/userApps.archive/userApps.v482.src.tgz".to_string(),
+            source_url:
+                "https://hgdownload.cse.ucsc.edu/admin/exe/userApps.archive/userApps.v482.src.tgz"
+                    .to_string(),
             source_folder: String::new(),
             homepage: "https://example.invalid/ucsc-fatotwobit".to_string(),
             license: "custom".to_string(),
@@ -12603,7 +12646,9 @@ requirements:
             false,
         );
 
-        assert!(spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1"));
+        assert!(
+            spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1")
+        );
         assert!(spec.contains("if [[ \"%{tool}\" == ucsc-* ]]; then"));
         assert!(spec.contains("cd userApps"));
     }
@@ -12689,9 +12734,7 @@ requirements:
         assert!(spec.contains(
             "sed -E -i 's|--with-sparsehash(=[^[:space:]]+)?|--without-sparsehash|g' ./build.sh || true"
         ));
-        assert!(spec.contains(
-            "sparsehash headers not found; forcing abyss --without-sparsehash"
-        ));
+        assert!(spec.contains("sparsehash headers not found; forcing abyss --without-sparsehash"));
     }
 
     #[test]
@@ -12706,7 +12749,9 @@ requirements:
             license: "MIT".to_string(),
             summary: "tabixpp".to_string(),
             source_patches: vec!["shared_lib.patch".to_string()],
-            build_script: Some("make prefix=\"${PREFIX}\" -j\"${CPU_COUNT}\"\nmake install".to_string()),
+            build_script: Some(
+                "make prefix=\"${PREFIX}\" -j\"${CPU_COUNT}\"\nmake install".to_string(),
+            ),
             noarch_python: false,
             build_dep_specs_raw: vec!["make".to_string()],
             host_dep_specs_raw: vec![
@@ -12839,7 +12884,9 @@ requirements:
             license: "Artistic-1.0-Perl".to_string(),
             summary: "perl-lwp-mediatypes".to_string(),
             source_patches: Vec::new(),
-            build_script: Some("perl Makefile.PL\nmake\nmake test_dynamic\nmake install".to_string()),
+            build_script: Some(
+                "perl Makefile.PL\nmake\nmake test_dynamic\nmake install".to_string(),
+            ),
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -13191,7 +13238,11 @@ requirements:
         assert!(spec.contains("if [[ \"%{tool}\" == \"biobambam\" ]]; then"));
         assert!(spec.contains("export LDFLAGS=\"${LDFLAGS:-} -Wl,--allow-shlib-undefined\""));
         assert!(spec.contains("if [[ ! -f /usr/include/snappy-sinksource.h && ! -f /usr/local/include/snappy-sinksource.h ]]; then"));
-        assert!(spec.contains("dnf -y install bzip2-devel nettle-devel libcurl-devel curl-devel xz-devel"));
+        assert!(
+            spec.contains(
+                "dnf -y install bzip2-devel nettle-devel libcurl-devel curl-devel xz-devel"
+            )
+        );
         assert!(spec.contains("if ! pkg-config --exists libmaus2 2>/dev/null; then"));
         assert!(spec.contains("export libmaus2_CFLAGS=\"-I$libmaus2_prefix/include\""));
         assert!(spec.contains("export libmaus2_LIBS=\"-L$libmaus2_prefix/lib -lmaus2\""));
@@ -13240,7 +13291,9 @@ requirements:
         assert!(spec.contains("export Qt6_DIR=\"$(dirname \"$qt6_cfg\")\""));
         assert!(spec.contains("s@^[ \\t]*-DEGL_INCLUDE_DIR:PATH=.*\\n@@mg"));
         assert!(spec.contains("find build -type f -name flags.make | while IFS= read -r fm; do"));
-        assert!(spec.contains("sed -i \"s# -isystem /usr/include # #g; s# -I/usr/include # #g\" \"\\$fm\" || true"));
+        assert!(spec.contains(
+            "sed -i \"s# -isystem /usr/include # #g; s# -I/usr/include # #g\" \"\\$fm\" || true"
+        ));
         assert!(spec.contains("BuildRequires:  qt6-qtbase-devel"));
         assert!(spec.contains("BuildRequires:  qt6-qtsvg-devel"));
         assert!(spec.contains("BuildRequires:  libX11-devel"));
@@ -13342,7 +13395,9 @@ requirements:
             license: "MIT".to_string(),
             summary: "umi-tools".to_string(),
             source_patches: Vec::new(),
-            build_script: Some("$PYTHON -m pip install . --no-deps --no-build-isolation".to_string()),
+            build_script: Some(
+                "$PYTHON -m pip install . --no-deps --no-build-isolation".to_string(),
+            ),
             noarch_python: false,
             build_dep_specs_raw: vec!["python".to_string()],
             host_dep_specs_raw: vec!["python".to_string()],
@@ -13382,7 +13437,9 @@ requirements:
             license: "GPL-3.0-or-later".to_string(),
             summary: "vcf-validator".to_string(),
             source_patches: Vec::new(),
-            build_script: Some("mkdir build\ncd build\ncmake ..\nmake -j${CPU_COUNT}\n".to_string()),
+            build_script: Some(
+                "mkdir build\ncd build\ncmake ..\nmake -j${CPU_COUNT}\n".to_string(),
+            ),
             noarch_python: false,
             build_dep_specs_raw: vec!["cmake".to_string()],
             host_dep_specs_raw: vec!["boost".to_string()],
@@ -13536,7 +13593,11 @@ requirements:
         assert!(spec.contains("https://github.com/ocaml/opam/releases/download/${opam_ver}/opam-${opam_ver}-${opam_arch}-linux"));
         assert!(spec.contains("curl -L --fail -o /usr/local/bin/opam \"$opam_url\" || true"));
         assert!(spec.contains("cat > ./build.sh <<'PPLACER_BIOC2RPM_SH'"));
-        assert!(spec.contains("mcl_opam=$(find \"${HOME}/.opam/repo\" -path '*/packages/mcl.12-068/opam'"));
+        assert!(
+            spec.contains(
+                "mcl_opam=$(find \"${HOME}/.opam/repo\" -path '*/packages/mcl.12-068/opam'"
+            )
+        );
         assert!(spec.contains("perl -i -pe 's/\\\\bconst mclv\\\\* restrict\\\\b/const mclv* restrict_v/g; s/\\\\brestrict\\\\b/restrict_v/g' src/impala/matrix.c"));
         assert!(spec.contains("mcl.12-068"));
     }
@@ -13582,8 +13643,12 @@ requirements:
         assert!(spec.contains("git clone --depth 1 --branch \"v${sdsl_ver}\" --recursive --shallow-submodules https://github.com/simongog/sdsl-lite.git \"$sdsl_src\" || true"));
         assert!(spec.contains("cmake -S \"$sdsl_src\" -B \"$sdsl_src/build\" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"$PREFIX\" -DBUILD_TESTING=OFF"));
         assert!(spec.contains("export CPPFLAGS=\"-I$PREFIX/include ${CPPFLAGS:-}\""));
-        assert!(spec.contains("export LDFLAGS=\"-L$PREFIX/lib -Wl,-rpath,$PREFIX/lib ${LDFLAGS:-}\""));
-        assert!(spec.contains("export LIBRARY_PATH=\"$PREFIX/lib${LIBRARY_PATH:+:$LIBRARY_PATH}\""));
+        assert!(
+            spec.contains("export LDFLAGS=\"-L$PREFIX/lib -Wl,-rpath,$PREFIX/lib ${LDFLAGS:-}\"")
+        );
+        assert!(
+            spec.contains("export LIBRARY_PATH=\"$PREFIX/lib${LIBRARY_PATH:+:$LIBRARY_PATH}\"")
+        );
         assert!(spec.contains("if [[ -e /usr/lib64/libz.so || -e /usr/lib/libz.so ]]; then"));
         assert!(spec.contains("export LDFLAGS=\"-L/usr/lib64 -L/usr/lib ${LDFLAGS:-}\""));
         assert!(spec.contains("sed -i \"s/werror=true/werror=false/g\" \"$meson_file\" || true"));
@@ -13745,14 +13810,18 @@ requirements:
     fn synthesized_build_script_adds_no_build_isolation_for_local_pip_install() {
         let script = "{{ PYTHON }} -m pip install . --no-deps --ignore-installed -vv";
         let generated = synthesize_build_sh_from_meta_script(script);
-        assert!(generated.contains("$PYTHON -m pip install . --no-deps --ignore-installed -vv --no-build-isolation"));
+        assert!(generated.contains(
+            "$PYTHON -m pip install . --no-deps --ignore-installed -vv --no-build-isolation"
+        ));
     }
 
     #[test]
     fn synthesized_build_script_wraps_use_pep517_with_legacy_fallback() {
         let script = "{{ PYTHON }} -m pip install --no-deps --use-pep517 . -vvv";
         let generated = synthesize_build_sh_from_meta_script(script);
-        assert!(generated.contains("if ! $PYTHON -m pip install --no-deps --use-pep517 . -vvv --no-build-isolation; then"));
+        assert!(generated.contains(
+            "if ! $PYTHON -m pip install --no-deps --use-pep517 . -vvv --no-build-isolation; then"
+        ));
         assert!(generated.contains("$PYTHON -m pip install --no-deps . -vvv --no-build-isolation"));
     }
 
@@ -14296,7 +14365,9 @@ requirements:
             false,
         );
         assert!(spec.contains("Source0:"));
-        assert!(spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1"));
+        assert!(
+            spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1")
+        );
     }
 
     #[test]
@@ -14329,23 +14400,19 @@ requirements:
     fn harden_build_script_adds_no_build_isolation_for_local_pip_install() {
         let raw = "$PYTHON -m pip install . --no-deps --ignore-installed -vv\n";
         let hardened = harden_build_script_text(raw);
-        assert!(hardened.contains("$PYTHON -m pip install . --no-deps --ignore-installed -vv --no-build-isolation"));
+        assert!(hardened.contains(
+            "$PYTHON -m pip install . --no-deps --ignore-installed -vv --no-build-isolation"
+        ));
     }
 
     #[test]
     fn harden_build_script_wraps_use_pep517_with_legacy_fallback() {
         let raw = "$PYTHON -m pip install --no-deps --use-pep517 . -vvv\n";
         let hardened = harden_build_script_text(raw);
-        assert!(
-            hardened.contains(
-                "if ! $PYTHON -m pip install --no-deps --use-pep517 . -vvv --no-build-isolation; then"
-            )
-        );
-        assert!(
-            hardened.contains(
-                "$PYTHON -m pip install --no-deps . -vvv --no-build-isolation"
-            )
-        );
+        assert!(hardened.contains(
+            "if ! $PYTHON -m pip install --no-deps --use-pep517 . -vvv --no-build-isolation; then"
+        ));
+        assert!(hardened.contains("$PYTHON -m pip install --no-deps . -vvv --no-build-isolation"));
     }
 
     #[test]
@@ -14857,10 +14924,10 @@ about:
         );
     }
 
-fn has_heuristic_policy_marker(lines: &[&str], idx: usize) -> bool {
-    let start = idx.saturating_sub(3);
-    lines[start..=idx]
-        .iter()
-        .any(|line| line.contains("HEURISTIC-TEMP(issue="))
-}
+    fn has_heuristic_policy_marker(lines: &[&str], idx: usize) -> bool {
+        let start = idx.saturating_sub(3);
+        lines[start..=idx]
+            .iter()
+            .any(|line| line.contains("HEURISTIC-TEMP(issue="))
+    }
 }
