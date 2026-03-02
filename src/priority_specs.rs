@@ -6630,6 +6630,62 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
       perl -0pi -e 's@\\ncd mcl\\n.*?\\ncd \\.\\.\\n@\\n# bioconda2rpm: use opam mcl package, skip bundled mcl source build\\n:\\n@s' ./build.sh || true\n\
     fi\n\
     fi\n\
+\n\
+    # Goldrush requires sdsl-lite C++ headers/libs. EL9 repos in our build\n\
+    # profile do not currently provide sdsl-lite packages, so bootstrap from\n\
+    # upstream source into PREFIX when unavailable.\n\
+    if [[ \"%{{tool}}\" == \"goldrush\" ]]; then\n\
+    if command -v dnf >/dev/null 2>&1; then\n\
+      dnf -y install zlib-devel >/dev/null 2>&1 || true\n\
+    fi\n\
+    if command -v microdnf >/dev/null 2>&1; then\n\
+      microdnf -y install zlib-devel >/dev/null 2>&1 || true\n\
+    fi\n\
+    if [[ -e /usr/lib64/libz.so.1 && ! -e /usr/lib64/libz.so ]]; then\n\
+      ln -sf /usr/lib64/libz.so.1 /usr/lib64/libz.so || true\n\
+    fi\n\
+    if [[ -e /usr/lib/libz.so.1 && ! -e /usr/lib/libz.so ]]; then\n\
+      ln -sf /usr/lib/libz.so.1 /usr/lib/libz.so || true\n\
+    fi\n\
+    if ! ldconfig -p 2>/dev/null | grep -q 'libsdsl\\.so'; then\n\
+      sdsl_ver=2.1.1\n\
+      sdsl_work=\"/tmp/bioconda2rpm-sdsl-lite-${{sdsl_ver}}\"\n\
+      rm -rf \"$sdsl_work\"\n\
+      mkdir -p \"$sdsl_work\"\n\
+      sdsl_src=\"$sdsl_work/sdsl-lite\"\n\
+      if command -v git >/dev/null 2>&1; then\n\
+        git clone --depth 1 --branch \"v${{sdsl_ver}}\" --recursive --shallow-submodules https://github.com/simongog/sdsl-lite.git \"$sdsl_src\" || true\n\
+      fi\n\
+      if [[ -f \"$sdsl_src/CMakeLists.txt\" ]]; then\n\
+        cmake -S \"$sdsl_src\" -B \"$sdsl_src/build\" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"$PREFIX\" -DBUILD_TESTING=OFF\n\
+        cmake --build \"$sdsl_src/build\" -j\"${{CPU_COUNT:-1}}\"\n\
+        cmake --install \"$sdsl_src/build\"\n\
+      fi\n\
+    fi\n\
+    if [[ -d \"$PREFIX/include\" ]]; then\n\
+      export CPPFLAGS=\"-I$PREFIX/include ${{CPPFLAGS:-}}\"\n\
+    fi\n\
+    if [[ -d \"$PREFIX/lib\" ]]; then\n\
+      export LDFLAGS=\"-L$PREFIX/lib -Wl,-rpath,$PREFIX/lib ${{LDFLAGS:-}}\"\n\
+      export LIBRARY_PATH=\"$PREFIX/lib${{LIBRARY_PATH:+:$LIBRARY_PATH}}\"\n\
+      export LD_LIBRARY_PATH=\"$PREFIX/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n\
+    fi\n\
+    if [[ -d \"$PREFIX/lib64\" ]]; then\n\
+      export LDFLAGS=\"-L$PREFIX/lib64 -Wl,-rpath,$PREFIX/lib64 ${{LDFLAGS:-}}\"\n\
+      export LIBRARY_PATH=\"$PREFIX/lib64${{LIBRARY_PATH:+:$LIBRARY_PATH}}\"\n\
+      export LD_LIBRARY_PATH=\"$PREFIX/lib64${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n\
+    fi\n\
+    if [[ -e /usr/lib64/libz.so || -e /usr/lib/libz.so ]]; then\n\
+      export LDFLAGS=\"-L/usr/lib64 -L/usr/lib ${{LDFLAGS:-}}\"\n\
+      export LIBRARY_PATH=\"/usr/lib64:/usr/lib${{LIBRARY_PATH:+:$LIBRARY_PATH}}\"\n\
+    fi\n\
+    for meson_file in meson.build subprojects/goldpolish/meson.build subprojects/goldpolish/subprojects/ntedit/meson.build; do\n\
+      if [[ -f \"$meson_file\" ]]; then\n\
+        sed -i \"s/werror=true/werror=false/g\" \"$meson_file\" || true\n\
+      fi\n\
+    done\n\
+    export CXXFLAGS=\"-Wno-error=ignored-qualifiers -Wno-ignored-qualifiers ${{CXXFLAGS:-}}\"\n\
+    fi\n\
     \n\
     # SPAdes NCBI SDK support is optional upstream and disabled by default\n\
     # due to compatibility issues. Bioconda patching can force it ON, which\n\
@@ -13014,6 +13070,55 @@ requirements:
         assert!(spec.contains("curl -L --fail -o /usr/local/bin/opam \"$opam_url\" || true"));
         assert!(spec.contains("sed -i 's/ ocamlfind/ mcl.12-068 ocamlfind/g' ./build.sh || true"));
         assert!(spec.contains("skip bundled mcl source build"));
+    }
+
+    #[test]
+    fn goldrush_spec_bootstraps_sdsl_lite_when_system_library_missing() {
+        let parsed = ParsedMeta {
+            package_name: "goldrush".to_string(),
+            version: "1.2.2".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/goldrush.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/goldrush".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "goldrush".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("meson --prefix ${PREFIX} build".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["meson".to_string()],
+            host_dep_specs_raw: vec!["sdsl-lite".to_string()],
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::from(["meson".to_string()]),
+            host_deps: BTreeSet::from(["sdsl-lite".to_string()]),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "goldrush",
+            &parsed,
+            "bioconda-goldrush-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"goldrush\" ]]; then"));
+        assert!(spec.contains("dnf -y install zlib-devel >/dev/null 2>&1 || true"));
+        assert!(spec.contains("ln -sf /usr/lib64/libz.so.1 /usr/lib64/libz.so || true"));
+        assert!(spec.contains("git clone --depth 1 --branch \"v${sdsl_ver}\" --recursive --shallow-submodules https://github.com/simongog/sdsl-lite.git \"$sdsl_src\" || true"));
+        assert!(spec.contains("cmake -S \"$sdsl_src\" -B \"$sdsl_src/build\" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"$PREFIX\" -DBUILD_TESTING=OFF"));
+        assert!(spec.contains("export CPPFLAGS=\"-I$PREFIX/include ${CPPFLAGS:-}\""));
+        assert!(spec.contains("export LDFLAGS=\"-L$PREFIX/lib -Wl,-rpath,$PREFIX/lib ${LDFLAGS:-}\""));
+        assert!(spec.contains("export LIBRARY_PATH=\"$PREFIX/lib${LIBRARY_PATH:+:$LIBRARY_PATH}\""));
+        assert!(spec.contains("if [[ -e /usr/lib64/libz.so || -e /usr/lib/libz.so ]]; then"));
+        assert!(spec.contains("export LDFLAGS=\"-L/usr/lib64 -L/usr/lib ${LDFLAGS:-}\""));
+        assert!(spec.contains("sed -i \"s/werror=true/werror=false/g\" \"$meson_file\" || true"));
+        assert!(spec.contains("export CXXFLAGS=\"-Wno-error=ignored-qualifiers -Wno-ignored-qualifiers ${CXXFLAGS:-}\""));
     }
 
     #[test]
