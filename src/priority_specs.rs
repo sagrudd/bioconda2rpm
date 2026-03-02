@@ -7323,6 +7323,11 @@ avail <- tryCatch(rownames(available.packages(repos = repos)), error = function(
 normalize_pkg_key <- function(pkg) {{\n\
   tolower(gsub(\"[-_]\", \".\", pkg))\n\
 }}\n\
+optional_unavailable_keys <- normalize_pkg_key(c(\"cghflasso\"))\n\
+if (length(req)) {{\n\
+  req <- req[!(normalize_pkg_key(req) %in% optional_unavailable_keys)]\n\
+}}\n\
+if (!length(req)) quit(save = \"no\", status = 0)\n\
 resolve_case <- function(pkg) {{\n\
   if (!length(avail)) return(pkg)\n\
   key <- normalize_pkg_key(pkg)\n\
@@ -11493,6 +11498,13 @@ requirements:
             canonical_r_package_name("futile-logger"),
             "futile.logger".to_string()
         );
+    }
+
+    #[test]
+    fn r_runtime_setup_skips_known_unavailable_optional_cran_packages() {
+        let block = render_r_runtime_setup_block(true, false, &["cghflasso".to_string()]);
+        assert!(block.contains("optional_unavailable_keys <- normalize_pkg_key(c(\"cghflasso\"))"));
+        assert!(block.contains("req <- req[!(normalize_pkg_key(req) %in% optional_unavailable_keys)]"));
     }
 
     #[test]
