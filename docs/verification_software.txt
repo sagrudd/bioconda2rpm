@@ -106,46 +106,85 @@ nanoplot
 nanoqc
 necat
 nextclade
+nextdenovo:
 nextflow
+nextpolish
+ntcard
 oarfish
+oatk
+panaln
 paraphase
+pggb
 picard
 picopore
 pilon
 plassembler
+pling
 plink
+polypolish
 porechop
 poretools
+preseq
+prodigal
+prokka
+py_fasta_validator
+pybigwig
 pychopper
 pysamstats
+pytrf
 qualimap
 quast
+rabbitsketch
 racon
 rasusa
 rattle
 raven-assembler
 rdeval
+rnabloom
 # rnalib
+ropebwt3
 rotate
+rtg-tools
 salmon
 sambamba
 samblaster
 samtools
 # scafari
+scanpy-cli
+scanpy-scripts
 # scikit-bio
 # screed
+semibin
 pyseq-align
 seqfu
 seqkit
-# seurat
+seqscreen
+seqtk
+seurat-scripts
+severus
+shapeit5
+skani
+slivar
+sniffles
 snpeff
 snpsift
+somalier
 sourmash
 spades
 sra-tools
-# samblaster  # duplicate
+star
+star-fusion
+straglr
+strainr2
+stranger
+strelka
 stringtie
 # strkit
+strobealign
+survivor
+svdb
+svync
+tiddit
 toulligqc
 trackplot
 transannot
