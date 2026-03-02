@@ -6231,7 +6231,7 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     if [[ \"%{{tool}}\" == \"umi-tools\" ]]; then\n\
     \"$PIP\" install --no-cache-dir \"setuptools<81\" || true\n\
     if [[ -f setup.py ]]; then\n\
-      perl -0pi -e 's@^\\s*(import|from)\\s+ez_setup.*\\n@@mg; s@^\\s*ez_setup\\.use_setuptools\\(\\)\\s*\\n@@mg; s@^\\s*use_setuptools\\(\\)\\s*\\n@@mg' setup.py || true\n\
+      perl -0pi -e 's@^\\s*(import|from)\\s+ez_setup.*\\n@@mg; s@^\\s*ez_setup\\.use_setuptools\\([^\\n]*\\)\\s*\\n@@mg; s@^\\s*use_setuptools\\([^\\n]*\\)\\s*\\n@@mg' setup.py || true\n\
     fi\n\
     fi\n\
     \n\
@@ -12734,6 +12734,46 @@ requirements:
         assert!(spec.contains("sed -i -E 's/^([[:space:]]*)print[[:space:]]+([^#].*)$/\\1print(\\2)/' setup.py || true"));
         assert!(spec.contains("2to3 -w -n setup.py >/dev/null 2>&1 || true"));
         assert!(spec.contains("\"$PIP\" install --no-cache-dir \"setuptools<81\" || true"));
+    }
+
+    #[test]
+    fn umi_tools_spec_strips_ez_setup_calls_with_arguments() {
+        let parsed = ParsedMeta {
+            package_name: "umi-tools".to_string(),
+            version: "1.1.6".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/umi-tools.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/umi-tools".to_string(),
+            license: "MIT".to_string(),
+            summary: "umi-tools".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps --no-build-isolation".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["python".to_string()],
+            host_dep_specs_raw: vec!["python".to_string()],
+            run_dep_specs_raw: vec!["python".to_string()],
+            build_deps: BTreeSet::from(["python".to_string()]),
+            host_deps: BTreeSet::from(["python".to_string()]),
+            run_deps: BTreeSet::from(["python".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "umi-tools",
+            &parsed,
+            "bioconda-umi-tools-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"umi-tools\" ]]; then"));
+        assert!(spec.contains("s@^\\s*use_setuptools\\([^\\n]*\\)\\s*\\n@@mg"));
+        assert!(spec.contains("s@^\\s*ez_setup\\.use_setuptools\\([^\\n]*\\)\\s*\\n@@mg"));
     }
 
     #[test]
