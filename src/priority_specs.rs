@@ -6057,6 +6057,18 @@ fi\n\
 # Normalize these to fail fast after printing config.log.\n\
 sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log; exit 1; }}/g' ./build.sh || true\n\
 \n\
+# Trinity bundles and compiles a sizeable R stack under PREFIX. Ensure compilers\n\
+# remap buildroot-prefixed file paths to final install prefixes to avoid\n\
+# check-buildroot failures from embedded absolute temporary paths.\n\
+if [[ \"%{{tool}}\" == \"trinity\" ]]; then\n\
+  prefix_map_flags=\"-ffile-prefix-map=$PREFIX=%{{phoreus_prefix}} -fdebug-prefix-map=$PREFIX=%{{phoreus_prefix}} -fmacro-prefix-map=$PREFIX=%{{phoreus_prefix}}\"\n\
+  export CFLAGS=\"$prefix_map_flags ${{CFLAGS:-}}\"\n\
+  export CXXFLAGS=\"$prefix_map_flags ${{CXXFLAGS:-}}\"\n\
+  export CPPFLAGS=\"$prefix_map_flags ${{CPPFLAGS:-}}\"\n\
+  export FCFLAGS=\"$prefix_map_flags ${{FCFLAGS:-}}\"\n\
+  export FFLAGS=\"$prefix_map_flags ${{FFLAGS:-}}\"\n\
+fi\n\
+\n\
 {python_venv_setup}\
 \n\
 {r_runtime_setup}\
@@ -7120,6 +7132,12 @@ PPLACER_BIOC2RPM_SH\n\
     while IFS= read -r -d '' text_path; do\n\
     sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true\n\
     done < <(grep -RIlZ -- \"$buildroot_prefix\" %{{buildroot}}%{{phoreus_prefix}} 2>/dev/null || true)\n\
+    # Some configure metadata stores raw %{{buildroot}} without the install prefix\n\
+    # suffix (for example linker probes in config.status). Scrub those tokens too.\n\
+    buildroot_root=\"%{{buildroot}}\"\n\
+    while IFS= read -r -d '' text_path; do\n\
+    sed -i \"s|$buildroot_root||g\" \"$text_path\" || true\n\
+    done < <(grep -RIlZ -- \"$buildroot_root\" %{{buildroot}}%{{phoreus_prefix}} 2>/dev/null || true)\n\
     \n\
     # Perl installs often emit perllocal.pod entries that embed buildroot paths.\n\
     # Drop those files to satisfy RPM check-buildroot validation.\n\
@@ -13511,6 +13529,49 @@ requirements:
         assert!(spec.contains("if [[ \"%{tool}\" == \"umi-tools\" ]]; then"));
         assert!(spec.contains("s@^\\s*use_setuptools\\([^\\n]*\\)\\s*\\n@@mg"));
         assert!(spec.contains("s@^\\s*ez_setup\\.use_setuptools\\([^\\n]*\\)\\s*\\n@@mg"));
+    }
+
+    #[test]
+    fn trinity_spec_maps_buildroot_prefixes_and_scrubs_raw_buildroot_tokens() {
+        let parsed = ParsedMeta {
+            package_name: "trinity".to_string(),
+            version: "2.15.2".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/trinity.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/trinity".to_string(),
+            license: "BSD-3-Clause".to_string(),
+            summary: "trinity".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("make -j${CPU_COUNT}".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["cmake".to_string(), "pkg-config".to_string()],
+            host_dep_specs_raw: vec!["r-base".to_string(), "perl".to_string()],
+            run_dep_specs_raw: vec!["r-base".to_string(), "perl".to_string()],
+            build_deps: BTreeSet::from(["cmake".to_string(), "pkg-config".to_string()]),
+            host_deps: BTreeSet::from(["r-base".to_string(), "perl".to_string()]),
+            run_deps: BTreeSet::from(["r-base".to_string(), "perl".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "trinity",
+            &parsed,
+            "bioconda-trinity-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"trinity\" ]]; then"));
+        assert!(spec.contains(
+            "prefix_map_flags=\"-ffile-prefix-map=$PREFIX=%{phoreus_prefix} -fdebug-prefix-map=$PREFIX=%{phoreus_prefix} -fmacro-prefix-map=$PREFIX=%{phoreus_prefix}\""
+        ));
+        assert!(spec.contains("buildroot_root=\"%{buildroot}\""));
+        assert!(spec.contains("sed -i \"s|$buildroot_root||g\" \"$text_path\" || true"));
     }
 
     #[test]
