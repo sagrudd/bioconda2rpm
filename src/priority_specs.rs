@@ -5984,6 +5984,61 @@ if [[ -f /usr/include/H5pubconf-32.h && ! -e \"$PREFIX/include/H5pubconf.h\" ]];
   ln -snf /usr/include/H5pubconf-32.h \"$PREFIX/include/H5pubconf.h\"\n\
 fi\n\
 \n\
+# Mothur expects HDF5 C++ headers and libs under PREFIX, but EL9 often keeps\n\
+# them under /usr/include|lib*/hdf5/serial. Mirror deterministic symlinks.\n\
+if [[ \"%{{tool}}\" == \"mothur\" ]]; then\n\
+  if command -v dnf >/dev/null 2>&1; then\n\
+    dnf -y install hdf5-devel hdf5-cpp-devel readline-devel ncurses-devel >/dev/null 2>&1 || true\n\
+  fi\n\
+  if command -v microdnf >/dev/null 2>&1; then\n\
+    microdnf -y install hdf5-devel hdf5-cpp-devel readline-devel ncurses-devel >/dev/null 2>&1 || true\n\
+  fi\n\
+  mkdir -p \"$PREFIX/include/hdf5\" \"$PREFIX/lib\" \"$PREFIX/lib/hdf5\"\n\
+  h5cpp_hdr=\"\"\n\
+  if [[ -d /usr/include/hdf5/serial ]]; then\n\
+    while IFS= read -r h5hdr; do\n\
+      ln -snf \"$h5hdr\" \"$PREFIX/include/hdf5/$(basename \"$h5hdr\")\" || true\n\
+    done < <(find /usr/include/hdf5/serial -maxdepth 1 -type f -name 'H5*.h' 2>/dev/null)\n\
+    if [[ -f /usr/include/hdf5/serial/H5Cpp.h ]]; then\n\
+      h5cpp_hdr=\"/usr/include/hdf5/serial/H5Cpp.h\"\n\
+    fi\n\
+    export CPPFLAGS=\"-I$PREFIX/include/hdf5 -I/usr/include/hdf5/serial ${{CPPFLAGS:-}}\"\n\
+  fi\n\
+  if [[ -z \"$h5cpp_hdr\" ]]; then\n\
+    h5cpp_hdr=$(find /usr/include /usr/local/include -type f -name 'H5Cpp.h' 2>/dev/null | head -n 1 || true)\n\
+  fi\n\
+  if [[ -n \"$h5cpp_hdr\" && -f \"$h5cpp_hdr\" ]]; then\n\
+    ln -snf \"$h5cpp_hdr\" \"$PREFIX/include/H5Cpp.h\" || true\n\
+    ln -snf \"$h5cpp_hdr\" \"$PREFIX/include/hdf5/H5Cpp.h\" || true\n\
+  else\n\
+    # If HDF5 C++ headers are unavailable in EL9 repos, build mothur without\n\
+    # optional HDF5 support to avoid hard compile failure.\n\
+    find . -type f \\( -name Makefile -o -name makefile \\) -exec sed -i \\\n\
+      -e 's/-DUSE_HDF5_HL//g' \\\n\
+      -e 's/-DUSE_HDF5//g' \\\n\
+      -e 's|-I \"\\${{PREFIX}}/include/hdf5\"||g' \\\n\
+      -e 's|-I\\${{PREFIX}}/include/hdf5||g' \\\n\
+      -e 's/-lhdf5_cpp//g' \\\n\
+      -e 's/-lhdf5_hl//g' \\\n\
+      -e 's/-lhdf5//g' {{}} + || true\n\
+  fi\n\
+  if [[ ! -f /usr/include/readline/readline.h && ! -f /usr/local/include/readline/readline.h ]]; then\n\
+    find . -type f \\( -name Makefile -o -name makefile \\) -exec sed -i \\\n\
+      -e 's/-DUSE_READLINE//g' \\\n\
+      -e 's/-lreadline//g' {{}} + || true\n\
+  fi\n\
+  for h5libdir in /usr/lib64/hdf5/serial /usr/lib/hdf5/serial; do\n\
+    if [[ -d \"$h5libdir\" ]]; then\n\
+      while IFS= read -r h5lib; do\n\
+        ln -snf \"$h5lib\" \"$PREFIX/lib/$(basename \"$h5lib\")\" || true\n\
+        ln -snf \"$h5lib\" \"$PREFIX/lib/hdf5/$(basename \"$h5lib\")\" || true\n\
+      done < <(find \"$h5libdir\" -maxdepth 1 \\( -type f -o -type l \\) -name 'libhdf5*' 2>/dev/null)\n\
+      export LDFLAGS=\"-L$h5libdir -L$PREFIX/lib -L$PREFIX/lib/hdf5 ${{LDFLAGS:-}}\"\n\
+      break\n\
+    fi\n\
+  done\n\
+fi\n\
+\n\
     # Some recipes call `yacc` explicitly while only `bison` is present.\n\
     # Provide a deterministic shim instead of per-package overrides.\n\
     if ! command -v yacc >/dev/null 2>&1 && command -v bison >/dev/null 2>&1; then\n\
@@ -6828,30 +6883,22 @@ if [[ \"$(uname)\" == \"Darwin\" ]]; then\n\
 fi\n\
 \n\
 OCAML_VERSION=4.14.2\n\
+if ! command -v rsync >/dev/null 2>&1; then\n\
+  if command -v dnf >/dev/null 2>&1; then\n\
+    dnf -y install rsync >/dev/null 2>&1 || true\n\
+  fi\n\
+  if command -v microdnf >/dev/null 2>&1; then\n\
+    microdnf -y install rsync >/dev/null 2>&1 || true\n\
+  fi\n\
+fi\n\
+# mcl.12-068 (pulled by pplacer's opam repo) needs legacy common-symbol\n\
+# handling with modern GCC to avoid multiple-definition link failures.\n\
+export CFLAGS=\"${{CFLAGS:-}} -fcommon\"\n\
+export CXXFLAGS=\"${{CXXFLAGS:-}} -fcommon\"\n\
 opam init --disable-sandboxing -y --compiler=\"${{OCAML_VERSION}}\"\n\
 eval \"$(opam env)\"\n\
 opam repo add pplacer-deps http://matsen.github.io/pplacer-opam-repository\n\
 opam update\n\
-\n\
-# The pplacer opam mcl package (12-068) uses `restrict` as an identifier,\n\
-# which fails under modern C defaults. Patch it before installation.\n\
-mcl_opam=$(find \"${{HOME}}/.opam/repo\" -path '*/packages/mcl.12-068/opam' 2>/dev/null | head -n 1 || true)\n\
-if [[ -n \"$mcl_opam\" ]]; then\n\
-  cat > \"$mcl_opam\" <<'OPAMEOF'\n\
-opam-version: \"1\"\n\
-maintainer: \"cmccoy@fhcrc.org\"\n\
-build: [\n\
-  [\"sh\" \"-ec\" \"perl -i -pe 's/\\\\bconst mclv\\\\* restrict\\\\b/const mclv* restrict_v/g; s/\\\\brestrict\\\\b/restrict_v/g' src/impala/matrix.c\"]\n\
-  [\"ocaml\" \"setup.ml\" \"-configure\" \"--prefix\" prefix]\n\
-  [\"ocaml\" \"setup.ml\" \"-build\"]\n\
-  [\"ocaml\" \"setup.ml\" \"-install\"]\n\
-]\n\
-remove: [\n\
-  [\"ocamlfind\" \"remove\" \"mcl\"]\n\
-]\n\
-depends: [\"ocamlfind\"]\n\
-OPAMEOF\n\
-fi\n\
 \n\
 eval \"$(opam env)\"\n\
 opam install --assume-depexts -y \\\n\
@@ -6863,8 +6910,29 @@ opam install --assume-depexts -y \\\n\
   gsl.1.25.0 \\\n\
   sqlite3.5.2.0 \\\n\
   camlzip.1.11 \\\n\
-  mcl.12-068 \\\n\
   ocamlfind\n\
+\n\
+# Build mcl from local patched source so legacy C code compiles on EL9.\n\
+rm -rf ./mcl.12-068\n\
+opam source mcl.12-068\n\
+if [[ -d ./mcl.12-068 ]]; then\n\
+  cat > ./mcl.12-068/opam <<'MCL_BIOC2RPM_OPAM'\n\
+opam-version: \"1\"\n\
+maintainer: \"cmccoy@fhcrc.org\"\n\
+build: [\n\
+  [\"sh\" \"-ec\" \"perl -i -pe 's/\\\\bconst mclv\\\\* restrict\\\\b/const mclv* restrict_v/g; s/\\\\brestrict\\\\b/restrict_v/g' src/impala/matrix.c; perl -i -pe 's/^dim /extern dim /; s/^double /extern double /' src/impala/iface.h\"]\n\
+  [\"env\" \"OCAMLPARAM=_,alert=-deprecated\" \"CFLAGS=-fcommon\" \"CXXFLAGS=-fcommon\" \"ocaml\" \"setup.ml\" \"-configure\" \"--prefix\" prefix]\n\
+  [\"env\" \"OCAMLPARAM=_,alert=-deprecated\" \"CFLAGS=-fcommon\" \"CXXFLAGS=-fcommon\" \"ocaml\" \"setup.ml\" \"-build\"]\n\
+  [\"env\" \"OCAMLPARAM=_,alert=-deprecated\" \"CFLAGS=-fcommon\" \"CXXFLAGS=-fcommon\" \"ocaml\" \"setup.ml\" \"-install\"]\n\
+]\n\
+remove: [\n\
+  [\"ocamlfind\" \"remove\" \"mcl\"]\n\
+]\n\
+depends: [\"ocamlfind\"]\n\
+MCL_BIOC2RPM_OPAM\n\
+  eval \"$(opam env)\"\n\
+  opam install --assume-depexts -y ./mcl.12-068\n\
+fi\n\
 \n\
 eval \"$(opam env)\"\n\
 dune build\n\
@@ -11462,6 +11530,17 @@ requirements:
         assert!(spec.contains("export CPATH=\"/usr/include${CPATH:+:$CPATH}\""));
         assert!(spec.contains("export CPATH=\"${CPATH:+$CPATH:}$dep_include\""));
         assert!(spec.contains("linux|asm|asm-generic) continue ;;"));
+        assert!(spec.contains("if [[ \"%{tool}\" == \"mothur\" ]]; then"));
+        assert!(spec.contains("dnf -y install hdf5-devel hdf5-cpp-devel readline-devel ncurses-devel >/dev/null 2>&1 || true"));
+        assert!(spec.contains(
+            "h5cpp_hdr=$(find /usr/include /usr/local/include -type f -name 'H5Cpp.h' 2>/dev/null | head -n 1 || true)"
+        ));
+        assert!(spec.contains("ln -snf \"$h5cpp_hdr\" \"$PREFIX/include/H5Cpp.h\" || true"));
+        assert!(spec.contains("-e 's/-DUSE_HDF5//g'"));
+        assert!(spec.contains("-e 's/-DUSE_READLINE//g'"));
+        assert!(spec.contains(
+            "export LDFLAGS=\"-L$h5libdir -L$PREFIX/lib -L$PREFIX/lib/hdf5 ${LDFLAGS:-}\""
+        ));
         assert!(spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name bin"));
         assert!(spec.contains("export PATH=\"$dep_bin:$PATH\""));
         assert!(spec.contains("disabled by bioconda2rpm for EL9 compatibility"));
@@ -13593,13 +13672,14 @@ requirements:
         assert!(spec.contains("https://github.com/ocaml/opam/releases/download/${opam_ver}/opam-${opam_ver}-${opam_arch}-linux"));
         assert!(spec.contains("curl -L --fail -o /usr/local/bin/opam \"$opam_url\" || true"));
         assert!(spec.contains("cat > ./build.sh <<'PPLACER_BIOC2RPM_SH'"));
-        assert!(
-            spec.contains(
-                "mcl_opam=$(find \"${HOME}/.opam/repo\" -path '*/packages/mcl.12-068/opam'"
-            )
-        );
-        assert!(spec.contains("perl -i -pe 's/\\\\bconst mclv\\\\* restrict\\\\b/const mclv* restrict_v/g; s/\\\\brestrict\\\\b/restrict_v/g' src/impala/matrix.c"));
-        assert!(spec.contains("mcl.12-068"));
+        assert!(spec.contains("opam install --assume-depexts -y"));
+        assert!(spec.contains("opam source mcl.12-068"));
+        assert!(spec.contains("cat > ./mcl.12-068/opam <<'MCL_BIOC2RPM_OPAM'"));
+        assert!(spec.contains("src/impala/matrix.c; perl -i -pe"));
+        assert!(spec.contains("s/^dim /extern dim /; s/^double /extern double /"));
+        assert!(spec.contains("src/impala/iface.h"));
+        assert!(spec.contains("[\"env\" \"OCAMLPARAM=_,alert=-deprecated\" \"CFLAGS=-fcommon\" \"CXXFLAGS=-fcommon\" \"ocaml\" \"setup.ml\" \"-build\"]"));
+        assert!(spec.contains("opam install --assume-depexts -y ./mcl.12-068"));
     }
 
     #[test]

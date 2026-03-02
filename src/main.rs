@@ -372,6 +372,29 @@ fn main() -> ExitCode {
                 }
             }
         }
+        cli::Command::Lookup(args) => {
+            let topdir = args.effective_topdir();
+            match build_lock::lookup_build_runtime(&topdir) {
+                Ok(snapshot) => {
+                    let rendered = if args.compact {
+                        serde_json::to_string(&snapshot)
+                    } else {
+                        serde_json::to_string_pretty(&snapshot)
+                    };
+                    match rendered {
+                        Ok(body) => println!("{body}"),
+                        Err(err) => {
+                            eprintln!("lookup serialization failed: {err:#}");
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!("lookup failed: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
     }
 
     ExitCode::SUCCESS

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const LOCK_FILE_NAME: &str = ".bioconda2rpm-artifacts.lock";
 const STATE_FILE_NAME: &str = ".bioconda2rpm-active-builds.json";
@@ -40,6 +41,37 @@ pub struct ForwardedQueuedPackage {
     pub submitted_host: String,
     pub submitted_pid: u32,
     pub submitted_at_utc: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LookupActiveBuildEntry {
+    pub pid: u32,
+    pub target_id: String,
+    pub packages: Vec<String>,
+    pub session_kind: String,
+    pub force_rebuild: bool,
+    pub host: String,
+    pub started_at_utc: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LookupQueuedBuildRequest {
+    pub pid: u32,
+    pub target_id: String,
+    pub packages: Vec<String>,
+    pub submitted_host: String,
+    pub submitted_at_utc: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BuildLookupSnapshot {
+    pub topdir: String,
+    pub lock_held: bool,
+    pub active_entries: Vec<LookupActiveBuildEntry>,
+    pub queued_requests: Vec<LookupQueuedBuildRequest>,
+    pub running_containers: Vec<String>,
+    pub container_probe_error: Option<String>,
+    pub updated_at_utc: String,
 }
 
 pub enum BuildAcquireOutcome {
@@ -96,6 +128,39 @@ fn default_host_name() -> String {
 
 pub fn current_host_name() -> String {
     default_host_name()
+}
+
+pub fn lookup_build_runtime(topdir: &Path) -> Result<BuildLookupSnapshot> {
+    let lock_path = topdir.join(LOCK_FILE_NAME);
+    let state_file = topdir.join(STATE_FILE_NAME);
+    let requests_file = topdir.join(REQUESTS_FILE_NAME);
+    let lock_held = detect_lock_held(&lock_path)?;
+    let active_state = load_state(&state_file).unwrap_or_default();
+    let active_entries = active_state
+        .entries
+        .into_iter()
+        .map(|entry| LookupActiveBuildEntry {
+            pid: entry.pid,
+            target_id: entry.target_id,
+            packages: entry.packages,
+            session_kind: entry.session_kind,
+            force_rebuild: entry.force_rebuild,
+            host: entry.host,
+            started_at_utc: entry.started_at_utc,
+        })
+        .collect::<Vec<_>>();
+    let queued_requests = load_queued_requests(&requests_file)?;
+    let (running_containers, container_probe_error) = probe_running_containers();
+
+    Ok(BuildLookupSnapshot {
+        topdir: topdir.to_string_lossy().to_string(),
+        lock_held,
+        active_entries,
+        queued_requests,
+        running_containers,
+        container_probe_error,
+        updated_at_utc: chrono::Utc::now().to_rfc3339(),
+    })
 }
 
 impl BuildSessionGuard {
@@ -390,6 +455,87 @@ fn load_state(path: &Path) -> Result<ActiveBuildState> {
         .with_context(|| format!("parsing active build state {}", path.to_string_lossy()))
 }
 
+fn detect_lock_held(lock_path: &Path) -> Result<bool> {
+    let Some(parent) = lock_path.parent() else {
+        return Ok(false);
+    };
+    if !parent.exists() {
+        return Ok(false);
+    }
+    let lock_file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .with_context(|| format!("opening workspace lock file {}", lock_path.display()))?;
+    match lock_file.try_lock_exclusive() {
+        Ok(()) => {
+            lock_file.unlock().with_context(|| {
+                format!("unlocking workspace lock file {}", lock_path.display())
+            })?;
+            Ok(false)
+        }
+        Err(err) if err.kind() == ErrorKind::WouldBlock => Ok(true),
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "probing workspace lock state for {}",
+                lock_path.to_string_lossy()
+            )
+        }),
+    }
+}
+
+fn load_queued_requests(path: &Path) -> Result<Vec<LookupQueuedBuildRequest>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("reading build requests file {}", path.display()))?;
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(req) = serde_json::from_str::<BuildQueueRequest>(trimmed) else {
+            continue;
+        };
+        out.push(LookupQueuedBuildRequest {
+            pid: req.pid,
+            target_id: req.target_id,
+            packages: req.packages,
+            submitted_host: req.submitted_host,
+            submitted_at_utc: req.submitted_at_utc,
+        });
+    }
+    Ok(out)
+}
+
+fn probe_running_containers() -> (Vec<String>, Option<String>) {
+    let output = Command::new("docker")
+        .args(["ps", "--format", "{{.Names}}"])
+        .output();
+    let Ok(output) = output else {
+        return (Vec::new(), Some("docker command unavailable".to_string()));
+    };
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = if err.is_empty() {
+            format!("docker ps exit={}", output.status)
+        } else {
+            err
+        };
+        return (Vec::new(), Some(detail));
+    }
+    let mut containers = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|name| !name.is_empty() && name.contains("bioconda2rpm-"))
+        .collect::<Vec<_>>();
+    containers.sort();
+    (containers, None)
+}
+
 fn write_state(path: &Path, state: &ActiveBuildState) -> Result<()> {
     let tmp = path.with_extension("tmp");
     let payload = serde_json::to_vec_pretty(state).context("serializing active build state")?;
@@ -518,6 +664,46 @@ mod tests {
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].package, "blast");
         assert!(!drained[0].submitted_host.is_empty());
+
+        let _ = fs::remove_dir_all(&topdir);
+    }
+
+    #[test]
+    fn lookup_build_runtime_reports_active_and_queued_state() {
+        let topdir = tempdir("lookup-runtime");
+        let state_file = topdir.join(STATE_FILE_NAME);
+        let requests_file = topdir.join(REQUESTS_FILE_NAME);
+
+        write_state(
+            &state_file,
+            &ActiveBuildState {
+                entries: vec![ActiveBuildEntry {
+                    pid: 1234,
+                    target_id: "target-a".to_string(),
+                    packages: vec!["trinity".to_string()],
+                    session_kind: BuildSessionKind::Build.as_str().to_string(),
+                    force_rebuild: false,
+                    host: "host-a".to_string(),
+                    started_at_utc: "2026-03-02T00:00:00Z".to_string(),
+                }],
+            },
+        )
+        .expect("write state");
+        fs::write(
+            &requests_file,
+            r#"{"pid":77,"target_id":"target-a","packages":["pplacer","mothur"],"submitted_host":"host-b","submitted_at_utc":"2026-03-02T00:01:00Z"}"#,
+        )
+        .expect("write queue request");
+
+        let snapshot = lookup_build_runtime(&topdir).expect("lookup build runtime");
+        assert_eq!(snapshot.topdir, topdir.to_string_lossy().to_string());
+        assert_eq!(snapshot.active_entries.len(), 1);
+        assert_eq!(snapshot.active_entries[0].packages, vec!["trinity"]);
+        assert_eq!(snapshot.queued_requests.len(), 1);
+        assert_eq!(
+            snapshot.queued_requests[0].packages,
+            vec!["pplacer".to_string(), "mothur".to_string()]
+        );
 
         let _ = fs::remove_dir_all(&topdir);
     }

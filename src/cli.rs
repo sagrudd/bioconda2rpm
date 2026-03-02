@@ -24,6 +24,8 @@ pub enum Command {
     GeneratePrioritySpecs(GeneratePrioritySpecsArgs),
     /// Manage the local Bioconda recipes mirror used by this tool.
     Recipes(RecipesArgs),
+    /// Lookup live build runtime state (lock owner, forwarded queue, active containers).
+    Lookup(LookupArgs),
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
@@ -460,6 +462,17 @@ pub struct RecipesArgs {
     pub recipe_ref: Option<String>,
 }
 
+#[derive(Debug, clap::Args)]
+pub struct LookupArgs {
+    /// Optional topdir override. Defaults to ~/bioconda2rpm.
+    #[arg(long)]
+    pub topdir: Option<PathBuf>,
+
+    /// Emit compact single-line JSON.
+    #[arg(long)]
+    pub compact: bool,
+}
+
 pub fn default_topdir() -> PathBuf {
     match env::var_os("HOME") {
         Some(home) => PathBuf::from(home).join("bioconda2rpm"),
@@ -866,6 +879,12 @@ impl RecipesArgs {
     }
 }
 
+impl LookupArgs {
+    pub fn effective_topdir(&self) -> PathBuf {
+        self.topdir.clone().unwrap_or_else(default_topdir)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -925,6 +944,16 @@ mod tests {
                 .starts_with(args.effective_target_root())
         );
         assert!(args.effective_reports_dir().ends_with("reports"));
+    }
+
+    #[test]
+    fn lookup_command_uses_expected_defaults() {
+        let cli = Cli::try_parse_from(["bioconda2rpm", "lookup"]).expect("lookup should parse");
+        let Command::Lookup(args) = cli.command else {
+            panic!("expected lookup command")
+        };
+        assert!(args.effective_topdir().ends_with("bioconda2rpm"));
+        assert!(!args.compact);
     }
 
     #[test]
