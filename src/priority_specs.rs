@@ -5549,6 +5549,13 @@ mkdir -p %{bioconda_source_subdir}\n"
         build_requires.insert("perl(Test::Needs)".to_string());
         build_requires.insert("perl(Module::Build::Tiny)".to_string());
     }
+    // HEURISTIC-TEMP(issue=HEUR-0019): phoreus-perl-alien-libxml2 noarch shim
+    // can outrank payload versions and drop perl(Alien::Libxml2) virtual
+    // provides; depend on payload capability explicitly for perl-xml-libxml.
+    if software_slug == "perl-xml-libxml" {
+        build_requires.remove("perl(Alien::Libxml2)");
+        build_requires.insert("phoreus-perl-alien-libxml2-0.20".to_string());
+    }
     build_requires.remove(PHOREUS_PYTHON_PACKAGE);
     build_requires.remove(PHOREUS_PYTHON_PACKAGE_312);
     build_requires.remove(PHOREUS_PYTHON_PACKAGE_313);
@@ -5615,6 +5622,10 @@ mkdir -p %{bioconda_source_subdir}\n"
         runtime_requires.remove(PHOREUS_PYTHON_PACKAGE_312);
         runtime_requires.remove(PHOREUS_PYTHON_PACKAGE_313);
         runtime_requires.insert(python_runtime.package.to_string());
+    }
+    if software_slug == "perl-xml-libxml" {
+        runtime_requires.remove("perl(Alien::Libxml2)");
+        runtime_requires.insert("phoreus-perl-alien-libxml2-0.20".to_string());
     }
 
     let build_requires_lines = format_dep_lines("BuildRequires", &build_requires);
@@ -6179,10 +6190,10 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     export PERL_MB_OPT=\"--install_base $PREFIX\"\n\
     export PERL_MM_OPT=\"INSTALL_BASE=$PREFIX\"\n\
     if ! perl -MAlien::Base::Wrapper -e1 >/dev/null 2>&1 || ! perl -MAlien::Libxml2 -e1 >/dev/null 2>&1 || ! perl -MXML::SAX -e1 >/dev/null 2>&1 || ! perl -MXML::NamespaceSupport -e1 >/dev/null 2>&1; then\n\
-      if command -v dnf >/dev/null 2>&1; then dnf -y install perl-App-cpanminus openssl-devel perl-XML-SAX perl-XML-NamespaceSupport >/dev/null 2>&1 || true; fi\n\
-      if command -v microdnf >/dev/null 2>&1; then microdnf -y install perl-App-cpanminus openssl-devel perl-XML-SAX perl-XML-NamespaceSupport >/dev/null 2>&1 || true; fi\n\
+      if command -v dnf >/dev/null 2>&1; then dnf -y install perl-App-cpanminus openssl-devel ca-certificates perl-LWP-Protocol-https perl-XML-SAX perl-XML-NamespaceSupport >/dev/null 2>&1 || true; fi\n\
+      if command -v microdnf >/dev/null 2>&1; then microdnf -y install perl-App-cpanminus openssl-devel ca-certificates perl-LWP-Protocol-https perl-XML-SAX perl-XML-NamespaceSupport >/dev/null 2>&1 || true; fi\n\
       if command -v cpanm >/dev/null 2>&1; then\n\
-        cpanm -n --local-lib-contained \"$PREFIX\" Alien::Build Alien::Build::Plugin::Download::GitLab Mozilla::CA Net::SSLeay Alien::Libxml2 Alien::Base::Wrapper XML::SAX XML::NamespaceSupport || true\n\
+        cpanm -n --mirror http://www.cpan.org --mirror-only --local-lib-contained \"$PREFIX\" Alien::Build Alien::Build::Plugin::Download::GitLab Mozilla::CA Net::SSLeay Alien::Libxml2 Alien::Base::Wrapper XML::SAX XML::NamespaceSupport || true\n\
       fi\n\
     fi\n\
     fi\n\
@@ -8996,7 +9007,9 @@ fn canonicalize_perl_module_segment(segment: &str) -> String {
         "lwp" => "LWP".to_string(),
         "mime" => "MIME".to_string(),
         "moreutils" => "MoreUtils".to_string(),
+        "namespacesupport" => "NamespaceSupport".to_string(),
         "ssl" => "SSL".to_string(),
+        "sax" => "SAX".to_string(),
         "ssleay" => "SSLeay".to_string(),
         "uri" => "URI".to_string(),
         "utf8" => "UTF8".to_string(),
@@ -12750,8 +12763,71 @@ requirements:
         assert!(spec.contains("perl -MAlien::Libxml2 -e1"));
         assert!(spec.contains("perl -MXML::SAX -e1"));
         assert!(spec.contains("perl -MXML::NamespaceSupport -e1"));
-        assert!(spec.contains("dnf -y install perl-App-cpanminus openssl-devel perl-XML-SAX perl-XML-NamespaceSupport"));
-        assert!(spec.contains("cpanm -n --local-lib-contained \"$PREFIX\" Alien::Build Alien::Build::Plugin::Download::GitLab Mozilla::CA Net::SSLeay Alien::Libxml2 Alien::Base::Wrapper XML::SAX XML::NamespaceSupport"));
+        assert!(spec.contains("dnf -y install perl-App-cpanminus openssl-devel ca-certificates perl-LWP-Protocol-https perl-XML-SAX perl-XML-NamespaceSupport"));
+        assert!(spec.contains("cpanm -n --mirror http://www.cpan.org --mirror-only --local-lib-contained \"$PREFIX\" Alien::Build Alien::Build::Plugin::Download::GitLab Mozilla::CA Net::SSLeay Alien::Libxml2 Alien::Base::Wrapper XML::SAX XML::NamespaceSupport"));
+    }
+
+    #[test]
+    fn perl_provider_dependency_canonicalizes_sax_and_namespace_support() {
+        assert_eq!(map_build_dependency("perl(XML::Sax)"), "perl(XML::SAX)");
+        assert_eq!(
+            map_build_dependency("perl(XML::Namespacesupport)"),
+            "perl(XML::NamespaceSupport)"
+        );
+    }
+
+    #[test]
+    fn perl_xml_libxml_prefers_payload_alien_libxml2_capability() {
+        let mut host_deps = BTreeSet::new();
+        host_deps.insert("perl(Alien::Libxml2)".to_string());
+        host_deps.insert("perl(XML::Sax)".to_string());
+        host_deps.insert("perl(XML::Namespacesupport)".to_string());
+        let mut run_deps = BTreeSet::new();
+        run_deps.insert("perl(Alien::Libxml2)".to_string());
+
+        let parsed = ParsedMeta {
+            package_name: "perl-xml-libxml".to_string(),
+            version: "2.0210".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/perl-xml-libxml.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/perl-xml-libxml".to_string(),
+            license: "Artistic-1.0-Perl".to_string(),
+            summary: "perl-xml-libxml".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("perl Makefile.PL\nmake\nmake install".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec![
+                "perl(Alien::Libxml2)".to_string(),
+                "perl(XML::Sax)".to_string(),
+                "perl(XML::Namespacesupport)".to_string(),
+            ],
+            run_dep_specs_raw: vec!["perl(Alien::Libxml2)".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps,
+            run_deps,
+        };
+
+        let spec = render_payload_spec(
+            "perl-xml-libxml",
+            &parsed,
+            "bioconda-perl-xml-libxml-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("BuildRequires:  phoreus-perl-alien-libxml2-0.20"));
+        assert!(!spec.contains("BuildRequires:  perl(Alien::Libxml2)"));
+        assert!(spec.contains("BuildRequires:  perl(XML::SAX)"));
+        assert!(spec.contains("BuildRequires:  perl(XML::NamespaceSupport)"));
+        assert!(spec.contains("Requires:  phoreus-perl-alien-libxml2-0.20"));
+        assert!(!spec.contains("Requires:  perl(Alien::Libxml2)"));
     }
 
     #[test]
