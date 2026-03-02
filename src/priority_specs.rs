@@ -6790,7 +6790,6 @@ EOF\n\
     # pplacer's build script expects opam, but EL9 repos used in these\n\
     # containers can omit an opam package. Bootstrap a release binary.\n\
     if [[ \"%{{tool}}\" == \"pplacer\" ]]; then\n\
-    export CFLAGS=\"-std=gnu99 ${{CFLAGS:-}}\"\n\
     if ! command -v opam >/dev/null 2>&1; then\n\
       opam_ver=2.1.6\n\
       case \"$(uname -m)\" in\n\
@@ -6812,8 +6811,72 @@ EOF\n\
       fi\n\
     fi\n\
     if [[ -f ./build.sh ]]; then\n\
-      sed -i 's/ ocamlfind/ mcl.12-068 ocamlfind/g' ./build.sh || true\n\
-      perl -0pi -e 's@\\ncd mcl\\n.*?\\ncd \\.\\.\\n@\\n# bioconda2rpm: use opam mcl package, skip bundled mcl source build\\n:\\n@s' ./build.sh || true\n\
+      cat > ./build.sh <<'PPLACER_BIOC2RPM_SH'\n\
+#!/usr/bin/env bash\n\
+set -euo pipefail\n\
+\n\
+mkdir -p \"$PREFIX/bin\"\n\
+\n\
+if [[ \"$(uname)\" == \"Darwin\" ]]; then\n\
+  for i in guppy pplacer rppr; do\n\
+    chmod +x \"$i\"\n\
+    install_name_tool -change /opt/homebrew/opt/gsl/lib/libgsl.28.dylib \"@rpath/../lib/libgsl.28.dylib\" \"$i\" || true\n\
+    install_name_tool -change /opt/homebrew/opt/zlib/lib/libz.1.dylib \"@rpath/../lib/libz.1.dylib\" \"$i\" || true\n\
+    install_name_tool -change /opt/homebrew/opt/sqlite/lib/libsqlite3.dylib \"@rpath/../lib/libsqlite3.dylib\" \"$i\" || true\n\
+    cp \"$i\" \"$PREFIX/bin\"\n\
+  done\n\
+  exit 0\n\
+fi\n\
+\n\
+OCAML_VERSION=4.14.2\n\
+opam init --disable-sandboxing -y --compiler=\"${{OCAML_VERSION}}\"\n\
+eval \"$(opam env)\"\n\
+opam repo add pplacer-deps http://matsen.github.io/pplacer-opam-repository\n\
+opam update\n\
+\n\
+# The pplacer opam mcl package (12-068) uses `restrict` as an identifier,\n\
+# which fails under modern C defaults. Patch it before installation.\n\
+mcl_opam=$(find \"${{HOME}}/.opam/repo\" -path '*/packages/mcl.12-068/opam' 2>/dev/null | head -n 1 || true)\n\
+if [[ -n \"$mcl_opam\" ]]; then\n\
+  cat > \"$mcl_opam\" <<'OPAMEOF'\n\
+opam-version: \"1\"\n\
+maintainer: \"cmccoy@fhcrc.org\"\n\
+build: [\n\
+  [\"sh\" \"-ec\" \"perl -i -pe 's/\\\\bconst mclv\\\\* restrict\\\\b/const mclv* restrict_v/g; s/\\\\brestrict\\\\b/restrict_v/g' src/impala/matrix.c\"]\n\
+  [\"ocaml\" \"setup.ml\" \"-configure\" \"--prefix\" prefix]\n\
+  [\"ocaml\" \"setup.ml\" \"-build\"]\n\
+  [\"ocaml\" \"setup.ml\" \"-install\"]\n\
+]\n\
+remove: [\n\
+  [\"ocamlfind\" \"remove\" \"mcl\"]\n\
+]\n\
+depends: [\"ocamlfind\"]\n\
+OPAMEOF\n\
+fi\n\
+\n\
+eval \"$(opam env)\"\n\
+opam install --assume-depexts -y \\\n\
+  dune.3.19.1 \\\n\
+  csv.2.4 \\\n\
+  ounit2.2.2.7 \\\n\
+  xmlm.1.4.0 \\\n\
+  batteries.3.8.0 \\\n\
+  gsl.1.25.0 \\\n\
+  sqlite3.5.2.0 \\\n\
+  camlzip.1.11 \\\n\
+  mcl.12-068 \\\n\
+  ocamlfind\n\
+\n\
+eval \"$(opam env)\"\n\
+dune build\n\
+\n\
+cd _build/default\n\
+for i in guppy pplacer rppr; do\n\
+  cp \"$i.exe\" \"$PREFIX/bin\"\n\
+  ln -sf \"$PREFIX/bin/$i.exe\" \"$PREFIX/bin/$i\"\n\
+done\n\
+PPLACER_BIOC2RPM_SH\n\
+      chmod 0755 ./build.sh || true\n\
     fi\n\
     fi\n\
 \n\
@@ -13469,12 +13532,13 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"pplacer\" ]]; then"));
-        assert!(spec.contains("export CFLAGS=\"-std=gnu99 ${CFLAGS:-}\""));
         assert!(spec.contains("opam_ver=2.1.6"));
         assert!(spec.contains("https://github.com/ocaml/opam/releases/download/${opam_ver}/opam-${opam_ver}-${opam_arch}-linux"));
         assert!(spec.contains("curl -L --fail -o /usr/local/bin/opam \"$opam_url\" || true"));
-        assert!(spec.contains("sed -i 's/ ocamlfind/ mcl.12-068 ocamlfind/g' ./build.sh || true"));
-        assert!(spec.contains("skip bundled mcl source build"));
+        assert!(spec.contains("cat > ./build.sh <<'PPLACER_BIOC2RPM_SH'"));
+        assert!(spec.contains("mcl_opam=$(find \"${HOME}/.opam/repo\" -path '*/packages/mcl.12-068/opam'"));
+        assert!(spec.contains("perl -i -pe 's/\\\\bconst mclv\\\\* restrict\\\\b/const mclv* restrict_v/g; s/\\\\brestrict\\\\b/restrict_v/g' src/impala/matrix.c"));
+        assert!(spec.contains("mcl.12-068"));
     }
 
     #[test]
