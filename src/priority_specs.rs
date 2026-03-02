@@ -5377,6 +5377,16 @@ fn render_payload_spec(
         recipe_dep_mentions(parsed, "jsoncpp") || recipe_dep_mentions(parsed, "jsoncpp-devel");
     let needs_capnproto =
         recipe_dep_mentions(parsed, "capnproto") || recipe_dep_mentions(parsed, "capnp");
+    let build_script_lower = parsed
+        .build_script
+        .as_deref()
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let build_script_mentions_javac = build_script_lower.contains("javac");
+    let python_recipe_needs_native_wheel_toolchain = python_recipe
+        && (recipe_dep_mentions(parsed, "louvain")
+            || recipe_dep_mentions(parsed, "igraph")
+            || recipe_dep_mentions(parsed, "python-igraph"));
     let python_venv_setup = render_python_venv_setup_block(python_recipe, &python_requirements);
     let r_runtime_setup =
         render_r_runtime_setup_block(r_runtime_required, r_project_recipe, &r_cran_requirements);
@@ -5595,6 +5605,23 @@ mkdir -p %{bioconda_source_subdir}\n"
     if software_slug == "shapeit5" {
         build_requires.insert("boost-devel".to_string());
         build_requires.insert("openssl-devel".to_string());
+    }
+    if build_script_mentions_javac {
+        if build_requires.remove("java-21-openjdk") {
+            build_requires.insert("java-21-openjdk-devel".to_string());
+        } else if build_requires.remove("java-17-openjdk") {
+            build_requires.insert("java-17-openjdk-devel".to_string());
+        } else {
+            build_requires.remove("java-11-openjdk");
+            build_requires.insert("java-11-openjdk-devel".to_string());
+        }
+    }
+    if python_recipe_needs_native_wheel_toolchain {
+        // Wheels that vendor igraph/louvain require a C/C++ toolchain plus CMake.
+        build_requires.insert("cmake".to_string());
+        build_requires.insert("gcc".to_string());
+        build_requires.insert("gcc-c++".to_string());
+        build_requires.insert("make".to_string());
     }
     build_requires.remove(PHOREUS_PYTHON_PACKAGE);
     build_requires.remove(PHOREUS_PYTHON_PACKAGE_312);
@@ -7703,7 +7730,14 @@ fn render_source_unpack_prep_block(source_kind: SourceArchiveKind) -> String {
     match source_kind {
         SourceArchiveKind::Tar => "rm -rf buildsrc\n\
 mkdir -p %{bioconda_source_subdir}\n\
-tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1\n"
+mapfile -t tar_roots < <(tar -tf %{SOURCE0} 2>/dev/null | sed -E 's#^\\./##; /^$/d' | awk -F/ '{print $1}' | sort -u)\n\
+tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1\n\
+if [[ \"${#tar_roots[@]}\" -eq 1 ]]; then\n\
+  tar_root=\"${tar_roots[0]}\"\n\
+  if [[ -n \"$tar_root\" && \"$tar_root\" != \".\" && ! -e \"%{bioconda_source_subdir}/$tar_root\" ]]; then\n\
+    (cd %{bioconda_source_subdir} && ln -s . \"$tar_root\") || true\n\
+  fi\n\
+fi\n"
             .to_string(),
         SourceArchiveKind::Zip => "rm -rf buildsrc\n\
 mkdir -p %{bioconda_source_subdir}\n\
@@ -13627,6 +13661,92 @@ requirements:
     }
 
     #[test]
+    fn minced_spec_promotes_openjdk_runtime_to_devel_when_javac_is_used() {
+        let parsed = ParsedMeta {
+            package_name: "minced".to_string(),
+            version: "0.4.2".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/minced-0.4.2.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/minced".to_string(),
+            license: "GPL-3.0".to_string(),
+            summary: "minced".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("javac -g CRISPR.java\nmake".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["openjdk".to_string()],
+            run_dep_specs_raw: vec!["openjdk".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::from(["java-11-openjdk".to_string()]),
+            run_deps: BTreeSet::from(["java-11-openjdk".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "minced",
+            &parsed,
+            "bioconda-minced-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("BuildRequires:  java-11-openjdk-devel"));
+        assert!(!spec.contains("BuildRequires:  java-11-openjdk\n"));
+        assert!(spec.contains("Requires:  java-11-openjdk"));
+    }
+
+    #[test]
+    fn python_louvain_or_igraph_adds_native_toolchain_build_requires() {
+        let parsed = ParsedMeta {
+            package_name: "scanpy-scripts".to_string(),
+            version: "1.9.301".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/scanpy-scripts-1.9.301.tar.gz".to_string(),
+            source_folder: "scanpy-scripts".to_string(),
+            homepage: "https://example.invalid/scanpy-scripts".to_string(),
+            license: "Apache-2.0".to_string(),
+            summary: "scanpy-scripts".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            noarch_python: true,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec![
+                "python <3.10".to_string(),
+                "pip".to_string(),
+                "louvain".to_string(),
+                "igraph".to_string(),
+            ],
+            run_dep_specs_raw: vec!["python <3.10".to_string(), "louvain".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::from(["louvain".to_string(), "igraph".to_string()]),
+            run_deps: BTreeSet::from(["louvain".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "scanpy-scripts",
+            &parsed,
+            "bioconda-scanpy-scripts-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            true,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("BuildRequires:  cmake"));
+        assert!(spec.contains("BuildRequires:  gcc"));
+        assert!(spec.contains("BuildRequires:  gcc-c++"));
+        assert!(spec.contains("BuildRequires:  make"));
+    }
+
+    #[test]
     fn poretools_spec_normalizes_python2_setup_print_statements() {
         let parsed = ParsedMeta {
             package_name: "poretools".to_string(),
@@ -14739,6 +14859,8 @@ requirements:
         );
         assert!(spec.contains("Source0:"));
         assert!(spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1"));
+        assert!(spec.contains("mapfile -t tar_roots"));
+        assert!(spec.contains("ln -s . \"$tar_root\""));
     }
 
     #[test]
