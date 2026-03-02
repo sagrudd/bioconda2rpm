@@ -5427,7 +5427,8 @@ export PERL_MB_OPT=\"${PERL_MB_OPT:+$PERL_MB_OPT }--install_base $PREFIX\"\n"
     // an explicit build.sh) must keep source unpack enabled.
     let suppress_source0_for_metapackage =
         runtime_only_metapackage && parsed.source_url.trim().is_empty();
-    let include_source0 = !suppress_source0_for_metapackage && source_kind != SourceArchiveKind::Git;
+    let include_source0 =
+        !suppress_source0_for_metapackage && source_kind != SourceArchiveKind::Git;
     let source_unpack_prep = if include_source0 {
         render_source_unpack_prep_block(source_kind)
     } else {
@@ -11152,14 +11153,8 @@ mod tests {
         );
         assert_eq!(map_runtime_dependency("xorg-libx11"), "libX11".to_string());
         assert_eq!(map_build_dependency("eigen"), "eigen3-devel".to_string());
-        assert_eq!(
-            map_build_dependency("libxml2"),
-            "libxml2-devel".to_string()
-        );
-        assert_eq!(
-            map_build_dependency("libxslt"),
-            "libxslt-devel".to_string()
-        );
+        assert_eq!(map_build_dependency("libxml2"), "libxml2-devel".to_string());
+        assert_eq!(map_build_dependency("libxslt"), "libxslt-devel".to_string());
         assert_eq!(map_build_dependency("liblzma"), "xz-devel".to_string());
         assert_eq!(
             map_runtime_dependency("biopython"),
@@ -14685,7 +14680,9 @@ requirements:
             false,
         );
         assert!(spec.contains("Source0:"));
-        assert!(spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1"));
+        assert!(
+            spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1")
+        );
     }
 
     #[test]

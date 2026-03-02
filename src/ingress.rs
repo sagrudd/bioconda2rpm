@@ -7,7 +7,6 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BiocondaRecipeMetadata {
@@ -52,8 +51,8 @@ pub fn lookup_recipe_metadata(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let description = [
-        yaml_lookup(&meta, &["about", "summary"]).and_then(yaml_value_to_string),
         yaml_lookup(&meta, &["about", "description"]).and_then(yaml_value_to_string),
+        yaml_lookup(&meta, &["about", "summary"]).and_then(yaml_value_to_string),
     ]
     .into_iter()
     .flatten()
@@ -75,11 +74,9 @@ pub fn lookup_recipe_metadata(
     let (release_date, release_date_strategy) =
         if let Some(date) = git_last_modified_date_for_path(&meta_yaml_path) {
             (date, "git_last_modified_commit".to_string())
-        } else if let Some(date) = filesystem_modified_date(&meta_yaml_path) {
-            (date, "filesystem_mtime".to_string())
         } else {
             return Err(anyhow!(
-                "could not derive release date from git history or file metadata for {}",
+                "could not derive release date from git history for {}",
                 meta_yaml_path.display()
             ));
         };
@@ -132,14 +129,19 @@ fn resolve_recipe_meta_yaml_path(recipe_root: &Path, recipe_name: &str) -> Resul
         ));
     }
 
+    let mut candidates = Vec::<RecipeMetaCandidate>::new();
     for meta_name in ["meta.yaml", "meta.yml"] {
         let direct = recipe_dir.join(meta_name);
         if direct.is_file() {
-            return Ok(direct);
+            candidates.push(RecipeMetaCandidate {
+                variant_key: "direct".to_string(),
+                release_key: recipe_release_key_from_meta(&direct),
+                path: direct,
+            });
+            break;
         }
     }
 
-    let mut candidates = Vec::<(String, PathBuf)>::new();
     let entries = fs::read_dir(&recipe_dir).with_context(|| {
         format!(
             "read recipe variants directory for {recipe_name}: {}",
@@ -159,18 +161,57 @@ fn resolve_recipe_meta_yaml_path(recipe_root: &Path, recipe_name: &str) -> Resul
                     .and_then(|value| value.to_str())
                     .unwrap_or_default()
                     .to_string();
-                candidates.push((variant, candidate_meta));
+                candidates.push(RecipeMetaCandidate {
+                    variant_key: variant,
+                    release_key: recipe_release_key_from_meta(&candidate_meta),
+                    path: candidate_meta,
+                });
                 break;
             }
         }
     }
 
-    candidates.sort_by(|left, right| compare_variant_keys(&right.0, &left.0));
+    candidates.sort_by(|left, right| compare_recipe_meta_candidates(right, left));
     candidates
         .into_iter()
         .next()
-        .map(|(_, path)| path)
+        .map(|candidate| candidate.path)
         .ok_or_else(|| anyhow!("meta.yaml not found for recipe {recipe_name}"))
+}
+
+#[derive(Debug, Clone)]
+struct RecipeMetaCandidate {
+    variant_key: String,
+    release_key: Option<String>,
+    path: PathBuf,
+}
+
+fn recipe_release_key_from_meta(path: &Path) -> Option<String> {
+    let raw_meta = fs::read_to_string(path).ok()?;
+    let rendered = render_meta_yaml_for_ingress(&raw_meta);
+    let meta: Value = serde_yaml::from_str(&rendered).ok()?;
+    yaml_lookup(&meta, &["package", "version"])
+        .and_then(yaml_value_to_string)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn compare_recipe_meta_candidates(
+    left: &RecipeMetaCandidate,
+    right: &RecipeMetaCandidate,
+) -> Ordering {
+    match (left.release_key.as_deref(), right.release_key.as_deref()) {
+        (Some(left_release), Some(right_release)) => {
+            let release_cmp = compare_variant_keys(left_release, right_release);
+            if release_cmp != Ordering::Equal {
+                return release_cmp;
+            }
+        }
+        (Some(_), None) => return Ordering::Greater,
+        (None, Some(_)) => return Ordering::Less,
+        (None, None) => {}
+    }
+    compare_variant_keys(&left.variant_key, &right.variant_key)
 }
 
 fn compare_variant_keys(left: &str, right: &str) -> Ordering {
@@ -398,7 +439,52 @@ fn infer_primary_language(meta: &Value) -> String {
             best_language = language;
         }
     }
-    best_language.to_string()
+    if best_score > 0 {
+        return best_language.to_string();
+    }
+
+    // Fallback from rendered `package.name` in meta.yaml for recipes that
+    // do not expose language hints in requirements/about sections.
+    let package_name = yaml_lookup(meta, &["package", "name"])
+        .and_then(yaml_value_to_string)
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    infer_language_from_package_name(&package_name)
+        .unwrap_or(best_language)
+        .to_string()
+}
+
+fn infer_language_from_package_name(name: &str) -> Option<&'static str> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed == "python"
+        || trimmed.starts_with("python-")
+        || trimmed.starts_with("py")
+        || trimmed.starts_with("pypy")
+    {
+        return Some("Python");
+    }
+    if trimmed == "r-base" || trimmed.starts_with("r-") || trimmed.starts_with("bioconductor-") {
+        return Some("R");
+    }
+    if trimmed.starts_with("perl-") {
+        return Some("Perl");
+    }
+    if trimmed.starts_with("rust-") {
+        return Some("Rust");
+    }
+    if trimmed.starts_with("go-") || trimmed.starts_with("golang-") {
+        return Some("Go");
+    }
+    if trimmed.starts_with("node-") || trimmed.starts_with("javascript-") {
+        return Some("JavaScript");
+    }
+    if trimmed.starts_with("java-") {
+        return Some("Java");
+    }
+    None
 }
 
 fn score_language_value(value: &Value, weight: i32, scores: &mut HashMap<&'static str, i32>) {
@@ -546,18 +632,6 @@ fn git_time_to_iso_date(value: Time) -> Option<String> {
         .map(|date| date.date_naive().to_string())
 }
 
-fn filesystem_modified_date(path: &Path) -> Option<String> {
-    let modified = fs::metadata(path).ok()?.modified().ok()?;
-    system_time_to_iso_date(modified)
-}
-
-fn system_time_to_iso_date(value: SystemTime) -> Option<String> {
-    let unix = value.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs();
-    Utc.timestamp_opt(i64::try_from(unix).ok()?, 0)
-        .single()
-        .map(|date| date.date_naive().to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -639,6 +713,101 @@ mod tests {
     }
 
     #[test]
+    fn lookup_recipe_metadata_selects_highest_version_across_recipe_entries() {
+        let temp = tempdir().expect("tmp");
+        let repo_root = temp.path().join("bioconda-recipes");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let repo = Repository::init(&repo_root).expect("init repo");
+        let recipes_root = repo_root.join("recipes");
+        let recipe_dir = recipes_root.join("samtools");
+        fs::create_dir_all(recipe_dir.join("1.20")).expect("create variant 1.20");
+        fs::create_dir_all(recipe_dir.join("1.22")).expect("create variant 1.22");
+
+        commit_file(
+            &repo,
+            &repo_root,
+            Path::new("recipes/samtools/meta.yaml"),
+            r#"
+package:
+  name: samtools
+  version: "1.18"
+about:
+  home: "https://example.org/samtools"
+  license: "MIT"
+"#,
+            "seed direct recipe",
+            1_706_745_600,
+        )
+        .expect("commit direct");
+        commit_file(
+            &repo,
+            &repo_root,
+            Path::new("recipes/samtools/1.20/meta.yaml"),
+            r#"
+package:
+  name: samtools
+  version: "1.20"
+about:
+  home: "https://example.org/samtools"
+  license: "MIT"
+"#,
+            "seed 1.20 recipe",
+            1_706_832_000,
+        )
+        .expect("commit 1.20");
+        commit_file(
+            &repo,
+            &repo_root,
+            Path::new("recipes/samtools/1.22/meta.yaml"),
+            r#"
+package:
+  name: samtools
+  version: "1.22"
+about:
+  home: "https://example.org/samtools"
+  license: "MIT"
+"#,
+            "seed 1.22 recipe",
+            1_706_918_400,
+        )
+        .expect("commit 1.22");
+
+        let metadata = lookup_recipe_metadata(&recipes_root, "samtools").expect("lookup");
+        assert_eq!(metadata.latest_release.as_deref(), Some("1.22"));
+        assert!(metadata.meta_yaml_path.ends_with("1.22/meta.yaml"));
+    }
+
+    #[test]
+    fn lookup_recipe_metadata_prefers_about_description_over_summary() {
+        let temp = tempdir().expect("tmp");
+        let repo_root = temp.path().join("bioconda-recipes");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let repo = Repository::init(&repo_root).expect("init repo");
+        let recipes_root = repo_root.join("recipes");
+
+        commit_file(
+            &repo,
+            &repo_root,
+            Path::new("recipes/example/meta.yaml"),
+            r#"
+package:
+  name: example
+  version: "0.1.0"
+about:
+  summary: "Short summary"
+  description: "Canonical long description"
+  license: "MIT"
+"#,
+            "seed example recipe",
+            1_706_745_600,
+        )
+        .expect("commit example");
+
+        let metadata = lookup_recipe_metadata(&recipes_root, "example").expect("lookup");
+        assert_eq!(metadata.description, "Canonical long description");
+    }
+
+    #[test]
     fn infer_primary_language_uses_requirements_and_compilers() {
         let parsed: Value = serde_yaml::from_str(
             r#"
@@ -665,6 +834,27 @@ requirements:
         )
         .expect("yaml");
         assert_eq!(infer_primary_language(&parsed_cpp), "C++");
+    }
+
+    #[test]
+    fn infer_primary_language_falls_back_to_package_name_when_signals_missing() {
+        let parsed_r: Value = serde_yaml::from_str(
+            r#"
+package:
+  name: r-ggplot2
+"#,
+        )
+        .expect("yaml");
+        assert_eq!(infer_primary_language(&parsed_r), "R");
+
+        let parsed_python: Value = serde_yaml::from_str(
+            r#"
+package:
+  name: python-click
+"#,
+        )
+        .expect("yaml");
+        assert_eq!(infer_primary_language(&parsed_python), "Python");
     }
 
     #[test]
