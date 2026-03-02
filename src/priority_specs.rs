@@ -6049,14 +6049,22 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     vdb_prefix=$(find /usr/local/phoreus/ncbi-vdb -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1 || true)\n\
     if [[ -n \"$vdb_prefix\" ]]; then\n\
       mkdir -p \"$PREFIX/include\" \"$PREFIX/lib\"\n\
-      if [[ -d \"$vdb_prefix/include\" ]]; then\n\
-        for inc_dir in \"$vdb_prefix/include\"/*; do\n\
+      vdb_include_root=\"$vdb_prefix/include\"\n\
+      if [[ ! -d \"$vdb_include_root\" && -d \"$vdb_prefix/interfaces\" ]]; then\n\
+        vdb_include_root=\"$vdb_prefix/interfaces\"\n\
+      fi\n\
+      if [[ -d \"$vdb_include_root\" ]]; then\n\
+        for inc_dir in \"$vdb_include_root\"/*; do\n\
           [[ -e \"$inc_dir\" ]] || continue\n\
           ln -snf \"$inc_dir\" \"$PREFIX/include/$(basename \"$inc_dir\")\"\n\
         done\n\
       fi\n\
-      if [[ -d \"$vdb_prefix/lib\" ]]; then\n\
-        for lib_file in \"$vdb_prefix/lib\"/lib*.so*; do\n\
+      vdb_lib_root=\"$vdb_prefix/lib\"\n\
+      if [[ ! -d \"$vdb_lib_root\" && -d \"$vdb_prefix/lib64\" ]]; then\n\
+        vdb_lib_root=\"$vdb_prefix/lib64\"\n\
+      fi\n\
+      if [[ -d \"$vdb_lib_root\" ]]; then\n\
+        for lib_file in \"$vdb_lib_root\"/lib*.so*; do\n\
           [[ -e \"$lib_file\" ]] || continue\n\
           ln -snf \"$lib_file\" \"$PREFIX/lib/$(basename \"$lib_file\")\"\n\
         done\n\
