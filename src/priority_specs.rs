@@ -5086,6 +5086,7 @@ fn extract_source_url(source: Option<&Value>) -> Option<String> {
             {
                 let git_rev = map
                     .get(Value::String("git_rev".to_string()))
+                    .or_else(|| map.get(Value::String("git_commit".to_string())))
                     .and_then(value_to_string);
                 return synthesize_git_source_descriptor(&git_url, git_rev.as_deref());
             }
@@ -5108,6 +5109,7 @@ fn extract_source_url(source: Option<&Value>) -> Option<String> {
             {
                 let git_rev = map
                     .get(Value::String("git_rev".to_string()))
+                    .or_else(|| map.get(Value::String("git_commit".to_string())))
                     .and_then(value_to_string);
                 return synthesize_git_source_descriptor(&git_url, git_rev.as_deref());
             }
@@ -5420,7 +5422,12 @@ export PERL_MB_OPT=\"${PERL_MB_OPT:+$PERL_MB_OPT }--install_base $PREFIX\"\n"
 
     let source_kind = source_archive_kind(&parsed.source_url);
     let git_source = parse_git_source_descriptor(&parsed.source_url);
-    let include_source0 = !runtime_only_metapackage && source_kind != SourceArchiveKind::Git;
+    // Runtime-only metapackages without source payload should not emit Source0.
+    // Recipes that still provide source URLs (for example run-only deps plus
+    // an explicit build.sh) must keep source unpack enabled.
+    let suppress_source0_for_metapackage =
+        runtime_only_metapackage && parsed.source_url.trim().is_empty();
+    let include_source0 = !suppress_source0_for_metapackage && source_kind != SourceArchiveKind::Git;
     let source_unpack_prep = if include_source0 {
         render_source_unpack_prep_block(source_kind)
     } else {
@@ -5555,6 +5562,24 @@ mkdir -p %{bioconda_source_subdir}\n"
         build_requires.insert("libxml2-devel".to_string());
         build_requires.remove("perl(Alien::Libxml2)");
     }
+    // HEURISTIC-TEMP(issue=HEUR-0020): XML::LibXSLT link probes need devel
+    // soname symlinks and headers for libxslt/libxml2/zlib.
+    if software_slug == "perl-xml-libxslt" {
+        build_requires.insert("libxml2-devel".to_string());
+        build_requires.insert("libxslt-devel".to_string());
+        build_requires.insert("zlib-devel".to_string());
+    }
+    // HEURISTIC-TEMP(issue=HEUR-0021): wfmash's CMake flow probes BZip2
+    // headers/libs directly and needs bzip2-devel in buildroots.
+    if software_slug == "wfmash" {
+        build_requires.insert("bzip2-devel".to_string());
+    }
+    // HEURISTIC-TEMP(issue=HEUR-0022): SHAPEIT5 links against libcrypto and
+    // hardcoded Boost archives; ensure devel providers are available.
+    if software_slug == "shapeit5" {
+        build_requires.insert("boost-devel".to_string());
+        build_requires.insert("openssl-devel".to_string());
+    }
     build_requires.remove(PHOREUS_PYTHON_PACKAGE);
     build_requires.remove(PHOREUS_PYTHON_PACKAGE_312);
     build_requires.remove(PHOREUS_PYTHON_PACKAGE_313);
@@ -5622,6 +5647,8 @@ mkdir -p %{bioconda_source_subdir}\n"
         runtime_requires.remove(PHOREUS_PYTHON_PACKAGE_313);
         runtime_requires.insert(python_runtime.package.to_string());
     }
+    // HEURISTIC-TEMP(issue=HEUR-0019): perl-xml-libxml can build/runtime
+    // without Alien::Libxml2 provider edges in this RPM profile.
     if software_slug == "perl-xml-libxml" {
         runtime_requires.remove("perl(Alien::Libxml2)");
     }
@@ -6326,6 +6353,19 @@ EOF\n\
       fi\n\
     fi\n\
     fi\n\
+    if [[ \"%{{tool}}\" == \"perl-xml-libxslt\" ]]; then\n\
+    if command -v dnf >/dev/null 2>&1; then dnf -y install libxml2-devel libxslt-devel zlib-devel >/dev/null 2>&1 || true; fi\n\
+    if command -v microdnf >/dev/null 2>&1; then microdnf -y install libxml2-devel libxslt-devel zlib-devel >/dev/null 2>&1 || true; fi\n\
+    for soname in libxslt.so libxml2.so libz.so; do\n\
+      if [[ ! -e \"/usr/lib/$soname\" && -e \"/usr/lib64/$soname\" ]]; then\n\
+        ln -snf \"/usr/lib64/$soname\" \"/usr/lib/$soname\" || true\n\
+      fi\n\
+    done\n\
+    export CPPFLAGS=\"-I/usr/include -I/usr/include/libxml2 ${{CPPFLAGS:-}}\"\n\
+    export CFLAGS=\"-I/usr/include -I/usr/include/libxml2 ${{CFLAGS:-}}\"\n\
+    export CXXFLAGS=\"-I/usr/include -I/usr/include/libxml2 ${{CXXFLAGS:-}}\"\n\
+    export LDFLAGS=\"-L/usr/lib64 -L/usr/lib ${{LDFLAGS:-}}\"\n\
+    fi\n\
     if [[ \"%{{tool}}\" == \"perl-gd\" ]]; then\n\
     perl -0pi -e 's@(^\\s*chmod\\s+u\\+w\\s+.*bdftogd\\b.*)$@[ -e \"$PREFIX/bin/bdftogd\" ] && $1 || true@mg' ./build.sh || true\n\
     fi\n\
@@ -6405,6 +6445,83 @@ EOF\n\
     # Cython 3 and NumPy 2 metadata-generation defaults.\n\
     if [[ \"%{{tool}}\" == \"advntr\" ]]; then\n\
     \"$PIP\" install --no-cache-dir \"cython<3\" \"numpy<2\" \"setuptools<81\" || true\n\
+    fi\n\
+\n\
+    # mmseqs2 recipes default to CUDA on Linux, but many buildroots do not ship\n\
+    # nvcc/cuda toolchains. Force deterministic CPU-only mode when nvcc is absent.\n\
+    if [[ \"%{{tool}}\" == \"mmseqs2\" ]]; then\n\
+    if ! command -v nvcc >/dev/null 2>&1; then\n\
+      sed -i -E 's/^[[:space:]]*Linux\\)[[:space:]]*CUDA=1[[:space:]]*;;/    Linux) CUDA=0 ;;/g' ./build.sh || true\n\
+      sed -i -E 's|-DCMAKE_CUDA_ARCHITECTURES=\"[^\"]*\"[[:space:]]*||g' ./build.sh || true\n\
+      sed -i 's|-DENABLE_CUDA=${{CUDA}}|-DENABLE_CUDA=0|g' ./build.sh || true\n\
+      export CUDA=0\n\
+      echo \"bioconda2rpm: nvcc unavailable; forcing mmseqs2 CPU-only build\" >&2\n\
+    fi\n\
+    fi\n\
+\n\
+    # Some pangenome graph builds inject a hardcoded /usr/lib64/libatomic.so.1.2.0\n\
+    # path that may be missing on minimal EL9 buildroots. Ensure the runtime\n\
+    # library is present and avoid self-referential linker-script aliases.\n\
+    if [[ \"%{{tool}}\" == \"odgi\" || \"%{{tool}}\" == \"seqwish\" || \"%{{tool}}\" == \"wfmash\" || \"%{{tool}}\" == \"pggb\" || \"%{{tool}}\" == \"smoothxg\" ]]; then\n\
+    if command -v dnf >/dev/null 2>&1; then dnf -y install libatomic >/dev/null 2>&1 || true; fi\n\
+    if command -v microdnf >/dev/null 2>&1; then microdnf -y install libatomic >/dev/null 2>&1 || true; fi\n\
+    if [[ -L /usr/lib64/libatomic.so.1.2.0 && ! -e /usr/lib64/libatomic.so.1.2.0 ]]; then rm -f /usr/lib64/libatomic.so.1.2.0; fi\n\
+    if [[ -L /usr/lib/libatomic.so.1.2.0 && ! -e /usr/lib/libatomic.so.1.2.0 ]]; then rm -f /usr/lib/libatomic.so.1.2.0; fi\n\
+    atomic_so=\"\"\n\
+    if [[ -e /usr/lib64/libatomic.so.1.2.0 ]]; then\n\
+      atomic_so=/usr/lib64/libatomic.so.1.2.0\n\
+    elif [[ -e /usr/lib/libatomic.so.1.2.0 ]]; then\n\
+      atomic_so=/usr/lib/libatomic.so.1.2.0\n\
+    else\n\
+      atomic_so=$(gcc -print-file-name=libatomic.a 2>/dev/null || true)\n\
+    fi\n\
+    if [[ -n \"$atomic_so\" && \"$atomic_so\" != \"libatomic.a\" && -e \"$atomic_so\" ]]; then\n\
+      mkdir -p /usr/lib64 /usr/lib\n\
+      for atomic_alias in /usr/lib64/libatomic.so.1.2.0 /usr/lib/libatomic.so.1.2.0; do\n\
+        if [[ -L \"$atomic_alias\" && ! -e \"$atomic_alias\" ]]; then rm -f \"$atomic_alias\"; fi\n\
+        if [[ ! -e \"$atomic_alias\" && \"$atomic_alias\" != \"$atomic_so\" ]]; then\n\
+          ln -snf \"$atomic_so\" \"$atomic_alias\" || true\n\
+        fi\n\
+      done\n\
+      export LDFLAGS=\"-L$(dirname \"$atomic_so\") ${{LDFLAGS:-}}\"\n\
+    fi\n\
+    fi\n\
+\n\
+    # TM-align recipes still carry historical seq2fun URLs in build.sh.\n\
+    # Normalize to the current zhanggroup host before build execution.\n\
+    if [[ \"%{{tool}}\" == \"tmalign\" ]]; then\n\
+    if [[ -f ./build.sh ]]; then\n\
+      sed -i -E 's#https?://seq2fun\\.dcmb\\.med\\.umich\\.edu/+TM-align/#https://zhanggroup.org/TM-align/#g' ./build.sh || true\n\
+      sed -i -E 's#https?://zhanglab\\.ccmb\\.med\\.umich\\.edu/TM-align/#https://zhanggroup.org/TM-align/#g' ./build.sh || true\n\
+      sed -i -E 's#https?://www\\.zhanggroup\\.org/TM-align/#https://zhanggroup.org/TM-align/#g' ./build.sh || true\n\
+      sed -i 's/-static-libstdc++//g; s/-static-libgcc//g; s/-static//g' ./build.sh || true\n\
+    fi\n\
+    fi\n\
+\n\
+    # SHAPEIT5 makefiles hardcode Boost static archive paths and -lcrypto.\n\
+    # EL9 usually provides shared libraries, so create compatibility aliases.\n\
+    if [[ \"%{{tool}}\" == \"shapeit5\" ]]; then\n\
+    if command -v dnf >/dev/null 2>&1; then dnf -y install boost-devel openssl-devel >/dev/null 2>&1 || true; fi\n\
+    if command -v microdnf >/dev/null 2>&1; then microdnf -y install boost-devel openssl-devel >/dev/null 2>&1 || true; fi\n\
+    mkdir -p \"$PREFIX/lib\"\n\
+    for boost_lib in boost_iostreams boost_program_options; do\n\
+      boost_so=$(ls /usr/lib64/lib${{boost_lib}}.so* 2>/dev/null | head -n 1 || true)\n\
+      if [[ -n \"$boost_so\" ]]; then\n\
+        ln -snf \"$boost_so\" \"$PREFIX/lib/lib${{boost_lib}}.a\" || true\n\
+      fi\n\
+    done\n\
+    crypto_so=$(ls /usr/lib64/libcrypto.so* 2>/dev/null | head -n 1 || true)\n\
+    if [[ -n \"$crypto_so\" ]]; then\n\
+      ln -snf \"$crypto_so\" \"$PREFIX/lib/libcrypto.so\" || true\n\
+    fi\n\
+    export LDFLAGS=\"-L$PREFIX/lib -L/usr/lib64 -L/usr/lib ${{LDFLAGS:-}}\"\n\
+    fi\n\
+\n\
+    if [[ \"%{{tool}}\" == \"wfmash\" ]]; then\n\
+    if command -v dnf >/dev/null 2>&1; then dnf -y install bzip2-devel >/dev/null 2>&1 || true; fi\n\
+    if command -v microdnf >/dev/null 2>&1; then microdnf -y install bzip2-devel >/dev/null 2>&1 || true; fi\n\
+    export CPPFLAGS=\"-I/usr/include ${{CPPFLAGS:-}}\"\n\
+    export LDFLAGS=\"-L/usr/lib64 -L/usr/lib ${{LDFLAGS:-}}\"\n\
     fi\n\
 \n\
     # poretools still ships Python 2 style setup.py print statements.\n\
@@ -7596,7 +7713,18 @@ git_url=\"%{bioconda_source_git_url}\"\n\
 git_rev=\"%{bioconda_source_git_rev}\"\n\
 git clone --recursive \"$git_url\" buildsrc\n\
 cd buildsrc\n\
-git checkout \"$git_rev\"\n\
+if ! git checkout \"$git_rev\"; then\n\
+  git fetch --all --tags --force || true\n\
+  if ! git checkout \"$git_rev\"; then\n\
+    if git rev-parse -q --verify \"refs/tags/v%{upstream_version}\" >/dev/null 2>&1; then\n\
+      git checkout \"v%{upstream_version}\"\n\
+    elif git rev-parse -q --verify \"refs/tags/%{upstream_version}\" >/dev/null 2>&1; then\n\
+      git checkout \"%{upstream_version}\"\n\
+    else\n\
+      echo \"bioconda2rpm: warning: unable to checkout git rev $git_rev; continuing on cloned HEAD\" >&2\n\
+    fi\n\
+  fi\n\
+fi\n\
 git submodule update --init --recursive || true\n\
 cd ..\n"
             .to_string(),
@@ -8407,12 +8535,15 @@ fn map_build_dependency(dep: &str) -> String {
         "jsoncpp-devel" => "jsoncpp".to_string(),
         "libcurl" => "libcurl-devel".to_string(),
         "libgd" => "gd-devel".to_string(),
+        "libxml2" => "libxml2-devel".to_string(),
+        "libxslt" => "libxslt-devel".to_string(),
         "libblas" => "openblas-devel".to_string(),
         "libcblas" => "openblas-devel".to_string(),
         "openblas" | "libopenblas" => "openblas-devel".to_string(),
         // Keep libdeflate as a Bioconda/Phoreus dependency for prefix hydration.
         "libdeflate" => "libdeflate".to_string(),
         "libdeflate-devel" => "libdeflate".to_string(),
+        "liblzma" => "xz-devel".to_string(),
         "liblzma-devel" => "xz-devel".to_string(),
         "liblapack" => "lapack-devel".to_string(),
         "lp-solve" | "lpsolve" => "lpsolve".to_string(),
@@ -9827,6 +9958,9 @@ source_candidates=()\n\
 if [[ -n \"$source0_url\" ]]; then\n\
   source_candidates+=(\"$source0_url\")\n\
 fi\n\
+if [[ \"$source0_url\" =~ ^http:// ]]; then\n\
+  source_candidates+=(\"${{source0_url/#http:/https:}}\")\n\
+fi\n\
 if [[ \"$source0_url\" =~ ^https://bioconductor.org/packages/.*/bioc/src/contrib/([^/]+)_[^/]+\\.tar\\.gz$ ]]; then\n\
   bioc_pkg=\"${{BASH_REMATCH[1]}}\"\n\
   archive_url=$(printf '%s' \"$source0_url\" | sed -E \"s#(/bioc/src/contrib/)#\\\\1Archive/$bioc_pkg/#\")\n\
@@ -9845,6 +9979,12 @@ if [[ \"$source0_url\" =~ ^(.*/)([^/]+)-([0-9][0-9\\.]*)-([0-9]+)\\.zip$ ]]; the
       source_candidates+=(\"${{source_prefix}}${{source_name}}-${{source_version}}-${{build_num}}.zip\")\n\
     done\n\
   fi\n\
+fi\n\
+# TM-align upstream moved primary hosting from seq2fun to zhanggroup/aideepmed.\n\
+if [[ \"$source0_url\" =~ ^https?://seq2fun\\.dcmb\\.med\\.umich\\.edu/+TM-align/(TMtools[0-9]+\\.tar\\.gz)$ ]]; then\n\
+  tmtools_file=\"${{BASH_REMATCH[1]}}\"\n\
+  source_candidates+=(\"https://zhanggroup.org/TM-align/${{tmtools_file}}\")\n\
+  source_candidates+=(\"https://aideepmed.com/TM-align/${{tmtools_file}}\")\n\
 fi\n\
 # ClustalW upstream current URL can rot; use deterministic versioned and EBI mirror fallbacks.\n\
 if [[ \"$source0_url\" =~ ^https?://(www\\.)?clustal\\.org/download/current/(clustalw-([0-9][0-9A-Za-z\\._-]*))\\.tar\\.gz$ ]]; then\n\
@@ -11013,6 +11153,15 @@ mod tests {
         assert_eq!(map_runtime_dependency("xorg-libx11"), "libX11".to_string());
         assert_eq!(map_build_dependency("eigen"), "eigen3-devel".to_string());
         assert_eq!(
+            map_build_dependency("libxml2"),
+            "libxml2-devel".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("libxslt"),
+            "libxslt-devel".to_string()
+        );
+        assert_eq!(map_build_dependency("liblzma"), "xz-devel".to_string());
+        assert_eq!(
             map_runtime_dependency("biopython"),
             "python3-biopython".to_string()
         );
@@ -11798,6 +11947,23 @@ source:
         assert_eq!(
             parsed.source_url,
             "git+https://github.com/jts/nanopolish.git#v0.14.0"
+        );
+    }
+
+    #[test]
+    fn parse_meta_synthesizes_github_archive_from_git_commit_source() {
+        let rendered = r#"
+package:
+  name: shapeit5
+  version: "5.1.1"
+source:
+  git_url: https://github.com/odelaneau/shapeit5
+  git_commit: 990ed0dd0a814756c90e16d3a771bc0089b1177a
+"#;
+        let parsed = parse_rendered_meta(rendered).expect("parse rendered meta");
+        assert_eq!(
+            parsed.source_url,
+            "git+https://github.com/odelaneau/shapeit5#990ed0dd0a814756c90e16d3a771bc0089b1177a"
         );
     }
 
@@ -14478,6 +14644,48 @@ requirements:
         assert!(spec.contains("Requires:  snakemake-minimal"));
         assert!(spec.contains("Requires:  pandas"));
         assert!(!spec.contains("Source0:"));
+    }
+
+    #[test]
+    fn run_only_recipe_with_real_source_keeps_source0_unpack() {
+        let mut run_deps = BTreeSet::new();
+        run_deps.insert("perl".to_string());
+        let parsed = ParsedMeta {
+            package_name: "barrnap".to_string(),
+            version: "0.9".to_string(),
+            build_number: "4".to_string(),
+            source_url: "https://github.com/tseemann/barrnap/archive/0.9.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://github.com/tseemann/barrnap".to_string(),
+            license: "GPL-3.0-only".to_string(),
+            summary: "barrnap".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: vec!["perl".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps,
+        };
+        // Runtime-only classification can still be true for run-only metadata,
+        // but Source0 must remain present when a concrete source URL exists.
+        assert!(is_runtime_only_metapackage(&parsed));
+        let spec = render_payload_spec(
+            "barrnap",
+            &parsed,
+            "bioconda-barrnap-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains("Source0:"));
+        assert!(spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1"));
     }
 
     #[test]
