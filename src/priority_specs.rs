@@ -7636,6 +7636,7 @@ export PATH=\"$VIRTUAL_ENV/bin:$PATH\"\n\
 export PYTHON=\"$VIRTUAL_ENV/bin/python\"\n\
 export PYTHON3=\"$VIRTUAL_ENV/bin/python\"\n\
 export PIP=\"$VIRTUAL_ENV/bin/pip\"\n\
+export SP_DIR=\"$($PYTHON -c 'import site, sysconfig; paths=[p for p in (getattr(site, \"getsitepackages\", lambda: [])() or []) if p.endswith(\"site-packages\")]; print(paths[0] if paths else sysconfig.get_paths().get(\"purelib\", \"\"))')\"\n\
 export PIP_DISABLE_PIP_VERSION_CHECK=1\n\
 \"$PIP\" install --upgrade pip \"setuptools<81\" wheel\n\
 {requirements_install}",
@@ -11881,6 +11882,14 @@ requirements:
         assert!(block.contains("--pip-args \"--no-build-isolation\""));
         assert!(block.contains("\"$PIP\" install \"cython<3\" \"numpy<2\" \"scipy<2\""));
         assert!(block.contains("install --no-build-isolation --require-hashes"));
+    }
+
+    #[test]
+    fn python_venv_setup_exports_sp_dir_for_conda_compat() {
+        let block = render_python_venv_setup_block(true, &[]);
+        assert!(block.contains("export SP_DIR=\"$($PYTHON -c"));
+        assert!(block.contains("getsitepackages"));
+        assert!(block.contains("purelib"));
     }
 
     #[test]
