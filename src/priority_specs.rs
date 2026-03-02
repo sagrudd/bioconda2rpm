@@ -6489,8 +6489,8 @@ EOF\n\
     # an installable RPM provider. Bootstrap a local argtable2 prefix fallback.\n\
     if [[ \"%{{tool}}\" == \"clustalo\" ]]; then\n\
     if [[ ! -f /usr/include/argtable2.h && ! -f /usr/local/include/argtable2.h && ! -f \"$PREFIX/include/argtable2.h\" ]]; then\n\
-      argtable_ver=2.13\n\
-      argtable_url=\"https://downloads.sourceforge.net/project/argtable/argtable2/argtable2-${{argtable_ver}}/argtable2-${{argtable_ver}}.tar.gz\"\n\
+      argtable_ver=13\n\
+      argtable_url=\"https://sourceforge.net/projects/argtable/files/argtable/argtable-2.13/argtable2-${{argtable_ver}}.tar.gz/download\"\n\
       argtable_src=\"$(pwd)/.bioconda2rpm-argtable2-src\"\n\
       argtable_archive=\"$argtable_src/argtable2-${{argtable_ver}}.tar.gz\"\n\
       rm -rf \"$argtable_src\"\n\
@@ -13731,8 +13731,8 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"clustalo\" ]]; then"));
-        assert!(spec.contains("argtable_ver=2.13"));
-        assert!(spec.contains("downloads.sourceforge.net/project/argtable/argtable2"));
+        assert!(spec.contains("argtable_ver=13"));
+        assert!(spec.contains("sourceforge.net/projects/argtable/files/argtable/argtable-2.13"));
         assert!(spec.contains("export CPPFLAGS=\"-I$PREFIX/include ${CPPFLAGS:-}\""));
         assert!(spec.contains("BuildRequires:  argtable-devel"));
         assert!(spec.contains("Requires:  argtable"));
