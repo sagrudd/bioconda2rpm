@@ -6299,6 +6299,7 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     # optional for RPM payloads, so disable it and tighten pkg-config discovery.\n\
     if [[ \"%{{tool}}\" == \"vcflib\" ]]; then\n\
     sed -i 's|-DZIG=ON|-DZIG=OFF|g' ./build.sh || true\n\
+    sed -i 's|HTSCODECS_VERSION_TEXT|HTSCODECS_VERSION|g' contrib/tabixpp/htslib/htscodecs/htscodecs/htscodecs.c || true\n\
     export CMAKE_ARGS=\"${{CMAKE_ARGS:-}} -DZIG=OFF\"\n\
     unset VERSION || true\n\
     export CFLAGS=\"-DHTSCODECS_VERSION_TEXT=0 ${{CFLAGS:-}}\"\n\
@@ -12857,6 +12858,7 @@ requirements:
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"vcflib\" ]]; then"));
         assert!(spec.contains("sed -i 's|-DZIG=ON|-DZIG=OFF|g' ./build.sh || true"));
+        assert!(spec.contains("sed -i 's|HTSCODECS_VERSION_TEXT|HTSCODECS_VERSION|g' contrib/tabixpp/htslib/htscodecs/htscodecs/htscodecs.c || true"));
         assert!(spec.contains("unset VERSION || true"));
         assert!(spec.contains("export CFLAGS=\"-DHTSCODECS_VERSION_TEXT=0 ${CFLAGS:-}\""));
     }
