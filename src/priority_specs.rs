@@ -4255,12 +4255,15 @@ fn select_phoreus_python_runtime(parsed: &ParsedMeta, python_recipe: bool) -> Ph
         // flair-brookslab currently requires Python >=3.12.
         return PHOREUS_PYTHON_RUNTIME_312;
     }
+    // Parse explicit phoreus-python runtime pins from raw specs only.
+    // `build_deps/host_deps/run_deps` are normalized and may synthesize
+    // `phoreus-python-3.11` from plain `python` constraints.
     if let Some(explicit_runtime) = parsed
-        .build_deps
+        .build_dep_specs_raw
         .iter()
-        .chain(parsed.host_deps.iter())
-        .chain(parsed.run_deps.iter())
-        .map(|dep| normalize_dependency_token(dep))
+        .chain(parsed.host_dep_specs_raw.iter())
+        .chain(parsed.run_dep_specs_raw.iter())
+        .filter_map(|raw| normalized_dependency_name_from_spec(raw))
         .find_map(|dep| phoreus_python_runtime_from_dep(&dep))
     {
         return explicit_runtime;
@@ -4529,6 +4532,19 @@ fn normalize_conda_version_spec_for_pip(spec: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn normalized_dependency_name_from_spec(raw: &str) -> Option<String> {
+    let cleaned = raw.trim().trim_matches('"').trim_matches('\'');
+    if cleaned.is_empty() {
+        return None;
+    }
+    let first = cleaned.split_whitespace().next().unwrap_or_default();
+    let name = extract_dependency_name_from_token(first);
+    if name.is_empty() {
+        return None;
+    }
+    Some(normalize_dependency_token(name))
 }
 
 fn extract_dependency_name_from_token(token: &str) -> &str {
@@ -9961,6 +9977,9 @@ fi\n\
 if [[ \"$source0_url\" =~ ^http:// ]]; then\n\
   source_candidates+=(\"${{source0_url/#http:/https:}}\")\n\
 fi\n\
+if [[ \"$source0_url\" =~ ^ftp:// ]]; then\n\
+  source_candidates+=(\"${{source0_url/#ftp:/https:}}\")\n\
+fi\n\
 if [[ \"$source0_url\" =~ ^https://bioconductor.org/packages/.*/bioc/src/contrib/([^/]+)_[^/]+\\.tar\\.gz$ ]]; then\n\
   bioc_pkg=\"${{BASH_REMATCH[1]}}\"\n\
   archive_url=$(printf '%s' \"$source0_url\" | sed -E \"s#(/bioc/src/contrib/)#\\\\1Archive/$bioc_pkg/#\")\n\
@@ -9994,6 +10013,12 @@ if [[ \"$source0_url\" =~ ^https?://(www\\.)?clustal\\.org/download/current/(clu
   source_candidates+=(\"http://www.clustal.org/download/${{clustalw_version}}/${{clustalw_file}}\")\n\
   source_candidates+=(\"https://ftp.ebi.ac.uk/pub/software/clustalw2/${{clustalw_version}}/${{clustalw_file}}\")\n\
   source_candidates+=(\"ftp://ftp.ebi.ac.uk/pub/software/clustalw2/${{clustalw_version}}/${{clustalw_file}}\")\n\
+fi\n\
+# Clustal Omega historical clustal.org URL can redirect to HTML; use GitHub tag archives.\n\
+if [[ \"$source0_url\" =~ ^https?://(www\\.)?clustal\\.org/omega/(clustal-omega-([0-9][0-9A-Za-z\\._-]*))\\.tar\\.gz$ ]]; then\n\
+  clustalo_version=\"${{BASH_REMATCH[3]}}\"\n\
+  source_candidates+=(\"https://github.com/GSLBiotech/clustal-omega/archive/refs/tags/${{clustalo_version}}.tar.gz\")\n\
+  source_candidates+=(\"https://github.com/GSLBiotech/clustal-omega/archive/${{BASH_REMATCH[2]}}.tar.gz\")\n\
 fi\n\
 validate_source_file() {{\n\
   local source_path=\"$1\"\n\
@@ -12481,6 +12506,34 @@ requirements:
         assert!(spec.contains("Requires:  phoreus-python-3.13"));
         assert!(spec.contains("export PHOREUS_PYTHON_PREFIX=/usr/local/phoreus/python/3.13"));
         assert!(spec.contains("python3.13"));
+    }
+
+    #[test]
+    fn python_runtime_selector_ignores_synthesized_phoreus311_dependency() {
+        let parsed = ParsedMeta {
+            package_name: "scanpy-cli".to_string(),
+            version: "0.2.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/scanpy-cli-0.2.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/scanpy-cli".to_string(),
+            license: "MIT".to_string(),
+            summary: "scanpy-cli".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            noarch_python: true,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["python >=3.12".to_string(), "pip".to_string()],
+            run_dep_specs_raw: vec!["python >=3.12".to_string()],
+            // Parsed dependency sets normalize plain python specs to the
+            // default phoreus runtime token; selector must ignore these.
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::from([PHOREUS_PYTHON_PACKAGE.to_string()]),
+            run_deps: BTreeSet::from([PHOREUS_PYTHON_PACKAGE.to_string()]),
+        };
+
+        let runtime = select_phoreus_python_runtime(&parsed, true);
+        assert_eq!(runtime.package, PHOREUS_PYTHON_PACKAGE_313);
     }
 
     #[test]
