@@ -3694,6 +3694,7 @@ fn meta_file_path(dir: &Path) -> Option<PathBuf> {
 }
 
 fn render_meta_yaml(meta: &str) -> Result<String> {
+    let normalized_meta = normalize_common_jinja_string_methods(meta);
     let mut env = Environment::new();
     env.add_function("compiler", |lang: String| {
         format!("{}-compiler", lang.to_lowercase())
@@ -3701,9 +3702,12 @@ fn render_meta_yaml(meta: &str) -> Result<String> {
     env.add_function("cdt", |name: String| name);
     env.add_function("pin_subpackage", |name: String, _kwargs: Kwargs| name);
     env.add_function("pin_compatible", |name: String, _kwargs: Kwargs| name);
+    env.add_filter("replace", |input: String, from: String, to: String| {
+        input.replace(&from, &to)
+    });
 
     let template = env
-        .template_from_str(meta)
+        .template_from_str(&normalized_meta)
         .context("creating jinja template from meta.yaml")?;
 
     template
@@ -3724,6 +3728,27 @@ fn render_meta_yaml(meta: &str) -> Result<String> {
             },
         })
         .context("rendering meta.yaml jinja template")
+}
+
+fn normalize_common_jinja_string_methods(meta: &str) -> String {
+    // Bioconda recipes sometimes use Python-style string methods in Jinja
+    // assignments (e.g. version.replace("rc", "-rc.")). Minijinja does not
+    // support method calls, but equivalent filters work.
+    let mut out = String::with_capacity(meta.len());
+    for (idx, line) in meta.lines().enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        if line.contains("{{") || line.contains("{%") {
+            out.push_str(&line.replace(".replace(", "|replace("));
+        } else {
+            out.push_str(line);
+        }
+    }
+    if meta.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -14085,6 +14110,20 @@ requirements:
         assert!(rendered.contains("bwa"));
         assert!(rendered.contains("c-compiler"));
         assert!(rendered.contains("libxext"));
+    }
+
+    #[test]
+    fn render_meta_supports_python_style_replace_in_set_blocks() {
+        let src = r#"
+{% set version = "4.10.0rc2" %}
+{% set tag_version = "v" + version.replace("rc", "-rc.") %}
+package:
+  name: trf
+source:
+  url: https://example.invalid/{{ tag_version }}.tar.gz
+"#;
+        let rendered = render_meta_yaml(src).expect("render jinja replace method");
+        assert!(rendered.contains("https://example.invalid/v4.10.0-rc.2.tar.gz"));
     }
 
     #[test]
