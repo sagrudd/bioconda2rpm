@@ -6413,6 +6413,34 @@ EOF\n\
     if [[ \"%{{tool}}\" == \"perl-gd\" ]]; then\n\
     perl -0pi -e 's@(^\\s*chmod\\s+u\\+w\\s+.*bdftogd\\b.*)$@[ -e \"$PREFIX/bin/bdftogd\" ] && $1 || true@mg' ./build.sh || true\n\
     fi\n\
+    if [[ \"%{{tool}}\" == \"perl-bio-samtools\" ]]; then\n\
+    # Bio::DB::Sam expects legacy samtools headers (bam.h) and static libbam.a.\n\
+    # Modern htslib/samtools builds no longer provide this layout, so bootstrap\n\
+    # samtools 0.1.19 into PREFIX when missing.\n\
+    if [[ ! -f \"$PREFIX/lib/libbam.a\" || ! -f \"$PREFIX/include/bam.h\" ]]; then\n\
+      sam_legacy_ver=0.1.19\n\
+      sam_legacy_url=\"https://downloads.sourceforge.net/project/samtools/samtools/${{sam_legacy_ver}}/samtools-${{sam_legacy_ver}}.tar.bz2\"\n\
+      sam_legacy_root=\"$(pwd)/.bioconda2rpm-samtools-legacy\"\n\
+      sam_legacy_archive=\"$sam_legacy_root/samtools-${{sam_legacy_ver}}.tar.bz2\"\n\
+      rm -rf \"$sam_legacy_root\"\n\
+      mkdir -p \"$sam_legacy_root\"\n\
+      if command -v curl >/dev/null 2>&1; then\n\
+        curl -L --fail -o \"$sam_legacy_archive\" \"$sam_legacy_url\"\n\
+      elif command -v wget >/dev/null 2>&1; then\n\
+        wget -O \"$sam_legacy_archive\" \"$sam_legacy_url\"\n\
+      else\n\
+        echo \"curl/wget required to bootstrap samtools 0.1.19\" >&2\n\
+        exit 1\n\
+      fi\n\
+      tar -xf \"$sam_legacy_archive\" -C \"$sam_legacy_root\" --strip-components=1\n\
+      make -C \"$sam_legacy_root\" -j\"${{CPU_COUNT:-1}}\" || make -C \"$sam_legacy_root\" -j1\n\
+      mkdir -p \"$PREFIX/include\" \"$PREFIX/lib\"\n\
+      cp -f \"$sam_legacy_root/libbam.a\" \"$PREFIX/lib/libbam.a\"\n\
+      for hdr in bam.h bgzf.h razf.h faidx.h khash.h kseq.h; do\n\
+        [[ -f \"$sam_legacy_root/$hdr\" ]] && cp -f \"$sam_legacy_root/$hdr\" \"$PREFIX/include/$hdr\"\n\
+      done\n\
+    fi\n\
+    fi\n\
     \n\
     # Bandage-NG requires CMake >= 3.28. EL9 base images can be older.\n\
     # Bootstrap a newer CMake binary in-place when needed.\n\
@@ -13422,6 +13450,48 @@ requirements:
             map_build_dependency("perl(XML::Namespacesupport)"),
             "perl(XML::NamespaceSupport)"
         );
+    }
+
+    #[test]
+    fn perl_bio_samtools_spec_bootstraps_legacy_libbam_layout() {
+        let parsed = ParsedMeta {
+            package_name: "perl-bio-samtools".to_string(),
+            version: "1.43".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/perl-bio-samtools.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/perl-bio-samtools".to_string(),
+            license: "Perl_5".to_string(),
+            summary: "perl-bio-samtools".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("perl Makefile.PL\nmake\nmake install".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["samtools =0.1.19".to_string()],
+            host_dep_specs_raw: vec!["samtools =0.1.19".to_string()],
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::from(["samtools".to_string()]),
+            host_deps: BTreeSet::from(["samtools".to_string()]),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "perl-bio-samtools",
+            &parsed,
+            "bioconda-perl-bio-samtools-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"perl-bio-samtools\" ]]; then"));
+        assert!(spec.contains("sam_legacy_ver=0.1.19"));
+        assert!(spec.contains("downloads.sourceforge.net/project/samtools/samtools/${sam_legacy_ver}/samtools-${sam_legacy_ver}.tar.bz2"));
+        assert!(spec.contains("cp -f \"$sam_legacy_root/libbam.a\" \"$PREFIX/lib/libbam.a\""));
+        assert!(spec.contains("for hdr in bam.h bgzf.h razf.h faidx.h khash.h kseq.h; do"));
     }
 
     #[test]
