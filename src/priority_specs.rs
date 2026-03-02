@@ -4598,8 +4598,15 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "bwa"
             | "blast"
             | "clustalw"
+            | "fasttree"
             | "glimmerhmm"
             | "hdf5"
+            | "mafft"
+            | "muscle"
+            | "openmpi"
+            | "pcre"
+            | "prank"
+            | "raxml"
             | "metaeuk"
             | "hmmer"
             | "augustus"
@@ -6231,6 +6238,15 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
       fi\n\
     fi\n\
     \"$PIP\" install --no-cache-dir \"setuptools<81\" || true\n\
+    fi\n\
+\n\
+    # PASTA setup metadata expects CONDA_PREFIX to resolve bundled tool paths.\n\
+    if [[ \"%{{tool}}\" == \"pasta\" ]]; then\n\
+    export CONDA_PREFIX=\"$PREFIX\"\n\
+    # setup.py creates hmmeralign itself; pre-copying causes an\n\
+    # existing-path abort during metadata generation.\n\
+    sed -i '/cp -fv \\$SRC_DIR\\/resources\\/scripts\\/hmmeralign \\$PREFIX\\/bin\\/hmmeralign/d' ./build.sh || true\n\
+    sed -i 's|cp -fv $PREFIX/bin/raxmlHPC $PREFIX/bin/raxml && chmod 0755 $PREFIX/bin/raxml|if [[ -x $PREFIX/bin/raxmlHPC ]]; then cp -fv $PREFIX/bin/raxmlHPC $PREFIX/bin/raxml \\&\\& chmod 0755 $PREFIX/bin/raxml; fi|g' ./build.sh || true\n\
     fi\n\
     \n\
     # pychopper imports pkg_resources during metadata build; setuptools>=81 can\n\
@@ -12109,9 +12125,16 @@ requirements:
                 "python".to_string(),
                 "pip".to_string(),
                 "clustalw".to_string(),
+                "fasttree".to_string(),
                 "glimmerhmm".to_string(),
                 "hdf5".to_string(),
+                "mafft".to_string(),
+                "muscle".to_string(),
                 "numpy".to_string(),
+                "openmpi".to_string(),
+                "pcre".to_string(),
+                "prank".to_string(),
+                "raxml".to_string(),
             ],
             run_dep_specs_raw: Vec::new(),
             build_deps: BTreeSet::new(),
@@ -12122,8 +12145,15 @@ requirements:
         let reqs = build_python_requirements(&parsed);
         assert!(reqs.iter().any(|r| r == "numpy"));
         assert!(!reqs.iter().any(|r| r == "clustalw"));
+        assert!(!reqs.iter().any(|r| r == "fasttree"));
         assert!(!reqs.iter().any(|r| r == "glimmerhmm"));
         assert!(!reqs.iter().any(|r| r == "hdf5"));
+        assert!(!reqs.iter().any(|r| r == "mafft"));
+        assert!(!reqs.iter().any(|r| r == "muscle"));
+        assert!(!reqs.iter().any(|r| r == "openmpi"));
+        assert!(!reqs.iter().any(|r| r == "pcre"));
+        assert!(!reqs.iter().any(|r| r == "prank"));
+        assert!(!reqs.iter().any(|r| r == "raxml"));
     }
 
     #[test]
@@ -12860,6 +12890,47 @@ requirements:
         assert!(spec.contains("sed -i -E 's/^([[:space:]]*)print[[:space:]]+([^#].*)$/\\1print(\\2)/' setup.py || true"));
         assert!(spec.contains("2to3 -w -n setup.py >/dev/null 2>&1 || true"));
         assert!(spec.contains("\"$PIP\" install --no-cache-dir \"setuptools<81\" || true"));
+    }
+
+    #[test]
+    fn pasta_spec_exports_conda_prefix_for_metadata_generation() {
+        let parsed = ParsedMeta {
+            package_name: "pasta".to_string(),
+            version: "1.9.3".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/pasta.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/pasta".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "pasta".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["python".to_string()],
+            host_dep_specs_raw: vec!["python".to_string(), "mafft".to_string()],
+            run_dep_specs_raw: vec!["python".to_string(), "mafft".to_string()],
+            build_deps: BTreeSet::from(["python".to_string()]),
+            host_deps: BTreeSet::from(["python".to_string(), "mafft".to_string()]),
+            run_deps: BTreeSet::from(["python".to_string(), "mafft".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "pasta",
+            &parsed,
+            "bioconda-pasta-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"pasta\" ]]; then"));
+        assert!(spec.contains("export CONDA_PREFIX=\"$PREFIX\""));
+        assert!(spec.contains("sed -i '/cp -fv \\$SRC_DIR\\/resources\\/scripts\\/hmmeralign \\$PREFIX\\/bin\\/hmmeralign/d' ./build.sh || true"));
+        assert!(spec.contains("sed -i 's|cp -fv $PREFIX/bin/raxmlHPC $PREFIX/bin/raxml && chmod 0755 $PREFIX/bin/raxml|if [[ -x $PREFIX/bin/raxmlHPC ]]; then cp -fv $PREFIX/bin/raxmlHPC $PREFIX/bin/raxml \\&\\& chmod 0755 $PREFIX/bin/raxml; fi|g' ./build.sh || true"));
     }
 
     #[test]
