@@ -6045,6 +6045,24 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     sed -i 's|--with-sqlite3=\"\\$PREFIX\"|--with-sqlite3=/usr|g' ./build.sh || true\n\
     sed -i 's|--with-sqlite3=\"${{PREFIX}}\"|--with-sqlite3=/usr|g' ./build.sh || true\n\
     fi\n\
+    if [[ \"%{{tool}}\" == \"sra-tools\" ]]; then\n\
+    vdb_prefix=$(find /usr/local/phoreus/ncbi-vdb -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1 || true)\n\
+    if [[ -n \"$vdb_prefix\" ]]; then\n\
+      mkdir -p \"$PREFIX/include\" \"$PREFIX/lib\"\n\
+      if [[ -d \"$vdb_prefix/include\" ]]; then\n\
+        for inc_dir in \"$vdb_prefix/include\"/*; do\n\
+          [[ -e \"$inc_dir\" ]] || continue\n\
+          ln -snf \"$inc_dir\" \"$PREFIX/include/$(basename \"$inc_dir\")\"\n\
+        done\n\
+      fi\n\
+      if [[ -d \"$vdb_prefix/lib\" ]]; then\n\
+        for lib_file in \"$vdb_prefix/lib\"/lib*.so*; do\n\
+          [[ -e \"$lib_file\" ]] || continue\n\
+          ln -snf \"$lib_file\" \"$PREFIX/lib/$(basename \"$lib_file\")\"\n\
+        done\n\
+      fi\n\
+    fi\n\
+    fi\n\
     \n\
     # GMAP upstream release tarballs already ship generated configure scripts.\n\
     # Running autoreconf on EL9 toolchains has produced broken configure outputs\n\
@@ -12836,6 +12854,47 @@ requirements:
         assert!(spec.contains("BuildRequires:  perl(XML::SAX)"));
         assert!(spec.contains("BuildRequires:  perl(XML::NamespaceSupport)"));
         assert!(!spec.contains("Requires:  perl(Alien::Libxml2)"));
+    }
+
+    #[test]
+    fn sra_tools_spec_hydrates_ncbi_vdb_headers_and_libs() {
+        let parsed = ParsedMeta {
+            package_name: "sra-tools".to_string(),
+            version: "3.2.1".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/sra-tools-3.2.1.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/sra-tools".to_string(),
+            license: "Public-Domain".to_string(),
+            summary: "sra-tools".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("cmake -S sra-tools -B build_sratools".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "sra-tools",
+            &parsed,
+            "bioconda-sra-tools-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"sra-tools\" ]]; then"));
+        assert!(spec.contains("vdb_prefix=$(find /usr/local/phoreus/ncbi-vdb"));
+        assert!(spec.contains("ln -snf \"$inc_dir\" \"$PREFIX/include/$(basename \"$inc_dir\")\""));
+        assert!(spec.contains("ln -snf \"$lib_file\" \"$PREFIX/lib/$(basename \"$lib_file\")\""));
     }
 
     #[test]
