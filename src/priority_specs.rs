@@ -5553,6 +5553,7 @@ mkdir -p %{bioconda_source_subdir}\n"
     // explicit LIBS/INC flags without Alien::Libxml2; drop this edge to avoid
     // resolver churn when alternate provider shims are present.
     if software_slug == "perl-xml-libxml" {
+        build_requires.insert("libxml2-devel".to_string());
         build_requires.remove("perl(Alien::Libxml2)");
     }
     build_requires.remove(PHOREUS_PYTHON_PACKAGE);
@@ -12765,6 +12766,7 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"perl-xml-libxml\" ]]; then"));
+        assert!(spec.contains("BuildRequires:  libxml2-devel"));
         assert!(spec.contains("ln -snf /usr/include/libxml2 \"$PREFIX/include/libxml2\""));
         assert!(spec.contains("sed -i 's/ -liconv -licui18n -licuuc -licudata//g' ./build.sh"));
         assert!(spec.contains("perl -MAlien::Base::Wrapper -e1"));
