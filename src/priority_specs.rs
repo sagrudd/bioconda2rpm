@@ -6689,8 +6689,66 @@ EOF\n\
     # In RPM builds we install boost-devel via system repos, so allow\n\
     # standard CMake discovery roots to satisfy Boost components.\n\
     if [[ \"%{{tool}}\" == \"salmon\" ]]; then\n\
+    # GCC's C++ wrapper header cstdlib uses include_next to locate C headers.\n\
+    # A forced CPLUS_INCLUDE_PATH/CPATH can hide the standard libc include\n\
+    # chain and break include_next lookup of stdlib.h.\n\
+    unset CPLUS_INCLUDE_PATH\n\
+    unset C_INCLUDE_PATH\n\
+    if [[ -n \"${{CPATH:-}}\" ]]; then\n\
+      cp_path_clean=$(printf '%s' \"$CPATH\" | tr ':' '\\n' | awk 'NF && $0 != \"/usr/include\"' | paste -sd: - || true)\n\
+      if [[ -n \"$cp_path_clean\" ]]; then\n\
+        export CPATH=\"$cp_path_clean\"\n\
+      else\n\
+        unset CPATH\n\
+      fi\n\
+    fi\n\
+    export CXXFLAGS=\"-idirafter /usr/include ${{CXXFLAGS:-}}\"\n\
+    if [[ ! -f /usr/include/stdlib.h ]]; then\n\
+      if command -v dnf >/dev/null 2>&1; then\n\
+        dnf -y install glibc-headers glibc-devel libstdc++-devel >/dev/null 2>&1 || true\n\
+      fi\n\
+      if command -v microdnf >/dev/null 2>&1; then\n\
+        microdnf -y install glibc-headers glibc-devel libstdc++-devel >/dev/null 2>&1 || true\n\
+      fi\n\
+    fi\n\
+    sed -i '/^export CPATH=\\/usr\\/include/d' ./build.sh || true\n\
+    sed -i '/^export CPLUS_INCLUDE_PATH=/d' ./build.sh || true\n\
+    sed -i '/^export C_INCLUDE_PATH=/d' ./build.sh || true\n\
     sed -i 's|-DBOOST_ROOT=\"${{PREFIX}}\"|-DBOOST_ROOT=\"/usr\"|g' ./build.sh || true\n\
     sed -i 's|-DBoost_NO_SYSTEM_PATHS=ON|-DBoost_NO_SYSTEM_PATHS=OFF|g' ./build.sh || true\n\
+    # Bioconda's build.sh assumes a merged-prefix environment where libgff and\n\
+    # staden-io-lib headers/libs live directly under $PREFIX.\n\
+    # Mirror those dependency artifacts into $PREFIX for configure-time probes.\n\
+    for dep_root in /usr/local/phoreus/libgff /usr/local/phoreus/staden-io-lib; do\n\
+      dep_prefix=$(find \"$dep_root\" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1 || true)\n\
+      if [[ -n \"$dep_prefix\" ]]; then\n\
+        mkdir -p \"$PREFIX/include\" \"$PREFIX/lib\"\n\
+        if [[ -d \"$dep_prefix/include\" ]]; then\n\
+          cp -a \"$dep_prefix/include\"/. \"$PREFIX/include\"/ || true\n\
+        fi\n\
+        if [[ -d \"$dep_prefix/lib\" ]]; then\n\
+          while IFS= read -r dep_lib; do\n\
+            ln -snf \"$dep_lib\" \"$PREFIX/lib/$(basename \"$dep_lib\")\" || true\n\
+          done < <(find \"$dep_prefix/lib\" -maxdepth 1 \\( -type f -o -type l \\) -name 'lib*' 2>/dev/null)\n\
+        fi\n\
+      fi\n\
+    done\n\
+    staden_prefix=$(find /usr/local/phoreus/staden-io-lib -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1 || true)\n\
+    if [[ -n \"$staden_prefix\" ]]; then\n\
+      if [[ ! -f \"$PREFIX/include/io_lib/io_lib_config.h\" ]]; then\n\
+        mkdir -p \"$PREFIX/include/io_lib\"\n\
+        staden_ver=$(basename \"$staden_prefix\")\n\
+        cat > \"$PREFIX/include/io_lib/io_lib_config.h\" <<EOF\n\
+#ifndef IO_LIB_CONFIG_H\n\
+#define IO_LIB_CONFIG_H\n\
+#define PACKAGE_VERSION \"$staden_ver\"\n\
+#endif\n\
+EOF\n\
+      fi\n\
+      export CPPFLAGS=\"-I$staden_prefix/include ${{CPPFLAGS:-}}\"\n\
+      export LDFLAGS=\"-L$staden_prefix/lib ${{LDFLAGS:-}}\"\n\
+      sed -i \"s|-DLIBSTADEN_LDFLAGS=\\\"-L\\${{PREFIX}}/lib\\\"|-DLIBSTADEN_LDFLAGS=\\\"-L$staden_prefix/lib\\\"|g\" ./build.sh || true\n\
+    fi\n\
     # Salmon's libstaden ExternalProject hardcodes ${{BUILD_PREFIX}}/share/gnuconfig.\n\
     # Ensure a stable system path exists and rewrite to it for non-conda RPM builds.\n\
     cfg_dir=$(find /usr/share -maxdepth 3 -type f -name config.guess -print 2>/dev/null | head -n 1 | xargs -r dirname)\n\
