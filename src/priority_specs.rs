@@ -6128,6 +6128,19 @@ sed -i -E 's/\\|\\|[[:space:]]*cat[[:space:]]+config\\.log/|| {{ cat config.log;
     perl -0pi -e 's@(^|[;\\n])([ \\t]*\\./Build[ \\t]+test\\b[^;\\n]*)(?=(;|\\n|$))@$1$2 || true@g' ./build.sh || true\n\
     perl -0pi -e 's@(^|[;\\n])([ \\t]*prove\\b[^;\\n]*)(?=(;|\\n|$))@$1$2 || true@g' ./build.sh || true\n\
     fi\n\
+    if [[ \"%{{tool}}\" == \"perl-alien-libxml2\" ]]; then\n\
+    export PERL5LIB=\"$PREFIX/lib/perl5${{PERL5LIB:+:$PERL5LIB}}\"\n\
+    export PERL_LOCAL_LIB_ROOT=\"$PREFIX${{PERL_LOCAL_LIB_ROOT:+:$PERL_LOCAL_LIB_ROOT}}\"\n\
+    export PERL_MB_OPT=\"--install_base $PREFIX\"\n\
+    export PERL_MM_OPT=\"INSTALL_BASE=$PREFIX\"\n\
+    if ! perl -MAlien::Build::MM -e1 >/dev/null 2>&1; then\n\
+      if command -v dnf >/dev/null 2>&1; then dnf -y install perl-App-cpanminus openssl-devel >/dev/null 2>&1 || true; fi\n\
+      if command -v microdnf >/dev/null 2>&1; then microdnf -y install perl-App-cpanminus openssl-devel >/dev/null 2>&1 || true; fi\n\
+      if command -v cpanm >/dev/null 2>&1; then\n\
+        cpanm -n --local-lib-contained \"$PREFIX\" Alien::Build Alien::Build::Plugin::Download::GitLab Mozilla::CA Net::SSLeay || true\n\
+      fi\n\
+    fi\n\
+    fi\n\
     if [[ \"%{{tool}}\" == \"perl-gd\" ]]; then\n\
     perl -0pi -e 's@(^\\s*chmod\\s+u\\+w\\s+.*bdftogd\\b.*)$@[ -e \"$PREFIX/bin/bdftogd\" ] && $1 || true@mg' ./build.sh || true\n\
     fi\n\
@@ -12518,6 +12531,47 @@ requirements:
         assert!(spec.contains("export RELEASE_TESTING=0"));
         assert!(spec.contains("perl -0pi -e"));
         assert!(spec.contains("sed -i 's|\\${PREFIX}/bin/perl|perl|g' ./build.sh || true"));
+    }
+
+    #[test]
+    fn perl_alien_libxml2_spec_bootstraps_alien_build_modules() {
+        let parsed = ParsedMeta {
+            package_name: "perl-alien-libxml2".to_string(),
+            version: "0.20".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/perl-alien-libxml2.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/perl-alien-libxml2".to_string(),
+            license: "Artistic-1.0-Perl".to_string(),
+            summary: "perl-alien-libxml2".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("perl Makefile.PL\nmake\nmake install".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "perl-alien-libxml2",
+            &parsed,
+            "bioconda-perl-alien-libxml2-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"perl-alien-libxml2\" ]]; then"));
+        assert!(spec.contains("perl -MAlien::Build::MM -e1"));
+        assert!(spec.contains("dnf -y install perl-App-cpanminus openssl-devel"));
+        assert!(spec.contains("cpanm -n --local-lib-contained \"$PREFIX\" Alien::Build Alien::Build::Plugin::Download::GitLab Mozilla::CA Net::SSLeay"));
     }
 
     #[test]
