@@ -6950,6 +6950,8 @@ EOF\n\
     # Normalize to install only executable regular files.\n\
     if [[ \"%{{tool}}\" == \"entrez-direct\" ]]; then\n\
     sed -i 's|install -m 755 bin/\\* \\$PREFIX/bin|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] && install -m 755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
+    sed -i -E 's|^install -m 755 bin/[^$\\n]*\\$PREFIX/bin$|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -m 755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
+    sed -i -E 's|^install -m 755 bin/[^$\\n]*\"\\$\\{{PREFIX\\}}/bin\"$|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -m 755 \"$f\" \"${{PREFIX}}/bin\"; done|g' ./build.sh || true\n\
     fi\n\
     \n\
     # vcfanno installs with wildcard `vcfanno*`, which can include directories\n\
@@ -6995,6 +6997,7 @@ EOF\n\
     if [[ \"%{{tool}}\" == \"probcons\" ]]; then\n\
     sed -i 's|^cp probcons \\$PREFIX/bin$|[[ -f probcons && -x probcons ]] \\&\\& install -m 0755 probcons \"$PREFIX/bin\"|g' ./build.sh || true\n\
     sed -i 's|^cp compare \\$PREFIX/bin$|[[ -f compare && -x compare ]] \\&\\& install -m 0755 compare \"$PREFIX/bin\"|g' ./build.sh || true\n\
+    sed -i -E 's|^cp[[:space:]]+probcons\\*[[:space:]]+\\$PREFIX/bin$|for f in ./probcons*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -m 0755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
     fi\n\
     \n\
     # RNA-SeQC v2.4.2 bundles a BWA fork that hard-requires x86 SSE headers\n\
@@ -7014,12 +7017,27 @@ EOF\n\
     # capnp may be available only from system packages under /usr. Retarget\n\
     # capnp prefix to /usr when $PREFIX/bin/capnp is absent.\n\
     if [[ \"%{{tool}}\" == \"mash\" ]]; then\n\
+    if ! command -v capnp >/dev/null 2>&1; then\n\
+      if command -v dnf >/dev/null 2>&1; then\n\
+        dnf -y install capnproto capnproto-devel >/dev/null 2>&1 || true\n\
+      fi\n\
+      if command -v microdnf >/dev/null 2>&1; then\n\
+        microdnf -y install capnproto capnproto-devel >/dev/null 2>&1 || true\n\
+      fi\n\
+    fi\n\
     if [[ ! -x \"$PREFIX/bin/capnp\" ]] && command -v capnp >/dev/null 2>&1; then\n\
       sed -i 's|--with-capnp=\"${{PREFIX}}\"|--with-capnp=\"/usr\"|g' ./build.sh || true\n\
       sed -i 's|--with-capnp=\"\\$PREFIX\"|--with-capnp=\"/usr\"|g' ./build.sh || true\n\
       sed -i 's|--with-capnp=${{PREFIX}}|--with-capnp=/usr|g' ./build.sh || true\n\
       sed -i 's|--with-capnp=\\$PREFIX|--with-capnp=/usr|g' ./build.sh || true\n\
     fi\n\
+    fi\n\
+    \n\
+    # ntLink install copies `ntLink*` directly, which includes extracted source\n\
+    # directory names (e.g. ntLink-<version>) and fails without -r.\n\
+    if [[ \"%{{tool}}\" == \"ntlink\" ]]; then\n\
+    sed -i 's|cp ntLink\\* ${{PREFIX}}/bin/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM|for f in ./ntLink*; do [[ -f \"$f\" ]] \\&\\& cp -f \"$f\" ${{PREFIX}}/bin/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM; done|g' ./build.sh || true\n\
+    sed -i 's|cp ntLink\\* \\$PREFIX/bin/share/\\$PKG_NAME-\\$PKG_VERSION-\\$PKG_BUILDNUM|for f in ./ntLink*; do [[ -f \"$f\" ]] \\&\\& cp -f \"$f\" $PREFIX/bin/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM; done|g' ./build.sh || true\n\
     fi\n\
     \n\
     # hifiasm can trip Linux scheduler header type resolution in constrained\n\
@@ -15087,6 +15105,92 @@ requirements:
         assert!(spec.contains("if [[ \"%{tool}\" == \"bwa-mem2\" ]]; then"));
         assert!(spec.contains(
             "sed -i -E 's|^install -v -m 0755 bwa-mem2([^$\\n]*)\\$PREFIX/bin$|for f in ./bwa-mem2*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -v -m 0755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true"
+        ));
+    }
+
+    #[test]
+    fn entrez_direct_spec_rewrites_explicit_install_list_to_filtered_loop() {
+        let parsed = ParsedMeta {
+            package_name: "entrez-direct".to_string(),
+            version: "24.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/entrez-direct.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/entrez-direct".to_string(),
+            license: "Public-Domain".to_string(),
+            summary: "entrez-direct".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "install -m 755 bin/accn-at-a-time bin/edirect bin/efetch $PREFIX/bin\n".to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "entrez-direct",
+            &parsed,
+            "bioconda-entrez-direct-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"entrez-direct\" ]]; then"));
+        assert!(spec.contains(
+            "sed -i -E 's|^install -m 755 bin/[^$\\n]*\\$PREFIX/bin$|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -m 755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true"
+        ));
+    }
+
+    #[test]
+    fn ntlink_spec_rewrites_wildcard_cp_to_file_only_copy() {
+        let parsed = ParsedMeta {
+            package_name: "ntlink".to_string(),
+            version: "1.3.11".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/ntlink.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/ntlink".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "ntlink".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "cp ntLink* ${PREFIX}/bin/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM\n".to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "ntlink",
+            &parsed,
+            "bioconda-ntlink-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"ntlink\" ]]; then"));
+        assert!(spec.contains(
+            "for f in ./ntLink*; do [[ -f \"$f\" ]] \\&\\& cp -f \"$f\" ${PREFIX}/bin/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM; done"
         ));
     }
 
