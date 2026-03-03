@@ -7787,31 +7787,57 @@ mkdir -p \"$third_party_root\"\n\
         out.push_str(
             "if [[ ! -e \"$PREFIX/lib/libisal.so\" && ! -e \"$PREFIX/lib/libisal.a\" && ! -e \"$PREFIX/lib64/libisal.so\" ]]; then\n\
   echo \"bioconda2rpm: bootstrapping isa-l into $PREFIX\" >&2\n\
-  if ! command -v nasm >/dev/null 2>&1; then\n\
-    if command -v dnf >/dev/null 2>&1; then dnf -y install nasm >/dev/null 2>&1 || true; fi\n\
-    if command -v microdnf >/dev/null 2>&1; then microdnf -y install nasm >/dev/null 2>&1 || true; fi\n\
+  if command -v dnf >/dev/null 2>&1; then dnf -y install isa-l isa-l-devel nasm autoconf automake libtool >/dev/null 2>&1 || true; fi\n\
+  if command -v microdnf >/dev/null 2>&1; then microdnf -y install isa-l isa-l-devel nasm autoconf automake libtool >/dev/null 2>&1 || true; fi\n\
+  if [[ -e /usr/lib64/libisal.so || -e /usr/lib64/libisal.a || -e /usr/lib/libisal.so || -e /usr/lib/libisal.a ]]; then\n\
+    mkdir -p \"$PREFIX/lib\" \"$PREFIX/include\"\n\
+    if [[ -f /usr/include/isa-l.h ]]; then cp -f /usr/include/isa-l.h \"$PREFIX/include/\" || true; fi\n\
+    if [[ -d /usr/include/isa-l ]]; then cp -a /usr/include/isa-l \"$PREFIX/include/\" || true; fi\n\
+    for lib in /usr/lib64/libisal.so /usr/lib64/libisal.so.* /usr/lib64/libisal.a /usr/lib/libisal.so /usr/lib/libisal.so.* /usr/lib/libisal.a; do\n\
+      [[ -e \"$lib\" ]] || continue\n\
+      cp -a \"$lib\" \"$PREFIX/lib/\" || true\n\
+    done\n\
   fi\n\
-  if ! command -v autoreconf >/dev/null 2>&1; then\n\
-    if command -v dnf >/dev/null 2>&1; then dnf -y install autoconf automake libtool >/dev/null 2>&1 || true; fi\n\
-    if command -v microdnf >/dev/null 2>&1; then microdnf -y install autoconf automake libtool >/dev/null 2>&1 || true; fi\n\
+  if [[ ! -e \"$PREFIX/lib/libisal.so\" && ! -e \"$PREFIX/lib/libisal.a\" && ! -e \"$PREFIX/lib64/libisal.so\" ]]; then\n\
+    if ! command -v nasm >/dev/null 2>&1; then\n\
+      if command -v dnf >/dev/null 2>&1; then dnf -y install nasm >/dev/null 2>&1 || true; fi\n\
+      if command -v microdnf >/dev/null 2>&1; then microdnf -y install nasm >/dev/null 2>&1 || true; fi\n\
+    fi\n\
+    if ! command -v autoreconf >/dev/null 2>&1; then\n\
+      if command -v dnf >/dev/null 2>&1; then dnf -y install autoconf automake libtool >/dev/null 2>&1 || true; fi\n\
+      if command -v microdnf >/dev/null 2>&1; then microdnf -y install autoconf automake libtool >/dev/null 2>&1 || true; fi\n\
+    fi\n\
+    pushd \"$third_party_root\" >/dev/null\n\
+    rm -rf isa-l-2.31.1\n\
+    rm -f isa-l-2.31.1.tar.gz\n\
+    isa_l_downloaded=0\n\
+    for isa_l_url in \\\n\
+      https://github.com/intel/isa-l/archive/refs/tags/v2.31.1.tar.gz \\\n\
+      https://codeload.github.com/intel/isa-l/tar.gz/refs/tags/v2.31.1; do\n\
+      if command -v curl >/dev/null 2>&1; then\n\
+        if curl -L --fail --retry 5 --retry-all-errors --connect-timeout 20 --max-time 300 --output isa-l-2.31.1.tar.gz \"$isa_l_url\"; then\n\
+          isa_l_downloaded=1\n\
+          break\n\
+        fi\n\
+      elif command -v wget >/dev/null 2>&1; then\n\
+        if wget --tries=5 --timeout=30 -O isa-l-2.31.1.tar.gz \"$isa_l_url\"; then\n\
+          isa_l_downloaded=1\n\
+          break\n\
+        fi\n\
+      fi\n\
+    done\n\
+    if [[ \"$isa_l_downloaded\" != \"1\" ]]; then\n\
+      echo \"failed to fetch isa-l source tarball from known URLs\" >&2\n\
+      exit 44\n\
+    fi\n\
+    tar -xf isa-l-2.31.1.tar.gz\n\
+    cd isa-l-2.31.1\n\
+    ./autogen.sh\n\
+    ./configure --prefix=\"$PREFIX\"\n\
+    make -j\"${CPU_COUNT:-1}\"\n\
+    make install\n\
+    popd >/dev/null\n\
   fi\n\
-  pushd \"$third_party_root\" >/dev/null\n\
-  rm -rf isa-l-2.31.1\n\
-  if command -v curl >/dev/null 2>&1; then\n\
-    curl -L --fail --output isa-l-2.31.1.tar.gz https://github.com/intel/isa-l/archive/refs/tags/v2.31.1.tar.gz\n\
-  elif command -v wget >/dev/null 2>&1; then\n\
-    wget -O isa-l-2.31.1.tar.gz https://github.com/intel/isa-l/archive/refs/tags/v2.31.1.tar.gz\n\
-  else\n\
-    echo \"missing curl/wget for isa-l bootstrap\" >&2\n\
-    exit 44\n\
-  fi\n\
-  tar -xf isa-l-2.31.1.tar.gz\n\
-  cd isa-l-2.31.1\n\
-  ./autogen.sh\n\
-  ./configure --prefix=\"$PREFIX\"\n\
-  make -j\"${CPU_COUNT:-1}\"\n\
-  make install\n\
-  popd >/dev/null\n\
 fi\n\
 ",
         );
@@ -12084,6 +12110,16 @@ requirements:
         assert!(script.contains("archive/refs/tags/v1.0.2.tar.gz"));
         assert!(script.contains("-DBUILD_TESTING=OFF"));
         assert!(script.contains("cmake --install build"));
+    }
+
+    #[test]
+    fn core_c_bootstrap_isal_prefers_repo_and_has_retry_fallback_urls() {
+        let script =
+            render_core_c_dep_bootstrap_block(true, false, false, false, false, false, false);
+        assert!(script.contains("dnf -y install isa-l isa-l-devel nasm autoconf automake libtool"));
+        assert!(script.contains("codeload.github.com/intel/isa-l/tar.gz/refs/tags/v2.31.1"));
+        assert!(script.contains("isa_l_downloaded=0"));
+        assert!(script.contains("failed to fetch isa-l source tarball from known URLs"));
     }
 
     #[test]
