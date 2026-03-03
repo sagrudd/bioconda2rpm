@@ -7347,8 +7347,9 @@ PPLACER_BIOC2RPM_SH\n\
 #!/bin/bash\n\
 set -euo pipefail\n\
 mkdir -p \"$PREFIX/bin\"\n\
-svync_bin=$(find . -maxdepth 2 -type f -name 'svync*' -perm -u+x | head -n 1)\n\
+svync_bin=$(find . -maxdepth 3 -type f -name 'svync*' ! -name '*.tar' ! -name '*.tar.gz' ! -name '*.tar.bz2' ! -name '*.tar.xz' | head -n 1)\n\
 [[ -n \"$svync_bin\" ]]\n\
+chmod 0755 \"$svync_bin\"\n\
 cp -f \"$svync_bin\" \"$PREFIX/bin/svync\"\n\
 chmod 0755 \"$PREFIX/bin/svync\"\n\
 SVYNCEOF\n\
@@ -14488,7 +14489,8 @@ requirements:
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"svync\" && -f ./build.sh ]]; then"));
         assert!(spec.contains("cat > ./build.sh <<'SVYNCEOF'"));
-        assert!(spec.contains("svync_bin=$(find . -maxdepth 2 -type f -name 'svync*' -perm -u+x | head -n 1)"));
+        assert!(spec.contains("svync_bin=$(find . -maxdepth 3 -type f -name 'svync*' ! -name '*.tar' ! -name '*.tar.gz' ! -name '*.tar.bz2' ! -name '*.tar.xz' | head -n 1)"));
+        assert!(spec.contains("chmod 0755 \"$svync_bin\""));
         assert!(spec.contains("cp -f \"$svync_bin\" \"$PREFIX/bin/svync\""));
         assert!(spec.contains("chmod 0755 ./build.sh || true"));
     }
