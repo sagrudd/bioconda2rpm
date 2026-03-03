@@ -6701,6 +6701,14 @@ EOF\n\
         esac\n\
       fi\n\
     done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 6 -type d \\( -path '*/perl-bioperl/*/lib/perl5' -o -path '*/perl-bioperl/*/lib64/perl5' -o -path '*/perl-bioperl-core/*/lib/perl5' -o -path '*/perl-bioperl-core/*/lib64/perl5' -o -path '*/perl-bioperl-run/*/lib/perl5' -o -path '*/perl-bioperl-run/*/lib64/perl5' \\) 2>/dev/null | sort -r)\n\
+    if ! perl -MBio::SeqIO -e1 >/dev/null 2>&1; then\n\
+      export PERL5LIB=\"$PREFIX/lib/perl5:$PREFIX/lib64/perl5${{PERL5LIB:+:$PERL5LIB}}\"\n\
+      if command -v dnf >/dev/null 2>&1; then dnf -y install perl-App-cpanminus >/dev/null 2>&1 || true; fi\n\
+      if command -v microdnf >/dev/null 2>&1; then microdnf -y install perl-App-cpanminus >/dev/null 2>&1 || true; fi\n\
+      if command -v cpanm >/dev/null 2>&1; then\n\
+        cpanm -n --local-lib-contained \"$PREFIX\" Bio::Perl || cpanm -n --local-lib-contained \"$PREFIX\" Bio::SeqIO || true\n\
+      fi\n\
+    fi\n\
     if [[ -f ./bin/prokka ]]; then\n\
       perl -0pi -e 's@^\\s*use\\s+Bio::Root::Version\\s*;\\s*$@BEGIN {{ eval {{ require Bio::Root::Version; Bio::Root::Version->import(); 1 }} or do {{ package Bio::Root::Version; our \\$VERSION = \"0\"; sub import {{ return 1; }} 1; }}; }}@m' ./bin/prokka || true\n\
     fi\n\
@@ -12054,6 +12062,8 @@ requirements:
         assert!(spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 6 -type d"));
         assert!(spec.contains("*/perl-bioperl/*/lib/perl5"));
         assert!(spec.contains("export PERL5LIB=\"$bioperl_lib${PERL5LIB:+:$PERL5LIB}\""));
+        assert!(spec.contains("if ! perl -MBio::SeqIO -e1 >/dev/null 2>&1; then"));
+        assert!(spec.contains("cpanm -n --local-lib-contained \"$PREFIX\" Bio::Perl"));
         assert!(spec.contains("use\\s+Bio::Root::Version"));
         assert!(spec.contains("package Bio::Root::Version"));
     }
