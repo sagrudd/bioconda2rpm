@@ -7329,6 +7329,13 @@ PPLACER_BIOC2RPM_SH\n\
     fi\n\
     fi\n\
     \n\
+    # tbl2asn-forever vendors libfaketime; patchsets can introduce a\n\
+    # gettimeofday prototype incompatible with EL9 glibc headers.\n\
+    if [[ \"%{{tool}}\" == \"tbl2asn-forever\" && -f libfaketime/src/libfaketime.c ]]; then\n\
+    sed -i 's/struct timeval \\*, struct timezone \\*/struct timeval *, void */g' libfaketime/src/libfaketime.c || true\n\
+    sed -i 's/int gettimeofday(struct timeval \\*tv, struct timezone \\*tz)/int gettimeofday(struct timeval *tv, void *tz)/g' libfaketime/src/libfaketime.c || true\n\
+    fi\n\
+    \n\
     # Capture a pristine buildsrc snapshot so serial retries run from a clean tree,\n\
     # not from a partially mutated/failed first attempt.\n\
     chmod -R u+rwX . 2>/dev/null || true\n\
@@ -14321,6 +14328,10 @@ requirements:
         assert!(spec.contains("mkdir -p \"%{bioconda_source_subdir}/libfaketime\""));
         assert!(spec.contains(
             "tar -xf \"$tbl2asn_libfaketime_archive\" -C \"%{bioconda_source_subdir}/libfaketime\" --strip-components=1"
+        ));
+        assert!(spec.contains("if [[ \"%{tool}\" == \"tbl2asn-forever\" && -f libfaketime/src/libfaketime.c ]]; then"));
+        assert!(spec.contains(
+            "sed -i 's/struct timeval \\*, struct timezone \\*/struct timeval *, void */g' libfaketime/src/libfaketime.c"
         ));
     }
 
