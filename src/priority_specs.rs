@@ -6943,6 +6943,13 @@ EOF\n\
     sed -i 's|^install -v -m 0755 bwa-mem2\\* \\$PREFIX/bin$|for f in ./bwa-mem2*; do [[ -f \"$f\" && -x \"$f\" ]] && install -v -m 0755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
     fi\n\
     \n\
+    # entrez-direct expands `bin/*` into both files and directories (notably\n\
+    # `bin/edirect`), and GNU install exits non-zero when a directory is passed.\n\
+    # Normalize to install only executable regular files.\n\
+    if [[ \"%{{tool}}\" == \"entrez-direct\" ]]; then\n\
+    sed -i 's|install -m 755 bin/\\* \\$PREFIX/bin|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] && install -m 755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
+    fi\n\
+    \n\
     # RNA-SeQC v2.4.2 bundles a BWA fork that hard-requires x86 SSE headers\n\
     # (emmintrin.h) and is not portable to Linux/aarch64 in this release.\n\
     if [[ \"%{{tool}}\" == \"rna-seqc\" && \"${{BIOCONDA_TARGET_ARCH:-}}\" == \"aarch64\" ]]; then\n\
