@@ -9702,8 +9702,8 @@ fn map_perl_provider_dependency(dep: &str) -> Option<String> {
     let canonical = canonicalize_perl_module_name(module);
     if canonical == "Bioperl" {
         // Bioperl functionality needed by downstream tools (for example prokka)
-        // is provided via module-level provides (Bio::SeqIO) in perl-bioperl-core.
-        return Some("perl(Bio::SeqIO)".to_string());
+        // is packaged in perl-bioperl-core in the Phoreus corpus.
+        return Some("perl-bioperl-core".to_string());
     }
     Some(format!("perl({canonical})"))
 }
@@ -9711,7 +9711,7 @@ fn map_perl_provider_dependency(dep: &str) -> Option<String> {
 fn map_perl_module_dependency(dep: &str) -> Option<String> {
     let module = perl_module_name_from_conda(dep)?;
     if module == "Bioperl" {
-        return Some("perl(Bio::SeqIO)".to_string());
+        return Some("perl-bioperl-core".to_string());
     }
     Some(format!("perl({module})"))
 }
@@ -11734,15 +11734,15 @@ mod tests {
         );
         assert_eq!(
             map_build_dependency("perl(bioperl)"),
-            "perl(Bio::SeqIO)".to_string()
+            "perl-bioperl-core".to_string()
         );
         assert_eq!(
             map_build_dependency("perl-bioperl"),
-            "perl(Bio::SeqIO)".to_string()
+            "perl-bioperl-core".to_string()
         );
         assert_eq!(
             map_runtime_dependency("perl(Bioperl)"),
-            "perl(Bio::SeqIO)".to_string()
+            "perl-bioperl-core".to_string()
         );
         assert_eq!(
             map_build_dependency("perl(devel::checkbin)"),
