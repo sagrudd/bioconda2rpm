@@ -6950,6 +6950,23 @@ EOF\n\
     sed -i 's|install -m 755 bin/\\* \\$PREFIX/bin|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] && install -m 755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
     fi\n\
     \n\
+    # Racon can fail with /usr/include/c++/.../cstdlib:75 include_next stdlib.h\n\
+    # when /usr/include is injected as a system include ahead of libstdc++.\n\
+    # Sanitize include-path env and strip forced /usr/include flags before ninja.\n\
+    if [[ \"%{{tool}}\" == \"racon\" ]]; then\n\
+    unset CPLUS_INCLUDE_PATH\n\
+    unset C_INCLUDE_PATH\n\
+    if [[ -n \"${{CPATH:-}}\" ]]; then\n\
+      cp_path_clean=$(printf '%s' \"$CPATH\" | tr ':' '\\n' | awk 'NF && $0 != \"/usr/include\"' | paste -sd: - || true)\n\
+      if [[ -n \"$cp_path_clean\" ]]; then\n\
+        export CPATH=\"$cp_path_clean\"\n\
+      else\n\
+        unset CPATH\n\
+      fi\n\
+    fi\n\
+    perl -0pi -e 's@(^\\s*ninja\\s+-C\\s+build\\s+-j[^\\n]*$)@if [[ -d build ]]; then\\n  find build -type f \\( -name flags.make -o -name build.ninja \\) | while IFS= read -r fm; do\\n    sed -i \"s# -isystem /usr/include##g; s# -I/usr/include##g\" \"\\$fm\" || true\\n  done\\nfi\\n$1@mg' ./build.sh || true\n\
+    fi\n\
+    \n\
     # probcons install steps can collide with a top-level source directory named\n\
     # `probcons`, causing `cp probcons $PREFIX/bin` to fail. Install only regular\n\
     # executable files for both expected binaries.\n\
@@ -14870,6 +14887,52 @@ requirements:
 
         let spec = render_default_spec("python-edlib", &parsed, 42);
         assert!(spec.contains("%global __python /usr/bin/python3"));
+    }
+
+    #[test]
+    fn racon_spec_sanitizes_usr_include_before_ninja_build() {
+        let parsed = ParsedMeta {
+            package_name: "racon".to_string(),
+            version: "1.5.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/racon.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/racon".to_string(),
+            license: "MIT".to_string(),
+            summary: "racon".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "cmake -S . -B build -G Ninja\nninja -C build -j \"${CPU_COUNT}\" install\n"
+                    .to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["cmake".to_string(), "ninja".to_string()],
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::from(["cmake".to_string(), "ninja".to_string()]),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "racon",
+            &parsed,
+            "bioconda-racon-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"racon\" ]]; then"));
+        assert!(spec.contains("unset CPLUS_INCLUDE_PATH"));
+        assert!(spec.contains("unset C_INCLUDE_PATH"));
+        assert!(spec.contains("cp_path_clean=$(printf '%s' \"$CPATH\" | tr ':' '\\n' | awk 'NF && $0 != \"/usr/include\"' | paste -sd: - || true)"));
+        assert!(spec.contains("find build -type f \\( -name flags.make -o -name build.ninja \\) | while IFS= read -r fm; do"));
+        assert!(spec.contains("sed -i \"s# -isystem /usr/include##g; s# -I/usr/include##g\" \"\\$fm\" || true"));
     }
 
     #[test]
