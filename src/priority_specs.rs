@@ -6693,6 +6693,14 @@ EOF\n\
     # Bioperl layouts in EL9 omit that legacy module while keeping runtime\n\
     # compatibility. Provide a guarded fallback stub so prokka can launch.\n\
     if [[ \"%{{tool}}\" == \"prokka\" ]]; then\n\
+    while IFS= read -r bioperl_lib; do\n\
+      if [[ -d \"$bioperl_lib\" ]]; then\n\
+        case \":${{PERL5LIB:-}}:\" in\n\
+          *\":$bioperl_lib:\"*) ;;\n\
+          *) export PERL5LIB=\"$bioperl_lib${{PERL5LIB:+:$PERL5LIB}}\" ;;\n\
+        esac\n\
+      fi\n\
+    done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 6 -type d \\( -path '*/perl-bioperl/*/lib/perl5' -o -path '*/perl-bioperl/*/lib64/perl5' -o -path '*/perl-bioperl-core/*/lib/perl5' -o -path '*/perl-bioperl-core/*/lib64/perl5' -o -path '*/perl-bioperl-run/*/lib/perl5' -o -path '*/perl-bioperl-run/*/lib64/perl5' \\) 2>/dev/null | sort -r)\n\
     if [[ -f ./bin/prokka ]]; then\n\
       perl -0pi -e 's@^\\s*use\\s+Bio::Root::Version\\s*;\\s*$@BEGIN {{ eval {{ require Bio::Root::Version; Bio::Root::Version->import(); 1 }} or do {{ package Bio::Root::Version; our \\$VERSION = \"0\"; sub import {{ return 1; }} 1; }}; }}@m' ./bin/prokka || true\n\
     fi\n\
@@ -12043,6 +12051,9 @@ requirements:
             false,
         );
         assert!(spec.contains("if [[ \"%{tool}\" == \"prokka\" ]]; then"));
+        assert!(spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 6 -type d"));
+        assert!(spec.contains("*/perl-bioperl/*/lib/perl5"));
+        assert!(spec.contains("export PERL5LIB=\"$bioperl_lib${PERL5LIB:+:$PERL5LIB}\""));
         assert!(spec.contains("use\\s+Bio::Root::Version"));
         assert!(spec.contains("package Bio::Root::Version"));
     }
