@@ -7894,12 +7894,19 @@ fn render_source_unpack_prep_block(source_kind: SourceArchiveKind) -> String {
         SourceArchiveKind::Tar => "rm -rf buildsrc\n\
 mkdir -p %{bioconda_source_subdir}\n\
 mapfile -t tar_roots < <(tar -tf %{SOURCE0} 2>/dev/null | sed -E 's#^\\./##; /^$/d' | awk -F/ '{print $1}' | sort -u)\n\
+tar_strip_ok=0\n\
 if [[ \"${#tar_roots[@]}\" -eq 1 && -n \"${tar_roots[0]}\" && \"${tar_roots[0]}\" != \".\" ]]; then\n\
+  tar_root=\"${tar_roots[0]}\"\n\
+  if tar -tf %{SOURCE0} 2>/dev/null | sed -E 's#^\\./##; /^$/d' | grep -q \"^${tar_root}/\"; then\n\
+    tar_strip_ok=1\n\
+  fi\n\
+fi\n\
+if [[ \"$tar_strip_ok\" -eq 1 ]]; then\n\
   tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1\n\
 else\n\
   tar -xf %{SOURCE0} -C %{bioconda_source_subdir}\n\
 fi\n\
-if [[ \"${#tar_roots[@]}\" -eq 1 ]]; then\n\
+if [[ \"$tar_strip_ok\" -eq 1 ]]; then\n\
   tar_root=\"${tar_roots[0]}\"\n\
   if [[ -n \"$tar_root\" && \"$tar_root\" != \".\" && ! -e \"%{bioconda_source_subdir}/$tar_root\" ]]; then\n\
     (cd %{bioconda_source_subdir} && ln -s . \"$tar_root\") || true\n\
