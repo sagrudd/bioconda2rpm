@@ -7253,10 +7253,12 @@ if [[ \"$(uname)\" == \"Darwin\" ]]; then\n\
 fi\n\
 \n\
 repo_root=\"$(pwd -P)\"\n\
-workdir=\"$(mktemp -d /tmp/pplacer-build-XXXXXX)\"\n\
-mkdir -p \"$workdir/src\"\n\
-cp -aL \"$repo_root\"/. \"$workdir/src\"/\n\
-cd \"$workdir/src\"\n\
+cd \"$repo_root\"\n\
+# Some source snapshots include a self-referential symlink like\n\
+# pplacer-<version> -> ., which triggers opam/dune duplicate path scans.\n\
+if [[ -n \"${{PKG_VERSION:-}}\" && -L \"./pplacer-${{PKG_VERSION}}\" ]]; then\n\
+  rm -f \"./pplacer-${{PKG_VERSION}}\"\n\
+fi\n\
 \n\
 OCAML_VERSION=4.14.2\n\
 OPAMROOT=/tmp/opam-pplacer-root\n\
@@ -14933,7 +14935,7 @@ requirements:
         assert!(spec.contains("curl -L --fail -o /usr/local/bin/opam \"$opam_url\" || true"));
         assert!(spec.contains("cat > ./build.sh <<'PPLACER_BIOC2RPM_SH'"));
         assert!(spec.contains("OPAMROOT=/tmp/opam-pplacer-root"));
-        assert!(spec.contains("cp -aL \"$repo_root\"/. \"$workdir/src\"/"));
+        assert!(spec.contains("rm -f \"./pplacer-${PKG_VERSION}\""));
         assert!(spec.contains(
             "opam install --root \"$OPAMROOT\" --switch=\"$OCAML_VERSION\" --assume-depexts -y"
         ));
