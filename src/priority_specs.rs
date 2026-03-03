@@ -6941,6 +6941,8 @@ EOF\n\
     # Restrict installation to executable regular files only.\n\
     if [[ \"%{{tool}}\" == \"bwa-mem2\" ]]; then\n\
     sed -i 's|^install -v -m 0755 bwa-mem2\\* \\$PREFIX/bin$|for f in ./bwa-mem2*; do [[ -f \"$f\" && -x \"$f\" ]] && install -v -m 0755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
+    sed -i -E 's|^install -v -m 0755 bwa-mem2([^$\\n]*)\\$PREFIX/bin$|for f in ./bwa-mem2*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -v -m 0755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
+    sed -i -E 's|^install -v -m 0755 bwa-mem2([^$\\n]*)\"\\$\\{{PREFIX\\}}/bin\"$|for f in ./bwa-mem2*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -v -m 0755 \"$f\" \"${{PREFIX}}/bin\"; done|g' ./build.sh || true\n\
     fi\n\
     \n\
     # entrez-direct expands `bin/*` into both files and directories (notably\n\
@@ -15041,6 +15043,50 @@ requirements:
         assert!(spec.contains("if [[ \"%{tool}\" == \"vcfanno\" ]]; then"));
         assert!(spec.contains(
             "for f in ./vcfanno*; do [[ -f \"$f\" && -x \"$f\" ]] && install -v -m 0755 \"$f\" \"$PREFIX/bin\"; done"
+        ));
+    }
+
+    #[test]
+    fn bwa_mem2_spec_rewrites_explicit_install_list_to_file_filtered_loop() {
+        let parsed = ParsedMeta {
+            package_name: "bwa-mem2".to_string(),
+            version: "2.3".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/bwa-mem2.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/bwa-mem2".to_string(),
+            license: "MIT".to_string(),
+            summary: "bwa-mem2".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "install -v -m 0755 bwa-mem2 bwa-mem2-2.3 bwa-mem2.avx bwa-mem2.avx2 bwa-mem2.avx512bw bwa-mem2.sse41 bwa-mem2.sse42 $PREFIX/bin\n"
+                    .to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["make".to_string()],
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::from(["make".to_string()]),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "bwa-mem2",
+            &parsed,
+            "bioconda-bwa-mem2-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"bwa-mem2\" ]]; then"));
+        assert!(spec.contains(
+            "sed -i -E 's|^install -v -m 0755 bwa-mem2([^$\\n]*)\\$PREFIX/bin$|for f in ./bwa-mem2*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -v -m 0755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true"
         ));
     }
 
