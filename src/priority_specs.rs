@@ -6751,9 +6751,9 @@ EOF\n\
       perl -0pi -e 's@^\\s*use\\s+Bio::Root::Version\\s*;\\s*$@BEGIN {{ eval {{ require Bio::Root::Version; Bio::Root::Version->import(); 1 }} or do {{ package Bio::Root::Version; our \\$VERSION = \"0\"; sub import {{ return 1; }} 1; }}; }}@m' ./bin/prokka || true\n\
     fi\n\
     if [[ -f ./build.sh ]]; then\n\
-      sed -i 's|mv bin/\\* \"${PREFIX}/bin/\"|cp -a bin/. \"${PREFIX}/bin/\"|g' ./build.sh || true\n\
-      sed -i 's|mv db/\\* \"${PREFIX}/db/\"|cp -a db/. \"${PREFIX}/db/\"|g' ./build.sh || true\n\
-      sed -i '/mkdir -p \"${PREFIX}\\/bin\" \"${PREFIX}\\/db\" \"${PREFIX}\\/share\\/doc\\/prokka\"/a export PATH=\"${PREFIX}/bin:$PATH\"' ./build.sh || true\n\
+      sed -i 's|mv bin/\\* \"${{PREFIX}}/bin/\"|cp -a bin/. \"${{PREFIX}}/bin/\"|g' ./build.sh || true\n\
+      sed -i 's|mv db/\\* \"${{PREFIX}}/db/\"|cp -a db/. \"${{PREFIX}}/db/\"|g' ./build.sh || true\n\
+      sed -i '/mkdir -p \"${{PREFIX}}\\/bin\" \"${{PREFIX}}\\/db\" \"${{PREFIX}}\\/share\\/doc\\/prokka\"/a export PATH=\"${{PREFIX}}/bin:$PATH\"' ./build.sh || true\n\
     fi\n\
     fi\n\
     \n\
