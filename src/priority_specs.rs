@@ -7353,20 +7353,23 @@ PPLACER_BIOC2RPM_SH\n\
     chmod -R u+rwX . 2>/dev/null || true\n\
     # Single-root tarball compatibility may add a top-level symlink back to '.'.\n\
     # Some Perl build tooling (File::Find) treats that as a recursive loop.\n\
-    # Remove only those self-referential aliases before invoking build.sh.\n\
+    # Restrict cleanup to Perl recipes to avoid removing expected aliases in\n\
+    # non-Perl binary payloads (for example svync source wrappers).\n\
+    if [[ \"%{{tool}}\" == perl-* ]]; then\n\
     while IFS= read -r -d '' top_link; do\n\
-    top_target=$(readlink \"$top_link\" || true)\n\
-    [[ -n \"$top_target\" ]] || continue\n\
-    if [[ \"$top_target\" == \".\" || \"$top_target\" == \"./\" ]]; then\n\
-      rm -f \"$top_link\"\n\
-      continue\n\
-    fi\n\
-    if command -v realpath >/dev/null 2>&1; then\n\
-      if [[ \"$(realpath -m \"$top_link\" 2>/dev/null || true)\" == \"$(pwd)\" ]]; then\n\
+      top_target=$(readlink \"$top_link\" || true)\n\
+      [[ -n \"$top_target\" ]] || continue\n\
+      if [[ \"$top_target\" == \".\" || \"$top_target\" == \"./\" ]]; then\n\
         rm -f \"$top_link\"\n\
+        continue\n\
       fi\n\
-    fi\n\
+      if command -v realpath >/dev/null 2>&1; then\n\
+        if [[ \"$(realpath -m \"$top_link\" 2>/dev/null || true)\" == \"$(pwd)\" ]]; then\n\
+          rm -f \"$top_link\"\n\
+        fi\n\
+      fi\n\
     done < <(find . -mindepth 1 -maxdepth 1 -type l -print0)\n\
+    fi\n\
     retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\"\n\
     rm -f \"$retry_snapshot\"\n\
     tar --exclude='.bioconda2rpm-retry-snapshot.tar' -cf \"$retry_snapshot\" .\n\
