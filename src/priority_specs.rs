@@ -7339,6 +7339,13 @@ PPLACER_BIOC2RPM_SH\n\
     sed -i 's/SafeVector (size_t size, const TYPE &value)/SafeVector (std::size_t size, const TYPE \\&value)/g' SafeVector.h || true\n\
     fi\n\
     \n\
+    # svync release archives may unpack both a top-level directory and binary\n\
+    # matching 'svync*'; copying wildcard matches directly can include the\n\
+    # directory and fail. Pick the first regular file explicitly.\n\
+    if [[ \"%{{tool}}\" == \"svync\" && -f ./build.sh ]]; then\n\
+    perl -0pi -e 's@cp\\s+svync\\*\\s+\\$PREFIX/bin/svync@svync_bin=$(find . -maxdepth 1 -type f -name \"svync*\" | head -n 1)\\n[[ -n \"$svync_bin\" ]]\\ncp -f \"$svync_bin\" \"$PREFIX/bin/svync\"@g' ./build.sh || true\n\
+    fi\n\
+    \n\
     # tbl2asn-forever vendors libfaketime; patchsets can introduce a\n\
     # gettimeofday prototype incompatible with EL9 glibc headers.\n\
     if [[ \"%{{tool}}\" == \"tbl2asn-forever\" && -f libfaketime/src/libfaketime.c ]]; then\n\
@@ -14433,6 +14440,46 @@ requirements:
         assert!(spec.contains("if [[ \"%{tool}\" == \"probconsrna\" && -f SafeVector.h ]]; then"));
         assert!(spec.contains("sed -i '/#include <vector>/a #include <cstddef>' SafeVector.h"));
         assert!(spec.contains("sed -i 's/SafeVector (size_t size)/SafeVector (std::size_t size)/g' SafeVector.h"));
+    }
+
+    #[test]
+    fn svync_spec_rewrites_wildcard_copy_to_regular_file() {
+        let parsed = ParsedMeta {
+            package_name: "svync".to_string(),
+            version: "0.3.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/svync.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/svync".to_string(),
+            license: "MIT".to_string(),
+            summary: "svync".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("chmod a+x svync*\nmkdir -p $PREFIX/bin\ncp svync* $PREFIX/bin/svync\n".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "svync",
+            &parsed,
+            "bioconda-svync-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"svync\" && -f ./build.sh ]]; then"));
+        assert!(spec.contains("find . -maxdepth 1 -type f -name \"svync*\" | head -n 1"));
+        assert!(spec.contains("cp -f \"$svync_bin\" \"$PREFIX/bin/svync\""));
     }
 
     #[test]
