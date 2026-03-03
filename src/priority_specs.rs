@@ -6713,6 +6713,15 @@ EOF\n\
         esac\n\
       fi\n\
     done\n\
+    while IFS= read -r seqio_mod; do\n\
+      seqio_lib=\"${{seqio_mod%/Bio/SeqIO.pm}}\"\n\
+      if [[ -d \"$seqio_lib\" ]]; then\n\
+        case \":${{PERL5LIB:-}}:\" in\n\
+          *\":$seqio_lib:\"*) ;;\n\
+          *) export PERL5LIB=\"$seqio_lib${{PERL5LIB:+:$PERL5LIB}}\" ;;\n\
+        esac\n\
+      fi\n\
+    done < <(find /work/.build-work /usr/local/phoreus -type f -path '*/Bio/SeqIO.pm' 2>/dev/null | sort -u)\n\
     if ! perl -MBio::SeqIO -e1 >/dev/null 2>&1; then\n\
       export PERL5LIB=\"$PREFIX/lib/perl5:$PREFIX/lib64/perl5${{PERL5LIB:+:$PERL5LIB}}\"\n\
       if command -v dnf >/dev/null 2>&1; then dnf -y install perl-App-cpanminus >/dev/null 2>&1 || true; fi\n\
@@ -12112,6 +12121,7 @@ requirements:
         assert!(spec.contains("*/perl-bioperl/*/lib/perl5"));
         assert!(spec.contains("export PERL5LIB=\"$bioperl_lib${PERL5LIB:+:$PERL5LIB}\""));
         assert!(spec.contains("/usr/local/phoreus/perl/5.32/lib/perl5"));
+        assert!(spec.contains("find /work/.build-work /usr/local/phoreus -type f -path '*/Bio/SeqIO.pm'"));
         assert!(spec.contains("if ! perl -MBio::SeqIO -e1 >/dev/null 2>&1; then"));
         assert!(spec.contains("cpanm -n --local-lib-contained \"$PREFIX\" Bio::Perl"));
         assert!(spec.contains("use\\s+Bio::Root::Version"));
