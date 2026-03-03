@@ -6958,6 +6958,19 @@ BWA2RPMEOF\n\
     sed -i 's|install -m 755 bin/\\* \\$PREFIX/bin|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] && install -m 755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
     sed -i -E 's|^install -m 755 bin/[^$\\n]*\\$PREFIX/bin$|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -m 755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
     sed -i -E 's|^install -m 755 bin/[^$\\n]*\"\\$\\{{PREFIX\\}}/bin\"$|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -m 755 \"$f\" \"${{PREFIX}}/bin\"; done|g' ./build.sh || true\n\
+    for nested in cmd/build.sh extern/build.sh; do\n\
+      [[ -f \"$nested\" ]] || continue\n\
+      sed -i -E 's|^[[:space:]]*install[[:space:]]+-m[[:space:]]+755[[:space:]]+bin/.*$|: # bioconda2rpm replaced unsafe entrez-direct bin install|g' \"$nested\" || true\n\
+      cat >> \"$nested\" <<'ENTREZRPMEOF'\n\
+dest=\"${{target:-${{PREFIX}}/bin}}\"\n\
+mkdir -p \"$dest\"\n\
+for f in bin/*; do\n\
+  [ -f \"$f\" ] || continue\n\
+  [ -x \"$f\" ] || continue\n\
+  install -m 755 \"$f\" \"$dest\"\n\
+done\n\
+ENTREZRPMEOF\n\
+    done\n\
     fi\n\
     \n\
     # vcfanno installs with wildcard `vcfanno*`, which can include directories\n\
@@ -15160,6 +15173,14 @@ requirements:
         assert!(spec.contains(
             "sed -i -E 's|^install -m 755 bin/[^$\\n]*\\$PREFIX/bin$|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -m 755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true"
         ));
+        assert!(spec.contains("for nested in cmd/build.sh extern/build.sh; do"));
+        assert!(spec.contains(
+            "sed -i -E 's|^[[:space:]]*install[[:space:]]+-m[[:space:]]+755[[:space:]]+bin/.*$|: # bioconda2rpm replaced unsafe entrez-direct bin install|g' \"$nested\" || true"
+        ));
+        assert!(spec.contains("cat >> \"$nested\" <<'ENTREZRPMEOF'"));
+        assert!(spec.contains("dest=\"${target:-${PREFIX}/bin}\""));
+        assert!(spec.contains("for f in bin/*; do"));
+        assert!(spec.contains("install -m 755 \"$f\" \"$dest\""));
     }
 
     #[test]
