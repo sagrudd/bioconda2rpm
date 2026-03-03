@@ -6944,7 +6944,7 @@ EOF\n\
     # include the unpacked source directory (`bwa-mem2-<version>`) and fail.\n\
     # Remove wildcard install lines and re-install only executable regular files.\n\
     if [[ \"%{{tool}}\" == \"bwa-mem2\" ]]; then\n\
-    sed -E -i '/^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+bwa-mem2([[:space:]].*)?$/d' ./build.sh || true\n\
+    sed -E -i '/^[[:space:]]*install([[:space:]]+-v)?[[:space:]]+-m[[:space:]]+0?755[[:space:]].*bwa-mem2/d' ./build.sh || true\n\
     cat >> ./build.sh <<'BWA2RPMEOF'\n\
 mkdir -p \"$PREFIX/bin\"\n\
 for f in ./bwa-mem2*; do\n\
@@ -15380,7 +15380,7 @@ requirements:
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"bwa-mem2\" ]]; then"));
         assert!(spec.contains(
-            "sed -E -i '/^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+bwa-mem2([[:space:]].*)?$/d' ./build.sh || true"
+            "sed -E -i '/^[[:space:]]*install([[:space:]]+-v)?[[:space:]]+-m[[:space:]]+0?755[[:space:]].*bwa-mem2/d' ./build.sh || true"
         ));
         assert!(spec.contains("cat >> ./build.sh <<'BWA2RPMEOF'"));
         assert!(spec.contains("for f in ./bwa-mem2*; do"));
