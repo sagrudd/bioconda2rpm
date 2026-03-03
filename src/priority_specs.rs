@@ -6940,9 +6940,15 @@ EOF\n\
     # include the unpacked source directory (`bwa-mem2-<version>`) and fail.\n\
     # Restrict installation to executable regular files only.\n\
     if [[ \"%{{tool}}\" == \"bwa-mem2\" ]]; then\n\
-    sed -i 's|^install -v -m 0755 bwa-mem2\\* \\$PREFIX/bin$|for f in ./bwa-mem2*; do [[ -f \"$f\" && -x \"$f\" ]] && install -v -m 0755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
-    sed -i -E 's|^install -v -m 0755 bwa-mem2([^$\\n]*)\\$PREFIX/bin$|for f in ./bwa-mem2*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -v -m 0755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
-    sed -i -E 's|^install -v -m 0755 bwa-mem2([^$\\n]*)\"\\$\\{{PREFIX\\}}/bin\"$|for f in ./bwa-mem2*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -v -m 0755 \"$f\" \"${{PREFIX}}/bin\"; done|g' ./build.sh || true\n\
+    sed -i -E 's|^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+bwa-mem2.*$|: # bioconda2rpm replaced bwa-mem2 install line|g' ./build.sh || true\n\
+    cat >> ./build.sh <<'BWA2RPMEOF'\n\
+mkdir -p \"$PREFIX/bin\"\n\
+for f in ./bwa-mem2*; do\n\
+  [ -f \"$f\" ] || continue\n\
+  [ -x \"$f\" ] || continue\n\
+  install -v -m 0755 \"$f\" \"$PREFIX/bin\"\n\
+done\n\
+BWA2RPMEOF\n\
     fi\n\
     \n\
     # entrez-direct expands `bin/*` into both files and directories (notably\n\
@@ -15104,8 +15110,13 @@ requirements:
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"bwa-mem2\" ]]; then"));
         assert!(spec.contains(
-            "sed -i -E 's|^install -v -m 0755 bwa-mem2([^$\\n]*)\\$PREFIX/bin$|for f in ./bwa-mem2*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -v -m 0755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true"
+            "sed -i -E 's|^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+bwa-mem2.*$|: # bioconda2rpm replaced bwa-mem2 install line|g' ./build.sh || true"
         ));
+        assert!(spec.contains("cat >> ./build.sh <<'BWA2RPMEOF'"));
+        assert!(spec.contains("for f in ./bwa-mem2*; do"));
+        assert!(spec.contains("[ -f \"$f\" ] || continue"));
+        assert!(spec.contains("[ -x \"$f\" ] || continue"));
+        assert!(spec.contains("install -v -m 0755 \"$f\" \"$PREFIX/bin\""));
     }
 
     #[test]
