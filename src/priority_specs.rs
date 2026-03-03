@@ -9668,6 +9668,7 @@ fn canonicalize_perl_module_segment(segment: &str) -> String {
         "api" => "API".to_string(),
         "ca" => "CA".to_string(),
         "cgi" => "CGI".to_string(),
+        "checkbin" => "CheckBin".to_string(),
         "cpan" => "CPAN".to_string(),
         "dbd" => "DBD".to_string(),
         "dbi" => "DBI".to_string(),
@@ -9712,6 +9713,7 @@ fn perl_module_name_from_conda(dep: &str) -> Option<String> {
     let overridden = match module {
         "test-leaktrace" => Some("Test::LeakTrace".to_string()),
         "json-xs" => Some("JSON::XS".to_string()),
+        "devel-checkbin" => Some("Devel::CheckBin".to_string()),
         "list-moreutils" => Some("List::MoreUtils".to_string()),
         "list-moreutils-xs" => Some("List::MoreUtils::XS".to_string()),
         _ => None,
@@ -9727,6 +9729,7 @@ fn perl_module_name_from_conda(dep: &str) -> Option<String> {
             "api" => "API".to_string(),
             "ca" => "CA".to_string(),
             "cgi" => "CGI".to_string(),
+            "checkbin" => "CheckBin".to_string(),
             "cpan" => "CPAN".to_string(),
             "dbi" => "DBI".to_string(),
             "dbd" => "DBD".to_string(),
@@ -11662,6 +11665,14 @@ mod tests {
         assert_eq!(
             map_build_dependency("perl(mozilla::ca)"),
             "perl(Mozilla::CA)".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl-devel-checkbin"),
+            "perl(Devel::CheckBin)".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl(devel::checkbin)"),
+            "perl(Devel::CheckBin)".to_string()
         );
         assert_eq!(
             map_build_dependency("python"),
