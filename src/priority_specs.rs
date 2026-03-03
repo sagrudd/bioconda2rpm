@@ -8341,6 +8341,7 @@ fn render_patch_apply_lines(staged_patch_sources: &[String], source_dir: &str) -
                 "patch_source=%{{SOURCE{}}}\n\
 patch_input=\"$patch_source\"\n\
 patch_trim_tmp=\"\"\n\
+patch_origfix_tmp=\"\"\n\
 if grep -Eq '^(diff --git |\\*\\*\\* |--- |\\+\\+\\+ )' \"$patch_input\" 2>/dev/null; then\n\
   patch_trim_tmp=\"$(mktemp)\"\n\
   awk 'BEGIN{{emit=0}} /^diff --git / || /^\\*\\*\\* / || /^--- / || /^\\+\\+\\+ /{{emit=1}} emit{{print}}' \"$patch_input\" > \"$patch_trim_tmp\"\n\
@@ -8349,6 +8350,16 @@ if grep -Eq '^(diff --git |\\*\\*\\* |--- |\\+\\+\\+ )' \"$patch_input\" 2>/dev/
   else\n\
     rm -f \"$patch_trim_tmp\"\n\
     patch_trim_tmp=\"\"\n\
+  fi\n\
+fi\n\
+if grep -Eq '^(\\*\\*\\*|---)[[:space:]]+[^[:space:]]+\\.orig([[:space:]]|$)' \"$patch_input\" 2>/dev/null; then\n\
+  patch_origfix_tmp=\"$(mktemp)\"\n\
+  sed -E 's#^(\\*\\*\\*|---)[[:space:]]+([^[:space:]]+)\\.orig([[:space:]].*)?$#\\1 \\2\\3#' \"$patch_input\" > \"$patch_origfix_tmp\"\n\
+  if [[ -s \"$patch_origfix_tmp\" ]]; then\n\
+    patch_input=\"$patch_origfix_tmp\"\n\
+  else\n\
+    rm -f \"$patch_origfix_tmp\"\n\
+    patch_origfix_tmp=\"\"\n\
   fi\n\
 fi\n\
 patch_applied=0\n\
@@ -8435,6 +8446,9 @@ for patch_dir in \"${{patch_dirs[@]}}\"; do\n\
 done\n\
 if [[ -n \"$patch_trim_tmp\" ]]; then\n\
   rm -f \"$patch_trim_tmp\"\n\
+fi\n\
+if [[ -n \"$patch_origfix_tmp\" ]]; then\n\
+  rm -f \"$patch_origfix_tmp\"\n\
 fi\n\
 if [[ \"$patch_applied\" -ne 1 ]]; then\n\
   echo \"failed to apply patch %{{SOURCE{}}} with supported strip levels (1,0,2,3,4,5) and candidate dirs: ${{patch_dirs[*]}}\" >&2\n\
@@ -11837,8 +11851,11 @@ requirements:
         assert!(spec.contains("patch_input=\"$patch_source\""));
         assert!(!spec.contains("tr -d '\\r' < \"$patch_source\" > \"$patch_tmp\""));
         assert!(spec.contains("patch_trim_tmp=\"\""));
+        assert!(spec.contains("patch_origfix_tmp=\"\""));
         assert!(spec.contains("awk 'BEGIN{emit=0}"));
         assert!(spec.contains("grep -Eq '^(diff --git |\\*\\*\\* |--- |\\+\\+\\+ )'"));
+        assert!(spec.contains("grep -Eq '^(\\*\\*\\*|---)[[:space:]]+[^[:space:]]+\\.orig([[:space:]]|$)'"));
+        assert!(spec.contains("sed -E 's#^(\\*\\*\\*|---)[[:space:]]+([^[:space:]]+)\\.orig([[:space:]].*)?$#\\1 \\2\\3#'"));
         assert!(spec.contains("patch_rel=\"${patch_rel#b/}\""));
         assert!(spec.contains("/^\\+\\+\\+ / || /^--- / || /^\\*\\*\\* /"));
         assert!(
