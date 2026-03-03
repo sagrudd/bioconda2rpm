@@ -6736,6 +6736,9 @@ EOF\n\
         export LD_LIBRARY_PATH=\"$dep_lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n\
       fi\n\
     done\n\
+    if command -v dnf >/dev/null 2>&1; then dnf -y install gsl >/dev/null 2>&1 || true; fi\n\
+    if command -v microdnf >/dev/null 2>&1; then microdnf -y install gsl >/dev/null 2>&1 || true; fi\n\
+    if [[ -d /usr/lib64 ]]; then export LD_LIBRARY_PATH=\"/usr/lib64${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"; fi\n\
     if ! perl -MBio::SeqIO -e1 >/dev/null 2>&1; then\n\
       export PERL5LIB=\"$PREFIX/lib/perl5:$PREFIX/lib64/perl5${{PERL5LIB:+:$PERL5LIB}}\"\n\
       if command -v dnf >/dev/null 2>&1; then dnf -y install perl-App-cpanminus >/dev/null 2>&1 || true; fi\n\
@@ -12140,6 +12143,7 @@ requirements:
         assert!(spec.contains("blast_ncbi_lib=\"$blast_lib/ncbi-blast+\""));
         assert!(spec.contains("export LD_LIBRARY_PATH=\"$blast_ncbi_lib:$blast_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\""));
         assert!(spec.contains("for dep_lib in /usr/local/phoreus/hmmer/*/lib /usr/local/phoreus/gsl/*/lib /usr/local/phoreus/gsl/*/lib64; do"));
+        assert!(spec.contains("dnf -y install gsl >/dev/null 2>&1 || true"));
         assert!(spec.contains("if ! perl -MBio::SeqIO -e1 >/dev/null 2>&1; then"));
         assert!(spec.contains("cpanm -n --local-lib-contained \"$PREFIX\" Bio::Perl"));
         assert!(spec.contains("use\\s+Bio::Root::Version"));
