@@ -7341,9 +7341,18 @@ PPLACER_BIOC2RPM_SH\n\
     \n\
     # svync release archives may unpack both a top-level directory and binary\n\
     # matching 'svync*'; copying wildcard matches directly can include the\n\
-    # directory and fail. Pick the first regular file explicitly.\n\
+    # directory and fail. Replace build.sh with a deterministic file-only copy.\n\
     if [[ \"%{{tool}}\" == \"svync\" && -f ./build.sh ]]; then\n\
-    perl -0pi -e 's@cp\\s+svync\\*\\s+\\$PREFIX/bin/svync@svync_bin=$(find . -maxdepth 1 -type f -name \"svync*\" | head -n 1)\\n[[ -n \"$svync_bin\" ]]\\ncp -f \"$svync_bin\" \"$PREFIX/bin/svync\"@g' ./build.sh || true\n\
+    cat > ./build.sh <<'SVYNCEOF'\n\
+#!/bin/bash\n\
+set -euo pipefail\n\
+mkdir -p \"$PREFIX/bin\"\n\
+svync_bin=$(find . -maxdepth 2 -type f -name 'svync*' -perm -u+x | head -n 1)\n\
+[[ -n \"$svync_bin\" ]]\n\
+cp -f \"$svync_bin\" \"$PREFIX/bin/svync\"\n\
+chmod 0755 \"$PREFIX/bin/svync\"\n\
+SVYNCEOF\n\
+    chmod 0755 ./build.sh || true\n\
     fi\n\
     \n\
     # tbl2asn-forever vendors libfaketime; patchsets can introduce a\n\
@@ -14478,8 +14487,10 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"svync\" && -f ./build.sh ]]; then"));
-        assert!(spec.contains("find . -maxdepth 1 -type f -name \"svync*\" | head -n 1"));
+        assert!(spec.contains("cat > ./build.sh <<'SVYNCEOF'"));
+        assert!(spec.contains("svync_bin=$(find . -maxdepth 2 -type f -name 'svync*' -perm -u+x | head -n 1)"));
         assert!(spec.contains("cp -f \"$svync_bin\" \"$PREFIX/bin/svync\""));
+        assert!(spec.contains("chmod 0755 ./build.sh || true"));
     }
 
     #[test]
