@@ -60,7 +60,7 @@ flye
 fqtools
 fusion-report
 gatk
-genometools
+genometools-genometools
 gepard
 gfastats
 gffcompare
