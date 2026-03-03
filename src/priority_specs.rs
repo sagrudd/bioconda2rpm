@@ -10483,6 +10483,18 @@ fi\n\
 if [[ \"$source0_url\" =~ ^ftp:// ]]; then\n\
   source_candidates+=(\"${{source0_url/#ftp:/https:}}\")\n\
 fi\n\
+if [[ \"$source0_url\" =~ ^https?://github\\.com/([^/]+)/([^/]+)/archive/refs/tags/([^/?#]+)\\.tar\\.gz$ ]]; then\n\
+  gh_owner=\"${{BASH_REMATCH[1]}}\"\n\
+  gh_repo=\"${{BASH_REMATCH[2]}}\"\n\
+  gh_tag=\"${{BASH_REMATCH[3]}}\"\n\
+  source_candidates+=(\"https://codeload.github.com/${{gh_owner}}/${{gh_repo}}/tar.gz/refs/tags/${{gh_tag}}\")\n\
+fi\n\
+if [[ \"$source0_url\" =~ ^https?://github\\.com/([^/]+)/([^/]+)/archive/([^/?#]+)\\.tar\\.gz$ ]]; then\n\
+  gh_owner=\"${{BASH_REMATCH[1]}}\"\n\
+  gh_repo=\"${{BASH_REMATCH[2]}}\"\n\
+  gh_ref=\"${{BASH_REMATCH[3]}}\"\n\
+  source_candidates+=(\"https://codeload.github.com/${{gh_owner}}/${{gh_repo}}/tar.gz/${{gh_ref}}\")\n\
+fi\n\
 if [[ \"$source0_url\" =~ ^https://bioconductor.org/packages/.*/bioc/src/contrib/([^/]+)_[^/]+\\.tar\\.gz$ ]]; then\n\
   bioc_pkg=\"${{BASH_REMATCH[1]}}\"\n\
   archive_url=$(printf '%s' \"$source0_url\" | sed -E \"s#(/bioc/src/contrib/)#\\\\1Archive/$bioc_pkg/#\")\n\
@@ -12120,6 +12132,17 @@ requirements:
         assert!(script.contains("codeload.github.com/intel/isa-l/tar.gz/refs/tags/v2.31.1"));
         assert!(script.contains("isa_l_downloaded=0"));
         assert!(script.contains("failed to fetch isa-l source tarball from known URLs"));
+    }
+
+    #[test]
+    fn container_source_download_adds_github_codeload_fallback_candidates() {
+        const SOURCE: &str = include_str!("priority_specs.rs");
+        assert!(SOURCE.contains(
+            "codeload.github.com/${{gh_owner}}/${{gh_repo}}/tar.gz/refs/tags/${{gh_tag}}"
+        ));
+        assert!(SOURCE.contains(
+            "codeload.github.com/${{gh_owner}}/${{gh_repo}}/tar.gz/${{gh_ref}}"
+        ));
     }
 
     #[test]
