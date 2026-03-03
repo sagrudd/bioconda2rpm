@@ -8485,6 +8485,7 @@ fn render_default_spec(software_slug: &str, parsed: &ParsedMeta, meta_version: u
     format!(
         "%global tool {tool}\n\
 %global upstream_version {version}\n\
+%global __python /usr/bin/python3\n\
 \n\
 Name:           phoreus-%{{tool}}\n\
 Version:        {meta_version}\n\
@@ -14843,6 +14844,32 @@ requirements:
         assert!(spec.contains(
             "sed -i 's|^cp compare \\$PREFIX/bin$|[[ -f compare && -x compare ]] \\&\\& install -m 0755 compare \"$PREFIX/bin\"|g' ./build.sh || true"
         ));
+    }
+
+    #[test]
+    fn default_spec_sets_versioned_python_macro() {
+        let parsed = ParsedMeta {
+            package_name: "python-edlib".to_string(),
+            version: "1.3.9.post1".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/python-edlib.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/python-edlib".to_string(),
+            license: "MIT".to_string(),
+            summary: "python-edlib".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_default_spec("python-edlib", &parsed, 42);
+        assert!(spec.contains("%global __python /usr/bin/python3"));
     }
 
     #[test]
