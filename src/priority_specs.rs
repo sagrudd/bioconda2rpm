@@ -6705,6 +6705,14 @@ EOF\n\
         esac\n\
       fi\n\
     done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 6 -type d \\( -path '*/perl-bioperl/*/lib/perl5' -o -path '*/perl-bioperl/*/lib64/perl5' -o -path '*/perl-bioperl-core/*/lib/perl5' -o -path '*/perl-bioperl-core/*/lib64/perl5' -o -path '*/perl-bioperl-run/*/lib/perl5' -o -path '*/perl-bioperl-run/*/lib64/perl5' \\) 2>/dev/null | sort -r)\n\
+    for core_perl_lib in /usr/local/phoreus/perl/5.32/lib/perl5 /usr/local/phoreus/perl/5.32/lib64/perl5; do\n\
+      if [[ -d \"$core_perl_lib\" ]]; then\n\
+        case \":${{PERL5LIB:-}}:\" in\n\
+          *\":$core_perl_lib:\"*) ;;\n\
+          *) export PERL5LIB=\"$core_perl_lib${{PERL5LIB:+:$PERL5LIB}}\" ;;\n\
+        esac\n\
+      fi\n\
+    done\n\
     if ! perl -MBio::SeqIO -e1 >/dev/null 2>&1; then\n\
       export PERL5LIB=\"$PREFIX/lib/perl5:$PREFIX/lib64/perl5${{PERL5LIB:+:$PERL5LIB}}\"\n\
       if command -v dnf >/dev/null 2>&1; then dnf -y install perl-App-cpanminus >/dev/null 2>&1 || true; fi\n\
@@ -12103,6 +12111,7 @@ requirements:
         assert!(spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 6 -type d"));
         assert!(spec.contains("*/perl-bioperl/*/lib/perl5"));
         assert!(spec.contains("export PERL5LIB=\"$bioperl_lib${PERL5LIB:+:$PERL5LIB}\""));
+        assert!(spec.contains("/usr/local/phoreus/perl/5.32/lib/perl5"));
         assert!(spec.contains("if ! perl -MBio::SeqIO -e1 >/dev/null 2>&1; then"));
         assert!(spec.contains("cpanm -n --local-lib-contained \"$PREFIX\" Bio::Perl"));
         assert!(spec.contains("use\\s+Bio::Root::Version"));
