@@ -2735,6 +2735,10 @@ fn process_tool(
         };
     if parsed_result.build_skip {
         clear_quarantine_note(bad_spec_dir, &software_slug);
+        log_progress(format!(
+            "phase=package status=skipped package={} version={} reason=build-skip-selector",
+            tool.software, parsed_result.parsed.version
+        ));
         return ReportEntry {
             software: tool.software.clone(),
             priority: tool.priority,
@@ -2762,6 +2766,10 @@ fn process_tool(
         Err(err) => {
             let reason = format!("failed to evaluate local artifact versions: {err}");
             quarantine_note(bad_spec_dir, &software_slug, &reason);
+            log_progress(format!(
+                "phase=package status=quarantined package={} version={} reason=artifact-version-check-failed",
+                tool.software, parsed.version
+            ));
             return ReportEntry {
                 software: tool.software.clone(),
                 priority: tool.priority,
@@ -2782,6 +2790,10 @@ fn process_tool(
         && let PayloadVersionState::UpToDate { existing_version } = &version_state
     {
         clear_quarantine_note(bad_spec_dir, &software_slug);
+        log_progress(format!(
+            "phase=package status=up-to-date package={} version={} local_version={}",
+            tool.software, parsed.version, existing_version
+        ));
         return ReportEntry {
             software: tool.software.clone(),
             priority: tool.priority,
