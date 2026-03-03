@@ -6944,7 +6944,7 @@ EOF\n\
     # include the unpacked source directory (`bwa-mem2-<version>`) and fail.\n\
     # Remove wildcard install lines and re-install only executable regular files.\n\
     if [[ \"%{{tool}}\" == \"bwa-mem2\" ]]; then\n\
-    sed -E -i 's|^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+bwa-mem2([[:space:]].*)?$|: # bioconda2rpm replaced bwa-mem2 install line|g' ./build.sh || true\n\
+    sed -E -i '/^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+bwa-mem2([[:space:]].*)?$/d' ./build.sh || true\n\
     cat >> ./build.sh <<'BWA2RPMEOF'\n\
 mkdir -p \"$PREFIX/bin\"\n\
 for f in ./bwa-mem2*; do\n\
@@ -6990,10 +6990,20 @@ ENTREZRPMEOF\n\
     # Modern Go toolchains expect module mode; GOPATH mode can make go build\n\
     # fail without actionable diagnostics for this recipe.\n\
     sed -E -i 's|^[[:space:]]*export[[:space:]]+GOPATH=.*$|: # bioconda2rpm replaced unsafe vcfanno GOPATH export|g' ./build.sh || true\n\
-    sed -E -i 's|^[[:space:]]*go[[:space:]]+get[[:space:]]+\\.[[:space:]]*$|go mod download|g' ./build.sh || true\n\
+    sed -E -i 's|^[[:space:]]*go[[:space:]]+get[[:space:]]+\\.[[:space:]]*$|: # bioconda2rpm replaced legacy vcfanno go get|g' ./build.sh || true\n\
+    sed -E -i 's|^[[:space:]]*make[[:space:]]+build[[:space:]]*$|: # bioconda2rpm replaced legacy vcfanno make build|g' ./build.sh || true\n\
     sed -i '1a export GO111MODULE=on\nunset GOPATH' ./build.sh || true\n\
     sed -E -i 's|^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+vcfanno\\*.*$|: # bioconda2rpm replaced unsafe vcfanno install line|g' ./build.sh || true\n\
     cat >> ./build.sh <<'VCFANNORPMEOF'\n\
+if [[ -f go.mod ]]; then\n\
+  go mod download || true\n\
+  go mod tidy || true\n\
+  go build -mod=mod -o vcfanno vcfanno.go\n\
+elif [[ -f vcfanno.go ]]; then\n\
+  go build -o vcfanno vcfanno.go\n\
+else\n\
+  make build\n\
+fi\n\
 mkdir -p \"$PREFIX/bin\"\n\
 for f in ./vcfanno*; do\n\
   [ -f \"$f\" ] || continue\n\
@@ -7007,13 +7017,22 @@ VCFANNORPMEOF\n\
     # /usr/include is injected as system include and breaks include_next order.\n\
     if [[ \"%{{tool}}\" == \"raven-assembler\" ]]; then\n\
     sed -E -i 's|^[[:space:]]*cmake[[:space:]]+--build[[:space:]]+build[[:space:]]+--target[[:space:]]+install.*$|: # bioconda2rpm replaced raven cmake build invocation|g' ./build.sh || true\n\
+    sed -E -i 's|^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+build/bin/raven[[:space:]]+\\$PREFIX/bin[[:space:]]*$|: # bioconda2rpm replaced raven direct install invocation|g' ./build.sh || true\n\
     cat >> ./build.sh <<'RAVENRPMEOF'\n\
 if [[ -d build ]]; then\n\
   find build -type f \\( -name flags.make -o -name build.make -o -name build.ninja \\) | while IFS= read -r fm; do\n\
     sed -i 's# -isystem /usr/include##g; s#-isystem /usr/include ##g; s# -I/usr/include##g; s#-I/usr/include ##g' \"$fm\" || true\n\
   done\n\
 fi\n\
-cmake --build build --target install -j \"${{CPU_COUNT}}\" -v\n\
+cmake --build build --target install -j \"${{CPU_COUNT:-1}}\" -v\n\
+mkdir -p \"$PREFIX/bin\"\n\
+if [[ -x build/bin/raven ]]; then\n\
+  install -v -m 0755 build/bin/raven \"$PREFIX/bin\"\n\
+fi\n\
+if [[ ! -x \"$PREFIX/bin/raven\" ]]; then\n\
+  echo \"bioconda2rpm: raven binary not produced\" >&2\n\
+  exit 1\n\
+fi\n\
 RAVENRPMEOF\n\
     fi\n\
     \n\
@@ -7091,6 +7110,16 @@ PROBCONSRPMEOF\n\
     # Some mash build scripts still emit hard-coded static capnproto archives\n\
     # in /usr/lib; use linker names so EL9 libdir resolution can pick lib64.\n\
     sed -E -i 's|/usr/lib(64)?/libcapnp\\.a|-lcapnp|g; s|/usr/lib(64)?/libkj\\.a|-lkj|g' ./build.sh || true\n\
+    sed -E -i 's|^[[:space:]]*make[[:space:]]+-j.*$|: # bioconda2rpm replaced mash parallel make invocation|g' ./build.sh || true\n\
+    sed -E -i 's|^[[:space:]]*make[[:space:]]+install[[:space:]]*$|: # bioconda2rpm replaced mash install invocation|g' ./build.sh || true\n\
+    cat >> ./build.sh <<'MASHRPMEOF'\n\
+for mf in Makefile src/mash/Makefile; do\n\
+  [[ -f \"$mf\" ]] || continue\n\
+  sed -E -i 's|/usr/lib(64)?/libcapnp\\.a|-lcapnp|g; s|/usr/lib(64)?/libkj\\.a|-lkj|g' \"$mf\" || true\n\
+done\n\
+make -j\"${{CPU_COUNT:-1}}\"\n\
+make install\n\
+MASHRPMEOF\n\
     fi\n\
     \n\
     # ntLink install copies `ntLink*` directly, which includes extracted source\n\
@@ -12360,6 +12389,9 @@ requirements:
         );
 
         assert!(spec.contains("bootstrapping capnproto into $PREFIX"));
+        assert!(spec.contains("bioconda2rpm replaced mash parallel make invocation"));
+        assert!(spec.contains("bioconda2rpm replaced mash install invocation"));
+        assert!(spec.contains("cat >> ./build.sh <<'MASHRPMEOF'"));
     }
 
     #[test]
@@ -15253,9 +15285,11 @@ requirements:
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"raven-assembler\" ]]; then"));
         assert!(spec.contains("bioconda2rpm replaced raven cmake build invocation"));
+        assert!(spec.contains("bioconda2rpm replaced raven direct install invocation"));
         assert!(spec.contains("cat >> ./build.sh <<'RAVENRPMEOF'"));
         assert!(spec.contains("find build -type f \\( -name flags.make -o -name build.make -o -name build.ninja \\) | while IFS= read -r fm; do"));
-        assert!(spec.contains("cmake --build build --target install -j \"${CPU_COUNT}\" -v"));
+        assert!(spec.contains("cmake --build build --target install -j \"${CPU_COUNT:-1}\" -v"));
+        assert!(spec.contains("if [[ ! -x \"$PREFIX/bin/raven\" ]]; then"));
     }
 
     #[test]
@@ -15296,8 +15330,11 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"vcfanno\" ]]; then"));
+        assert!(spec.contains("bioconda2rpm replaced legacy vcfanno go get"));
+        assert!(spec.contains("bioconda2rpm replaced legacy vcfanno make build"));
         assert!(spec.contains("bioconda2rpm replaced unsafe vcfanno install line"));
         assert!(spec.contains("cat >> ./build.sh <<'VCFANNORPMEOF'"));
+        assert!(spec.contains("go build -mod=mod -o vcfanno vcfanno.go"));
         assert!(spec.contains(
             "for f in ./vcfanno*; do"
         ));
@@ -15343,7 +15380,7 @@ requirements:
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"bwa-mem2\" ]]; then"));
         assert!(spec.contains(
-            "sed -E -i 's|^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+bwa-mem2([[:space:]].*)?$|: # bioconda2rpm replaced bwa-mem2 install line|g' ./build.sh || true"
+            "sed -E -i '/^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+bwa-mem2([[:space:]].*)?$/d' ./build.sh || true"
         ));
         assert!(spec.contains("cat >> ./build.sh <<'BWA2RPMEOF'"));
         assert!(spec.contains("for f in ./bwa-mem2*; do"));
