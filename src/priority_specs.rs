@@ -7329,6 +7329,16 @@ PPLACER_BIOC2RPM_SH\n\
     fi\n\
     fi\n\
     \n\
+    # probconsrna's legacy SafeVector uses unqualified size_t constructors that\n\
+    # fail with modern C++ headers/toolchains; normalize to std::size_t.\n\
+    if [[ \"%{{tool}}\" == \"probconsrna\" && -f SafeVector.h ]]; then\n\
+    if ! grep -q '<cstddef>' SafeVector.h; then\n\
+      sed -i '/#include <vector>/a #include <cstddef>' SafeVector.h || true\n\
+    fi\n\
+    sed -i 's/SafeVector (size_t size)/SafeVector (std::size_t size)/g' SafeVector.h || true\n\
+    sed -i 's/SafeVector (size_t size, const TYPE &value)/SafeVector (std::size_t size, const TYPE \\&value)/g' SafeVector.h || true\n\
+    fi\n\
+    \n\
     # tbl2asn-forever vendors libfaketime; patchsets can introduce a\n\
     # gettimeofday prototype incompatible with EL9 glibc headers.\n\
     if [[ \"%{{tool}}\" == \"tbl2asn-forever\" && -f libfaketime/src/libfaketime.c ]]; then\n\
@@ -14380,6 +14390,46 @@ requirements:
         assert!(spec.contains("ln -sf /usr/lib64/liblzma.so.5 /usr/lib64/liblzma.so"));
         assert!(spec.contains("-idirafter /usr/include"));
         assert!(spec.contains("find . -type f -name flags.make | while IFS= read -r fm; do"));
+    }
+
+    #[test]
+    fn probconsrna_spec_normalizes_safevector_size_t_constructors() {
+        let parsed = ParsedMeta {
+            package_name: "probconsrna".to_string(),
+            version: "1.10".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/probconsrna.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/probconsrna".to_string(),
+            license: "Public-Domain".to_string(),
+            summary: "probconsrna".to_string(),
+            source_patches: vec!["file.patch".to_string()],
+            build_script: Some("make clean\nmake probcons\n".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["make".to_string()],
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::from(["make".to_string()]),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "probconsrna",
+            &parsed,
+            "bioconda-probconsrna-build.sh",
+            &["bioconda-probconsrna-patch-1-file.patch".to_string()],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"probconsrna\" && -f SafeVector.h ]]; then"));
+        assert!(spec.contains("sed -i '/#include <vector>/a #include <cstddef>' SafeVector.h"));
+        assert!(spec.contains("sed -i 's/SafeVector (size_t size)/SafeVector (std::size_t size)/g' SafeVector.h"));
     }
 
     #[test]
