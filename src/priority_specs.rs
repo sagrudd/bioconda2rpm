@@ -6426,6 +6426,13 @@ EOF\n\
     export CXXFLAGS=\"-I/usr/include -I/usr/include/libxml2 ${{CXXFLAGS:-}}\"\n\
     export LDFLAGS=\"-L/usr/lib64 -L/usr/lib ${{LDFLAGS:-}}\"\n\
     fi\n\
+    if [[ \"%{{tool}}\" == \"perl-bio-tools-run-alignment-tcoffee\" ]]; then\n\
+    tcoffee_bin=$(find /usr/local/phoreus/t-coffee -mindepth 3 -maxdepth 3 -type f -name t_coffee 2>/dev/null | sort | tail -n 1 || true)\n\
+    if [[ -n \"$tcoffee_bin\" ]]; then\n\
+      export PATH=\"$(dirname \"$tcoffee_bin\"):$PATH\"\n\
+      ln -snf \"$tcoffee_bin\" /usr/local/bin/t_coffee || true\n\
+    fi\n\
+    fi\n\
     if [[ \"%{{tool}}\" == \"perl-gd\" ]]; then\n\
     perl -0pi -e 's@(^\\s*chmod\\s+u\\+w\\s+.*bdftogd\\b.*)$@[ -e \"$PREFIX/bin/bdftogd\" ] && $1 || true@mg' ./build.sh || true\n\
     fi\n\
@@ -11946,6 +11953,49 @@ requirements:
         assert!(spec.contains("unset CPLUS_INCLUDE_PATH"));
         assert!(spec.contains("unset C_INCLUDE_PATH"));
         assert!(spec.contains("export CPPFLAGS=\"-isystem /usr/include ${CPPFLAGS:-}\""));
+    }
+
+    #[test]
+    fn perl_bio_tools_run_alignment_tcoffee_spec_exports_tcoffee_bin_path() {
+        let parsed = ParsedMeta {
+            package_name: "perl-bio-tools-run-alignment-tcoffee".to_string(),
+            version: "1.7.4".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/perl-bio-tools-run-alignment-tcoffee-1.7.4.tar.gz"
+                .to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/perl-bio-tools-run-alignment-tcoffee".to_string(),
+            license: "GPL-1.0-or-later".to_string(),
+            summary: "perl wrapper for t_coffee".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("perl Makefile.PL\nmake\n".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let spec = render_payload_spec(
+            "perl-bio-tools-run-alignment-tcoffee",
+            &parsed,
+            "bioconda-perl-bio-tools-run-alignment-tcoffee-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains(
+            "if [[ \"%{tool}\" == \"perl-bio-tools-run-alignment-tcoffee\" ]]; then"
+        ));
+        assert!(spec.contains(
+            "find /usr/local/phoreus/t-coffee -mindepth 3 -maxdepth 3 -type f -name t_coffee"
+        ));
+        assert!(spec.contains("ln -snf \"$tcoffee_bin\" /usr/local/bin/t_coffee || true"));
     }
 
     #[test]
