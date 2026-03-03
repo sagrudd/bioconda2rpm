@@ -6950,6 +6950,17 @@ EOF\n\
     sed -i 's|install -m 755 bin/\\* \\$PREFIX/bin|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] && install -m 755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
     fi\n\
     \n\
+    # raven-assembler can fail with libstdc++ include_next resolution when\n\
+    # /usr/include is injected as a system include by environment propagation.\n\
+    # Remove /usr/include include injections from env and generated CMake files\n\
+    # before invoking cmake --build.\n\
+    if [[ \"%{{tool}}\" == \"raven-assembler\" ]]; then\n\
+    unset CPLUS_INCLUDE_PATH\n\
+    unset C_INCLUDE_PATH\n\
+    unset CPATH\n\
+    perl -0pi -e 's@(^\\s*cmake\\s+--build\\s+build\\b[^\\n]*$)@if [[ -d build ]]; then\\n  find build -type f \\( -name flags.make -o -name build.make -o -name build.ninja \\) | while IFS= read -r fm; do\\n    sed -i \"s# -isystem /usr/include##g; s# -I/usr/include##g\" \"\\$fm\" || true\\n  done\\nfi\\n$1@mg' ./build.sh || true\n\
+    fi\n\
+    \n\
     # Racon can fail with /usr/include/c++/.../cstdlib:75 include_next stdlib.h\n\
     # when /usr/include is injected as a system include ahead of libstdc++.\n\
     # Sanitize include-path env and strip forced /usr/include flags before ninja.\n\
@@ -14932,6 +14943,52 @@ requirements:
         assert!(spec.contains("unset C_INCLUDE_PATH"));
         assert!(spec.contains("cp_path_clean=$(printf '%s' \"$CPATH\" | tr ':' '\\n' | awk 'NF && $0 != \"/usr/include\"' | paste -sd: - || true)"));
         assert!(spec.contains("find build -type f \\( -name flags.make -o -name build.ninja \\) | while IFS= read -r fm; do"));
+        assert!(spec.contains("sed -i \"s# -isystem /usr/include##g; s# -I/usr/include##g\" \"\\$fm\" || true"));
+    }
+
+    #[test]
+    fn raven_assembler_spec_sanitizes_usr_include_before_cmake_build() {
+        let parsed = ParsedMeta {
+            package_name: "raven-assembler".to_string(),
+            version: "1.8.3".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/raven-assembler.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/raven-assembler".to_string(),
+            license: "MIT".to_string(),
+            summary: "raven-assembler".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "cmake -S . -B build\ncmake --build build --target install -j \"${CPU_COUNT}\" -v\n"
+                    .to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["cmake".to_string()],
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::from(["cmake".to_string()]),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "raven-assembler",
+            &parsed,
+            "bioconda-raven-assembler-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"raven-assembler\" ]]; then"));
+        assert!(spec.contains("unset CPLUS_INCLUDE_PATH"));
+        assert!(spec.contains("unset C_INCLUDE_PATH"));
+        assert!(spec.contains("unset CPATH"));
+        assert!(spec.contains("find build -type f \\( -name flags.make -o -name build.make -o -name build.ninja \\) | while IFS= read -r fm; do"));
         assert!(spec.contains("sed -i \"s# -isystem /usr/include##g; s# -I/usr/include##g\" \"\\$fm\" || true"));
     }
 
