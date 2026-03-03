@@ -7005,6 +7005,34 @@ EOF\n\
     fi\n\
     fi\n\
     \n\
+    # strobealign can fail when include path overrides hide glibc headers from\n\
+    # libstdc++ include_next lookup.\n\
+    if [[ \"%{{tool}}\" == \"strobealign\" ]]; then\n\
+    unset CPLUS_INCLUDE_PATH\n\
+    unset C_INCLUDE_PATH\n\
+    if [[ -n \"${{CPATH:-}}\" ]]; then\n\
+      cp_path_clean=$(printf '%s' \"$CPATH\" | tr ':' '\\n' | awk 'NF && $0 != \"/usr/include\"' | paste -sd: - || true)\n\
+      if [[ -n \"$cp_path_clean\" ]]; then\n\
+        export CPATH=\"$cp_path_clean\"\n\
+      else\n\
+        unset CPATH\n\
+      fi\n\
+    fi\n\
+    export CXXFLAGS=\"-idirafter /usr/include ${{CXXFLAGS:-}}\"\n\
+    export CPPFLAGS=\"-isystem /usr/include ${{CPPFLAGS:-}}\"\n\
+    if [[ ! -f /usr/include/stdlib.h ]]; then\n\
+      if command -v dnf >/dev/null 2>&1; then\n\
+        dnf -y install glibc-headers glibc-devel libstdc++-devel >/dev/null 2>&1 || true\n\
+      fi\n\
+      if command -v microdnf >/dev/null 2>&1; then\n\
+        microdnf -y install glibc-headers glibc-devel libstdc++-devel >/dev/null 2>&1 || true\n\
+      fi\n\
+    fi\n\
+    sed -i '/^export CPATH=\\/usr\\/include/d' ./build.sh || true\n\
+    sed -i '/^export CPLUS_INCLUDE_PATH=/d' ./build.sh || true\n\
+    sed -i '/^export C_INCLUDE_PATH=/d' ./build.sh || true\n\
+    fi\n\
+    \n\
     # Salmon's Bioconda recipe forces Boost lookup to $PREFIX only.\n\
     # In RPM builds we install boost-devel via system repos, so allow\n\
     # standard CMake discovery roots to satisfy Boost components.\n\
@@ -11868,6 +11896,45 @@ requirements:
         assert!(!spec.contains("BuildRequires:  capnproto-devel"));
         assert!(spec.contains("bootstrapping capnproto into $PREFIX"));
         assert!(spec.contains("BuildRequires:  zlib-devel"));
+    }
+
+    #[test]
+    fn strobealign_spec_sanitizes_include_path_overrides() {
+        let parsed = ParsedMeta {
+            package_name: "strobealign".to_string(),
+            version: "0.17.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/strobealign-0.17.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/strobealign".to_string(),
+            license: "MIT".to_string(),
+            summary: "strobealign".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("cmake -B build\nmake -C build\n".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let spec = render_payload_spec(
+            "strobealign",
+            &parsed,
+            "bioconda-strobealign-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains("if [[ \"%{tool}\" == \"strobealign\" ]]; then"));
+        assert!(spec.contains("unset CPLUS_INCLUDE_PATH"));
+        assert!(spec.contains("unset C_INCLUDE_PATH"));
+        assert!(spec.contains("export CPPFLAGS=\"-isystem /usr/include ${CPPFLAGS:-}\""));
     }
 
     #[test]
