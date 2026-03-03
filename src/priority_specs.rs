@@ -6936,6 +6936,13 @@ EOF\n\
     sed -E -i 's/__builtin_cpu_supports[[:space:]]*\\([[:space:]]*\"x86-64-v3\"[[:space:]]*\\)/0/g' bowtie_main.cpp || true\n\
     fi\n\
     \n\
+    # bwa-mem2's Bioconda build script uses `install ... bwa-mem2*`, which can\n\
+    # include the unpacked source directory (`bwa-mem2-<version>`) and fail.\n\
+    # Restrict installation to executable regular files only.\n\
+    if [[ \"%{{tool}}\" == \"bwa-mem2\" ]]; then\n\
+    sed -i 's|^install -v -m 0755 bwa-mem2\\* \\$PREFIX/bin$|for f in ./bwa-mem2*; do [[ -f \"$f\" && -x \"$f\" ]] && install -v -m 0755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
+    fi\n\
+    \n\
     # RNA-SeQC v2.4.2 bundles a BWA fork that hard-requires x86 SSE headers\n\
     # (emmintrin.h) and is not portable to Linux/aarch64 in this release.\n\
     if [[ \"%{{tool}}\" == \"rna-seqc\" && \"${{BIOCONDA_TARGET_ARCH:-}}\" == \"aarch64\" ]]; then\n\
