@@ -8341,9 +8341,9 @@ fn render_patch_apply_lines(staged_patch_sources: &[String], source_dir: &str) -
                 "patch_source=%{{SOURCE{}}}\n\
 patch_input=\"$patch_source\"\n\
 patch_trim_tmp=\"\"\n\
-if grep -Eq '^(diff --git |--- |\\+\\+\\+ )' \"$patch_input\" 2>/dev/null; then\n\
+if grep -Eq '^(diff --git |\\*\\*\\* |--- |\\+\\+\\+ )' \"$patch_input\" 2>/dev/null; then\n\
   patch_trim_tmp=\"$(mktemp)\"\n\
-  awk 'BEGIN{{emit=0}} /^diff --git / || /^--- / || /^\\+\\+\\+ /{{emit=1}} emit{{print}}' \"$patch_input\" > \"$patch_trim_tmp\"\n\
+  awk 'BEGIN{{emit=0}} /^diff --git / || /^\\*\\*\\* / || /^--- / || /^\\+\\+\\+ /{{emit=1}} emit{{print}}' \"$patch_input\" > \"$patch_trim_tmp\"\n\
   if [[ -s \"$patch_trim_tmp\" ]]; then\n\
     patch_input=\"$patch_trim_tmp\"\n\
   else\n\
@@ -8396,7 +8396,7 @@ while IFS= read -r patch_rel; do\n\
       fi\n\
     done < <(find . -type f -name \"$patch_base\" -print 2>/dev/null || true)\n\
   fi\n\
-done < <(awk '/^diff --git /{{old=$3; new=$4; sub(/^[ab]\\//, \"\", old); sub(/^[ab]\\//, \"\", new); if (old != \"/dev/null\") print old; if (new != \"/dev/null\") print new; next}} /^\\+\\+\\+ / || /^--- /{{p=$2; sub(/^[ab]\\//, \"\", p); sub(/\\r$/, \"\", p); if (p != \"/dev/null\") print p;}}' \"$patch_input\" | sed '/^$/d' | sort -u)\n\
+done < <(awk '/^diff --git /{{old=$3; new=$4; sub(/^[ab]\\//, \"\", old); sub(/^[ab]\\//, \"\", new); if (old != \"/dev/null\") print old; if (new != \"/dev/null\") print new; next}} /^\\+\\+\\+ / || /^--- / || /^\\*\\*\\* /{{p=$2; if (p ~ /^[0-9,]+$/) next; sub(/^[ab]\\//, \"\", p); sub(/\\r$/, \"\", p); if (p != \"/dev/null\") print p;}}' \"$patch_input\" | sed '/^$/d' | sort -u)\n\
 for maybe_dir in userApps Source_code_including_submodules source src; do\n\
   if [[ -d \"$maybe_dir\" ]]; then\n\
     already=0\n\
@@ -11838,7 +11838,9 @@ requirements:
         assert!(!spec.contains("tr -d '\\r' < \"$patch_source\" > \"$patch_tmp\""));
         assert!(spec.contains("patch_trim_tmp=\"\""));
         assert!(spec.contains("awk 'BEGIN{emit=0}"));
+        assert!(spec.contains("grep -Eq '^(diff --git |\\*\\*\\* |--- |\\+\\+\\+ )'"));
         assert!(spec.contains("patch_rel=\"${patch_rel#b/}\""));
+        assert!(spec.contains("/^\\+\\+\\+ / || /^--- / || /^\\*\\*\\* /"));
         assert!(
             spec.contains(
                 "for maybe_dir in userApps Source_code_including_submodules source src; do"
