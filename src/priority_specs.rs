@@ -5375,8 +5375,12 @@ fn render_payload_spec(
     let needs_libhwy = recipe_dep_mentions(parsed, "libhwy");
     let needs_jsoncpp =
         recipe_dep_mentions(parsed, "jsoncpp") || recipe_dep_mentions(parsed, "jsoncpp-devel");
-    let needs_capnproto =
-        recipe_dep_mentions(parsed, "capnproto") || recipe_dep_mentions(parsed, "capnp");
+    let needs_capnproto = recipe_dep_mentions(parsed, "capnproto")
+        || recipe_dep_mentions(parsed, "capnp")
+        // HEURISTIC-TEMP(issue=HEUR-0024): Mash's configure checks for capnp
+        // in EL9 builds even when dependency metadata does not consistently
+        // surface capnproto tokens. Force capnproto bootstrap for mash.
+        || software_slug == "mash";
     let build_script_lower = parsed
         .build_script
         .as_deref()
@@ -6938,9 +6942,9 @@ EOF\n\
     \n\
     # bwa-mem2's Bioconda build script uses `install ... bwa-mem2*`, which can\n\
     # include the unpacked source directory (`bwa-mem2-<version>`) and fail.\n\
-    # Restrict installation to executable regular files only.\n\
+    # Remove wildcard install lines and re-install only executable regular files.\n\
     if [[ \"%{{tool}}\" == \"bwa-mem2\" ]]; then\n\
-    sed -i -E 's|^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+bwa-mem2.*$|: # bioconda2rpm replaced bwa-mem2 install line|g' ./build.sh || true\n\
+    sed -i -E '/^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+bwa-mem2(\\*|[[:space:]].*)$/d' ./build.sh || true\n\
     cat >> ./build.sh <<'BWA2RPMEOF'\n\
 mkdir -p \"$PREFIX/bin\"\n\
 for f in ./bwa-mem2*; do\n\
@@ -6953,11 +6957,17 @@ BWA2RPMEOF\n\
     \n\
     # entrez-direct expands `bin/*` into both files and directories (notably\n\
     # `bin/edirect`), and GNU install exits non-zero when a directory is passed.\n\
-    # Normalize to install only executable regular files.\n\
+    # Remove broad install lines and install only executable regular files.\n\
     if [[ \"%{{tool}}\" == \"entrez-direct\" ]]; then\n\
-    sed -i 's|install -m 755 bin/\\* \\$PREFIX/bin|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] && install -m 755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
-    sed -i -E 's|^install -m 755 bin/[^$\\n]*\\$PREFIX/bin$|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -m 755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
-    sed -i -E 's|^install -m 755 bin/[^$\\n]*\"\\$\\{{PREFIX\\}}/bin\"$|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -m 755 \"$f\" \"${{PREFIX}}/bin\"; done|g' ./build.sh || true\n\
+    sed -i -E 's|^[[:space:]]*install[[:space:]]+-m[[:space:]]+755[[:space:]]+bin/.*$|: # bioconda2rpm replaced unsafe entrez-direct bin install|g' ./build.sh || true\n\
+    cat >> ./build.sh <<'ENTREZRPMMAINEOF'\n\
+mkdir -p \"$PREFIX/bin\"\n\
+for f in bin/*; do\n\
+  [ -f \"$f\" ] || continue\n\
+  [ -x \"$f\" ] || continue\n\
+  install -m 755 \"$f\" \"$PREFIX/bin\"\n\
+done\n\
+ENTREZRPMMAINEOF\n\
     for nested in cmd/build.sh extern/build.sh; do\n\
       [[ -f \"$nested\" ]] || continue\n\
       sed -i -E 's|^[[:space:]]*install[[:space:]]+-m[[:space:]]+755[[:space:]]+bin/.*$|: # bioconda2rpm replaced unsafe entrez-direct bin install|g' \"$nested\" || true\n\
@@ -7941,12 +7951,28 @@ fi\n\
     fi\n\
     pushd \"$third_party_root\" >/dev/null\n\
     rm -rf capnproto-c++-1.0.2 capnproto-1.0.2\n\
-    if command -v curl >/dev/null 2>&1; then\n\
-      curl -L --fail --output capnproto-1.0.2.tar.gz https://github.com/capnproto/capnproto/archive/refs/tags/v1.0.2.tar.gz\n\
-    elif command -v wget >/dev/null 2>&1; then\n\
-      wget -O capnproto-1.0.2.tar.gz https://github.com/capnproto/capnproto/archive/refs/tags/v1.0.2.tar.gz\n\
-    else\n\
-      echo \"missing curl/wget for capnproto bootstrap\" >&2\n\
+    rm -f capnproto-1.0.2.tar.gz\n\
+    capnproto_downloaded=0\n\
+    for capnproto_url in \\\n\
+      https://github.com/capnproto/capnproto/archive/refs/tags/v1.0.2.tar.gz \\\n\
+      https://codeload.github.com/capnproto/capnproto/tar.gz/refs/tags/v1.0.2; do\n\
+      if command -v curl >/dev/null 2>&1; then\n\
+        if curl -L --fail --retry 5 --retry-all-errors --connect-timeout 20 --max-time 300 --output capnproto-1.0.2.tar.gz \"$capnproto_url\"; then\n\
+          capnproto_downloaded=1\n\
+          break\n\
+        fi\n\
+      elif command -v wget >/dev/null 2>&1; then\n\
+        if wget --tries=5 --timeout=30 -O capnproto-1.0.2.tar.gz \"$capnproto_url\"; then\n\
+          capnproto_downloaded=1\n\
+          break\n\
+        fi\n\
+      else\n\
+        echo \"missing curl/wget for capnproto bootstrap\" >&2\n\
+        exit 44\n\
+      fi\n\
+    done\n\
+    if [[ \"$capnproto_downloaded\" != \"1\" ]]; then\n\
+      echo \"failed to fetch capnproto source tarball from known URLs\" >&2\n\
       exit 44\n\
     fi\n\
     tar -xf capnproto-1.0.2.tar.gz\n\
@@ -10624,7 +10650,66 @@ else\n\
   done\n\
 fi\n\
 if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
-  if [[ \"$source0_url\" == ftp://* ]]; then\n\
+  manual_candidates=(\"${{source_candidates[@]}}\")\n\
+  if [[ \"$source0_url\" =~ ^https?://github\\.com/([^/]+)/([^/]+)/archive/refs/tags/([^/?#]+)\\.tar\\.gz$ ]]; then\n\
+    gh_owner=\"${{BASH_REMATCH[1]}}\"\n\
+    gh_repo=\"${{BASH_REMATCH[2]}}\"\n\
+    gh_tag=\"${{BASH_REMATCH[3]}}\"\n\
+    manual_candidates+=(\"https://codeload.github.com/${{gh_owner}}/${{gh_repo}}/tar.gz/refs/tags/${{gh_tag}}\")\n\
+  fi\n\
+  if [[ \"$source0_url\" =~ ^https?://github\\.com/([^/]+)/([^/]+)/archive/([^/?#]+)\\.tar\\.gz$ ]]; then\n\
+    gh_owner=\"${{BASH_REMATCH[1]}}\"\n\
+    gh_repo=\"${{BASH_REMATCH[2]}}\"\n\
+    gh_ref=\"${{BASH_REMATCH[3]}}\"\n\
+    manual_candidates+=(\"https://codeload.github.com/${{gh_owner}}/${{gh_repo}}/tar.gz/${{gh_ref}}\")\n\
+  fi\n\
+  dedup_manual_candidates=()\n\
+  for candidate in \"${{manual_candidates[@]:-}}\"; do\n\
+    if [[ -z \"$candidate\" ]]; then\n\
+      continue\n\
+    fi\n\
+    duplicate=0\n\
+    for existing in \"${{dedup_manual_candidates[@]:-}}\"; do\n\
+      if [[ \"$existing\" == \"$candidate\" ]]; then\n\
+        duplicate=1\n\
+        break\n\
+      fi\n\
+    done\n\
+    if [[ \"$duplicate\" -eq 0 ]]; then\n\
+      dedup_manual_candidates+=(\"$candidate\")\n\
+    fi\n\
+  done\n\
+  for manual_url in \"${{dedup_manual_candidates[@]:-}}\"; do\n\
+    manual_file=\"$manual_url\"\n\
+    manual_file=\"${{manual_file%%\\#*}}\"\n\
+    manual_file=\"${{manual_file%%\\?*}}\"\n\
+    manual_file=\"${{manual_file##*/}}\"\n\
+    [[ -n \"$manual_file\" ]] || continue\n\
+    rm -f \"$build_sourcedir/$manual_file\" || true\n\
+    echo \"Attempting manual prefetch fallback: $manual_url\"\n\
+    if [[ \"$manual_url\" =~ ^https?://(www\\.)?circos\\.ca/ ]]; then\n\
+      if command -v curl >/dev/null 2>&1; then\n\
+        curl -k -L --fail --retry 5 --retry-all-errors --connect-timeout 20 --max-time 300 --output \"$build_sourcedir/$manual_file\" \"$manual_url\" || true\n\
+      elif command -v wget >/dev/null 2>&1; then\n\
+        wget --no-check-certificate --tries=5 --timeout=30 -O \"$build_sourcedir/$manual_file\" \"$manual_url\" || true\n\
+      fi\n\
+    else\n\
+      if command -v curl >/dev/null 2>&1; then\n\
+        curl -L --fail --retry 5 --retry-all-errors --connect-timeout 20 --max-time 300 --output \"$build_sourcedir/$manual_file\" \"$manual_url\" || true\n\
+      elif command -v wget >/dev/null 2>&1; then\n\
+        wget --tries=5 --timeout=30 -O \"$build_sourcedir/$manual_file\" \"$manual_url\" || true\n\
+      fi\n\
+    fi\n\
+    if [[ -s \"$build_sourcedir/$manual_file\" ]]; then\n\
+      if validate_source_file \"$build_sourcedir/$manual_file\"; then\n\
+        spectool_ok=1\n\
+        break\n\
+      fi\n\
+      echo \"source archive validation failed for $build_sourcedir/$manual_file; removing corrupt download\" >&2\n\
+      rm -f \"$build_sourcedir/$manual_file\" || true\n\
+    fi\n\
+  done\n\
+  if [[ \"$spectool_ok\" -ne 1 && \"$source0_url\" == ftp://* ]]; then\n\
     ftp_file=\"$source0_url\"\n\
     ftp_file=\"${{ftp_file%%\\#*}}\"\n\
     ftp_file=\"${{ftp_file%%\\?*}}\"\n\
@@ -10632,9 +10717,9 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
     if [[ -n \"$ftp_file\" ]]; then\n\
       echo \"Attempting FTP prefetch fallback: $source0_url\"\n\
       if command -v wget >/dev/null 2>&1; then\n\
-        wget -O \"$build_sourcedir/$ftp_file\" \"$source0_url\" || true\n\
+        wget --tries=5 --timeout=30 -O \"$build_sourcedir/$ftp_file\" \"$source0_url\" || true\n\
       elif command -v curl >/dev/null 2>&1; then\n\
-        curl -L --fail --output \"$build_sourcedir/$ftp_file\" \"$source0_url\" || true\n\
+        curl -L --fail --retry 5 --retry-all-errors --connect-timeout 20 --max-time 300 --output \"$build_sourcedir/$ftp_file\" \"$source0_url\" || true\n\
       fi\n\
       if [[ -s \"$build_sourcedir/$ftp_file\" ]]; then\n\
         if validate_source_file \"$build_sourcedir/$ftp_file\"; then\n\
@@ -12200,6 +12285,44 @@ requirements:
         assert!(!spec.contains("BuildRequires:  capnproto-devel"));
         assert!(spec.contains("bootstrapping capnproto into $PREFIX"));
         assert!(spec.contains("BuildRequires:  zlib-devel"));
+    }
+
+    #[test]
+    fn mash_payload_forces_capnproto_bootstrap_even_without_explicit_dep_token() {
+        let parsed = ParsedMeta {
+            package_name: "mash".to_string(),
+            version: "2.3".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/mash.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/mash".to_string(),
+            license: "BSD-3-Clause".to_string(),
+            summary: "mash".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("bash build.sh\n".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["make".to_string()],
+            host_dep_specs_raw: vec!["zlib".to_string()],
+            run_dep_specs_raw: vec!["zlib".to_string()],
+            build_deps: BTreeSet::from(["make".to_string()]),
+            host_deps: BTreeSet::from(["zlib".to_string()]),
+            run_deps: BTreeSet::from(["zlib".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "mash",
+            &parsed,
+            "bioconda-mash-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("bootstrapping capnproto into $PREFIX"));
     }
 
     #[test]
@@ -15182,7 +15305,7 @@ requirements:
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"bwa-mem2\" ]]; then"));
         assert!(spec.contains(
-            "sed -i -E 's|^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+bwa-mem2.*$|: # bioconda2rpm replaced bwa-mem2 install line|g' ./build.sh || true"
+            "sed -i -E '/^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+bwa-mem2(\\*|[[:space:]].*)$/d' ./build.sh || true"
         ));
         assert!(spec.contains("cat >> ./build.sh <<'BWA2RPMEOF'"));
         assert!(spec.contains("for f in ./bwa-mem2*; do"));
@@ -15230,8 +15353,10 @@ requirements:
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"entrez-direct\" ]]; then"));
         assert!(spec.contains(
-            "sed -i -E 's|^install -m 755 bin/[^$\\n]*\\$PREFIX/bin$|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] \\&\\& install -m 755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true"
+            "sed -i -E 's|^[[:space:]]*install[[:space:]]+-m[[:space:]]+755[[:space:]]+bin/.*$|: # bioconda2rpm replaced unsafe entrez-direct bin install|g' ./build.sh || true"
         ));
+        assert!(spec.contains("cat >> ./build.sh <<'ENTREZRPMMAINEOF'"));
+        assert!(spec.contains("mkdir -p \"$PREFIX/bin\""));
         assert!(spec.contains("for nested in cmd/build.sh extern/build.sh; do"));
         assert!(spec.contains(
             "sed -i -E 's|^[[:space:]]*install[[:space:]]+-m[[:space:]]+755[[:space:]]+bin/.*$|: # bioconda2rpm replaced unsafe entrez-direct bin install|g' \"$nested\" || true"
