@@ -7252,14 +7252,19 @@ if [[ \"$(uname)\" == \"Darwin\" ]]; then\n\
   exit 0\n\
 fi\n\
 \n\
-OCAML_VERSION=4.14.2\n\
-opam init --disable-sandboxing -y --compiler=\"${{OCAML_VERSION}}\"\n\
-eval \"$(opam env)\"\n\
-opam repo add pplacer-deps http://matsen.github.io/pplacer-opam-repository\n\
-opam update\n\
+repo_root=\"$(pwd -P)\"\n\
+cd \"$repo_root\"\n\
 \n\
-eval \"$(opam env)\"\n\
-opam install --assume-depexts -y \\\n\
+OCAML_VERSION=4.14.2\n\
+OPAMROOT=/tmp/opam-pplacer-root\n\
+rm -rf \"$OPAMROOT\"\n\
+opam init --root \"$OPAMROOT\" --disable-sandboxing -y --compiler=\"${{OCAML_VERSION}}\"\n\
+eval \"$(opam env --root \"$OPAMROOT\" --switch=\"$OCAML_VERSION\")\"\n\
+opam repo add --root \"$OPAMROOT\" pplacer-deps http://matsen.github.io/pplacer-opam-repository\n\
+opam update --root \"$OPAMROOT\"\n\
+\n\
+eval \"$(opam env --root \"$OPAMROOT\" --switch=\"$OCAML_VERSION\")\"\n\
+opam install --root \"$OPAMROOT\" --switch=\"$OCAML_VERSION\" --assume-depexts -y \\\n\
   dune.3.19.1 \\\n\
   csv.2.4 \\\n\
   ounit2.2.2.7 \\\n\
@@ -7299,12 +7304,12 @@ perl -i -pe 's/\\bconst mclv\\* restrict\\b/const mclv* restrict_v/g; s/\\brestr
 perl -i -pe 's/^dim /extern dim /; s/^double /extern double /' ./mcl/src/impala/iface.h\n\
 \n\
 pushd ./mcl >/dev/null\n\
-eval \"$(opam env)\"\n\
+eval \"$(opam env --root \"$OPAMROOT\" --switch=\"$OCAML_VERSION\")\"\n\
 ./configure\n\
 make -j\"${{CPU_COUNT:-1}}\" CFLAGS=\"-fcommon ${{CFLAGS:-}}\" CXXFLAGS=\"-fcommon ${{CXXFLAGS:-}}\"\n\
 popd >/dev/null\n\
 \n\
-eval \"$(opam env)\"\n\
+eval \"$(opam env --root \"$OPAMROOT\" --switch=\"$OCAML_VERSION\")\"\n\
 dune build\n\
 \n\
 cd _build/default\n\
@@ -14924,7 +14929,10 @@ requirements:
         assert!(spec.contains("https://github.com/ocaml/opam/releases/download/${opam_ver}/opam-${opam_ver}-${opam_arch}-linux"));
         assert!(spec.contains("curl -L --fail -o /usr/local/bin/opam \"$opam_url\" || true"));
         assert!(spec.contains("cat > ./build.sh <<'PPLACER_BIOC2RPM_SH'"));
-        assert!(spec.contains("opam install --assume-depexts -y"));
+        assert!(spec.contains("OPAMROOT=/tmp/opam-pplacer-root"));
+        assert!(spec.contains(
+            "opam install --root \"$OPAMROOT\" --switch=\"$OCAML_VERSION\" --assume-depexts -y"
+        ));
         assert!(spec.contains("MCL_COMMIT=b1f7a969371d434eaa6848bdbb79a851de617c1f"));
         assert!(
             spec.contains("mcl_url=\"https://github.com/fhcrc/mcl/archive/${MCL_COMMIT}.tar.gz\"")
