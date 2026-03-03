@@ -6963,6 +6963,18 @@ EOF\n\
     sed -i 's|GSL_LIBS=-lgsl|GSL_LIBS=\"-lgsl -lopenblas\"|g' ./build.sh || true\n\
     fi\n\
     \n\
+    # Mash's Bioconda script pins --with-capnp to $PREFIX. In EL9 builds,\n\
+    # capnp may be available only from system packages under /usr. Retarget\n\
+    # capnp prefix to /usr when $PREFIX/bin/capnp is absent.\n\
+    if [[ \"%{{tool}}\" == \"mash\" ]]; then\n\
+    if [[ ! -x \"$PREFIX/bin/capnp\" ]] && command -v capnp >/dev/null 2>&1; then\n\
+      sed -i 's|--with-capnp=\"${{PREFIX}}\"|--with-capnp=\"/usr\"|g' ./build.sh || true\n\
+      sed -i 's|--with-capnp=\"\\$PREFIX\"|--with-capnp=\"/usr\"|g' ./build.sh || true\n\
+      sed -i 's|--with-capnp=${{PREFIX}}|--with-capnp=/usr|g' ./build.sh || true\n\
+      sed -i 's|--with-capnp=\\$PREFIX|--with-capnp=/usr|g' ./build.sh || true\n\
+    fi\n\
+    fi\n\
+    \n\
     # hifiasm can trip Linux scheduler header type resolution in constrained\n\
     # buildroots (missing __u32/__u64 through include-order interaction).\n\
     # Force linux/types.h into preprocessing for deterministic compilation.\n\
