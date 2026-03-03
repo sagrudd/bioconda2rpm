@@ -6944,7 +6944,7 @@ EOF\n\
     # include the unpacked source directory (`bwa-mem2-<version>`) and fail.\n\
     # Remove wildcard install lines and re-install only executable regular files.\n\
     if [[ \"%{{tool}}\" == \"bwa-mem2\" ]]; then\n\
-    perl -i -pe 's/^\\s*install\\s+-v\\s+-m\\s+0755\\s+bwa-mem2(?:\\*|\\s.*)\\n//mg' ./build.sh || true\n\
+    sed -E -i 's|^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+bwa-mem2([[:space:]].*)?$|: # bioconda2rpm replaced bwa-mem2 install line|g' ./build.sh || true\n\
     cat >> ./build.sh <<'BWA2RPMEOF'\n\
 mkdir -p \"$PREFIX/bin\"\n\
 for f in ./bwa-mem2*; do\n\
@@ -6959,7 +6959,7 @@ BWA2RPMEOF\n\
     # `bin/edirect`), and GNU install exits non-zero when a directory is passed.\n\
     # Remove broad install lines and install only executable regular files.\n\
     if [[ \"%{{tool}}\" == \"entrez-direct\" ]]; then\n\
-    perl -i -pe 's@^\\s*install\\s+-m\\s+755\\s+bin/.*$@: # bioconda2rpm replaced unsafe entrez-direct bin install@mg' ./build.sh || true\n\
+    sed -E -i 's|^[[:space:]]*install[[:space:]]+-m[[:space:]]+755[[:space:]]+bin/.*$|: # bioconda2rpm replaced unsafe entrez-direct bin install|g' ./build.sh || true\n\
     cat >> ./build.sh <<'ENTREZRPMMAINEOF'\n\
 mkdir -p \"$PREFIX/bin\"\n\
 for f in bin/*; do\n\
@@ -6970,7 +6970,7 @@ done\n\
 ENTREZRPMMAINEOF\n\
     for nested in cmd/build.sh extern/build.sh; do\n\
       [[ -f \"$nested\" ]] || continue\n\
-      perl -i -pe 's@^\\s*install\\s+-m\\s+755\\s+bin/.*$@: # bioconda2rpm replaced unsafe entrez-direct bin install@mg' \"$nested\" || true\n\
+      sed -E -i 's|^[[:space:]]*install[[:space:]]+-m[[:space:]]+755[[:space:]]+bin/.*$|: # bioconda2rpm replaced unsafe entrez-direct bin install|g' \"$nested\" || true\n\
       cat >> \"$nested\" <<'ENTREZRPMEOF'\n\
 dest=\"${{target:-${{PREFIX}}/bin}}\"\n\
 mkdir -p \"$dest\"\n\
@@ -6987,34 +6987,74 @@ ENTREZRPMEOF\n\
     # and source files (for example vcfanno-<version>, vcfanno.go). Restrict to\n\
     # executable regular files only.\n\
     if [[ \"%{{tool}}\" == \"vcfanno\" ]]; then\n\
-    perl -i -pe 's@^\\s*install\\s+-v\\s+-m\\s+0755\\s+vcfanno\\*.*$@for f in ./vcfanno*; do [ -f \"$f\" ] \\&\\& [ -x \"$f\" ] \\&\\& install -v -m 0755 \"$f\" \"$PREFIX/bin\"; done@mg' ./build.sh || true\n\
+    # Modern Go toolchains expect module mode; GOPATH mode can make go build\n\
+    # fail without actionable diagnostics for this recipe.\n\
+    sed -E -i 's|^[[:space:]]*export[[:space:]]+GOPATH=.*$|: # bioconda2rpm replaced unsafe vcfanno GOPATH export|g' ./build.sh || true\n\
+    sed -E -i 's|^[[:space:]]*go[[:space:]]+get[[:space:]]+\\.[[:space:]]*$|go mod download|g' ./build.sh || true\n\
+    sed -i '1a export GO111MODULE=on\nunset GOPATH' ./build.sh || true\n\
+    sed -E -i 's|^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+vcfanno\\*.*$|: # bioconda2rpm replaced unsafe vcfanno install line|g' ./build.sh || true\n\
+    cat >> ./build.sh <<'VCFANNORPMEOF'\n\
+mkdir -p \"$PREFIX/bin\"\n\
+for f in ./vcfanno*; do\n\
+  [ -f \"$f\" ] || continue\n\
+  [ -x \"$f\" ] || continue\n\
+  install -v -m 0755 \"$f\" \"$PREFIX/bin\"\n\
+done\n\
+VCFANNORPMEOF\n\
     fi\n\
     \n\
     # raven-assembler can fail with libstdc++ include_next resolution when\n\
-    # libc headers are not visible in constrained buildroots.\n\
+    # /usr/include is injected as system include and breaks include_next order.\n\
     if [[ \"%{{tool}}\" == \"raven-assembler\" ]]; then\n\
-    if command -v dnf >/dev/null 2>&1; then dnf -y install glibc-headers glibc-devel >/dev/null 2>&1 || true; fi\n\
-    if command -v microdnf >/dev/null 2>&1; then microdnf -y install glibc-headers glibc-devel >/dev/null 2>&1 || true; fi\n\
-    export C_INCLUDE_PATH=\"/usr/include:${{C_INCLUDE_PATH:-}}\"\n\
-    export CPATH=\"/usr/include:${{CPATH:-}}\"\n\
+    sed -E -i 's|^[[:space:]]*cmake[[:space:]]+--build[[:space:]]+build[[:space:]]+--target[[:space:]]+install.*$|: # bioconda2rpm replaced raven cmake build invocation|g' ./build.sh || true\n\
+    cat >> ./build.sh <<'RAVENRPMEOF'\n\
+if [[ -d build ]]; then\n\
+  find build -type f \\( -name flags.make -o -name build.make -o -name build.ninja \\) | while IFS= read -r fm; do\n\
+    sed -i 's# -isystem /usr/include##g; s#-isystem /usr/include ##g; s# -I/usr/include##g; s#-I/usr/include ##g' \"$fm\" || true\n\
+  done\n\
+fi\n\
+cmake --build build --target install -j \"${{CPU_COUNT}}\" -v\n\
+RAVENRPMEOF\n\
     fi\n\
     \n\
     # Racon can fail with /usr/include/c++/.../cstdlib:75 include_next stdlib.h\n\
-    # when libc headers are not visible in constrained buildroots.\n\
+    # when /usr/include is injected as system include and breaks include_next.\n\
     if [[ \"%{{tool}}\" == \"racon\" ]]; then\n\
-    if command -v dnf >/dev/null 2>&1; then dnf -y install glibc-headers glibc-devel >/dev/null 2>&1 || true; fi\n\
-    if command -v microdnf >/dev/null 2>&1; then microdnf -y install glibc-headers glibc-devel >/dev/null 2>&1 || true; fi\n\
-    export C_INCLUDE_PATH=\"/usr/include:${{C_INCLUDE_PATH:-}}\"\n\
-    export CPATH=\"/usr/include:${{CPATH:-}}\"\n\
+    sed -E -i 's|^[[:space:]]*ninja[[:space:]]+-C[[:space:]]+build[[:space:]]+.*$|: # bioconda2rpm replaced racon ninja build invocation|g' ./build.sh || true\n\
+    cat >> ./build.sh <<'RACONRPMEOF'\n\
+if [[ -d build ]]; then\n\
+  find build -type f \\( -name flags.make -o -name build.ninja \\) | while IFS= read -r fm; do\n\
+    sed -i 's# -isystem /usr/include##g; s#-isystem /usr/include ##g; s# -I/usr/include##g; s#-I/usr/include ##g' \"$fm\" || true\n\
+  done\n\
+fi\n\
+ninja -C build -j \"${{CPU_COUNT}}\" install\n\
+RACONRPMEOF\n\
     fi\n\
     \n\
     # probcons install steps can collide with a top-level source directory named\n\
     # `probcons`, causing `cp probcons $PREFIX/bin` to fail. Install only regular\n\
     # executable files for both expected binaries.\n\
     if [[ \"%{{tool}}\" == \"probcons\" ]]; then\n\
-    perl -i -pe 's@^\\s*cp\\s+probcons\\s+(?:\\$PREFIX/bin|\\$\\{{PREFIX\\}}/bin)\\s*$@[ -f probcons ] \\&\\& [ -x probcons ] \\&\\& install -m 0755 probcons \"$PREFIX/bin\"@mg' ./build.sh || true\n\
-    perl -i -pe 's@^\\s*cp\\s+compare\\s+(?:\\$PREFIX/bin|\\$\\{{PREFIX\\}}/bin)\\s*$@[ -f compare ] \\&\\& [ -x compare ] \\&\\& install -m 0755 compare \"$PREFIX/bin\"@mg' ./build.sh || true\n\
-    perl -i -pe 's@^\\s*cp\\s+probcons\\*\\s+(?:\\$PREFIX/bin|\\$\\{{PREFIX\\}}/bin)\\s*$@for f in ./probcons*; do [ -f \"$f\" ] \\&\\& [ -x \"$f\" ] \\&\\& install -m 0755 \"$f\" \"$PREFIX/bin\"; done@mg' ./build.sh || true\n\
+    sed -E -i 's|^[[:space:]]*cp[[:space:]]+probcons[[:space:]]+\\$PREFIX/bin[[:space:]]*$|: # bioconda2rpm replaced unsafe probcons copy|g' ./build.sh || true\n\
+    sed -E -i 's|^[[:space:]]*cp[[:space:]]+probcons[[:space:]]+\\${{PREFIX}}/bin[[:space:]]*$|: # bioconda2rpm replaced unsafe probcons copy|g' ./build.sh || true\n\
+    sed -E -i 's|^[[:space:]]*cp[[:space:]]+compare[[:space:]]+\\$PREFIX/bin[[:space:]]*$|: # bioconda2rpm replaced unsafe compare copy|g' ./build.sh || true\n\
+    sed -E -i 's|^[[:space:]]*cp[[:space:]]+compare[[:space:]]+\\${{PREFIX}}/bin[[:space:]]*$|: # bioconda2rpm replaced unsafe compare copy|g' ./build.sh || true\n\
+    sed -E -i 's|^[[:space:]]*cp[[:space:]]+probcons\\*[[:space:]]+\\$PREFIX/bin[[:space:]]*$|: # bioconda2rpm replaced unsafe probcons wildcard copy|g' ./build.sh || true\n\
+    sed -E -i 's|^[[:space:]]*cp[[:space:]]+probcons\\*[[:space:]]+\\${{PREFIX}}/bin[[:space:]]*$|: # bioconda2rpm replaced unsafe probcons wildcard copy|g' ./build.sh || true\n\
+    cat >> ./build.sh <<'PROBCONSRPMEOF'\n\
+mkdir -p \"$PREFIX/bin\"\n\
+if [[ -f probcons && -x probcons ]]; then\n\
+  install -m 0755 probcons \"$PREFIX/bin\"\n\
+fi\n\
+if [[ -f compare && -x compare ]]; then\n\
+  install -m 0755 compare \"$PREFIX/bin\"\n\
+fi\n\
+for f in ./probcons*; do\n\
+  [ -f \"$f\" ] || continue\n\
+  [ -x \"$f\" ] || continue\n\
+  install -m 0755 \"$f\" \"$PREFIX/bin\"\n\
+done\n\
+PROBCONSRPMEOF\n\
     fi\n\
     \n\
     # RNA-SeQC v2.4.2 bundles a BWA fork that hard-requires x86 SSE headers\n\
@@ -7048,12 +7088,22 @@ ENTREZRPMEOF\n\
       sed -i 's|--with-capnp=${{PREFIX}}|--with-capnp=/usr|g' ./build.sh || true\n\
       sed -i 's|--with-capnp=\\$PREFIX|--with-capnp=/usr|g' ./build.sh || true\n\
     fi\n\
+    # Some mash build scripts still emit hard-coded static capnproto archives\n\
+    # in /usr/lib; use linker names so EL9 libdir resolution can pick lib64.\n\
+    sed -E -i 's|/usr/lib(64)?/libcapnp\\.a|-lcapnp|g; s|/usr/lib(64)?/libkj\\.a|-lkj|g' ./build.sh || true\n\
     fi\n\
     \n\
     # ntLink install copies `ntLink*` directly, which includes extracted source\n\
     # directory names (e.g. ntLink-<version>) and fails without -r.\n\
     if [[ \"%{{tool}}\" == \"ntlink\" ]]; then\n\
-    perl -i -pe 's@^\\s*cp\\s+ntLink\\*\\s+(?:\\$PREFIX/bin/share/\\$PKG_NAME-\\$PKG_VERSION-\\$PKG_BUILDNUM|\\$\\{{PREFIX\\}}/bin/share/\\$PKG_NAME-\\$PKG_VERSION-\\$PKG_BUILDNUM)\\s*$@for f in ./ntLink*; do [ -f \"$f\" ] \\&\\& cp -f \"$f\" \"$PREFIX/bin/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM\"; done@mg' ./build.sh || true\n\
+    sed -E -i 's|^[[:space:]]*cp[[:space:]]+ntLink\\*[[:space:]]+.*$|: # bioconda2rpm replaced unsafe ntLink copy|g' ./build.sh || true\n\
+    cat >> ./build.sh <<'NTLINKRPMEOF'\n\
+mkdir -p \"$PREFIX/bin/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM\"\n\
+for f in ./ntLink*; do\n\
+  [ -f \"$f\" ] || continue\n\
+  cp -f \"$f\" \"$PREFIX/bin/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM\"\n\
+done\n\
+NTLINKRPMEOF\n\
     fi\n\
     \n\
     # hifiasm can trip Linux scheduler header type resolution in constrained\n\
@@ -15083,12 +15133,12 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"probcons\" ]]; then"));
-        assert!(spec.contains(
-            "perl -i -pe 's@^\\s*cp\\s+probcons\\s+(?:\\$PREFIX/bin|\\$\\{PREFIX\\}/bin)\\s*$@[ -f probcons ] \\&\\& [ -x probcons ] \\&\\& install -m 0755 probcons \"$PREFIX/bin\"@mg' ./build.sh || true"
-        ));
-        assert!(spec.contains(
-            "perl -i -pe 's@^\\s*cp\\s+compare\\s+(?:\\$PREFIX/bin|\\$\\{PREFIX\\}/bin)\\s*$@[ -f compare ] \\&\\& [ -x compare ] \\&\\& install -m 0755 compare \"$PREFIX/bin\"@mg' ./build.sh || true"
-        ));
+        assert!(spec.contains("bioconda2rpm replaced unsafe probcons copy"));
+        assert!(spec.contains("bioconda2rpm replaced unsafe compare copy"));
+        assert!(spec.contains("cat >> ./build.sh <<'PROBCONSRPMEOF'"));
+        assert!(spec.contains("if [[ -f probcons && -x probcons ]]; then"));
+        assert!(spec.contains("if [[ -f compare && -x compare ]]; then"));
+        assert!(spec.contains("for f in ./probcons*; do"));
     }
 
     #[test]
@@ -15156,10 +15206,11 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"racon\" ]]; then"));
-        assert!(spec.contains("dnf -y install glibc-headers glibc-devel"));
-        assert!(spec.contains("microdnf -y install glibc-headers glibc-devel"));
-        assert!(spec.contains("export C_INCLUDE_PATH=\"/usr/include:${C_INCLUDE_PATH:-}\""));
-        assert!(spec.contains("export CPATH=\"/usr/include:${CPATH:-}\""));
+        assert!(spec.contains("bioconda2rpm replaced racon ninja build invocation"));
+        assert!(spec.contains("cat >> ./build.sh <<'RACONRPMEOF'"));
+        assert!(spec.contains("find build -type f \\( -name flags.make -o -name build.ninja \\) | while IFS= read -r fm; do"));
+        assert!(spec.contains("sed -i 's# -isystem /usr/include##g; s#-isystem /usr/include ##g; s# -I/usr/include##g; s#-I/usr/include ##g' \"$fm\" || true"));
+        assert!(spec.contains("ninja -C build -j \"${CPU_COUNT}\" install"));
     }
 
     #[test]
@@ -15201,10 +15252,10 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"raven-assembler\" ]]; then"));
-        assert!(spec.contains("dnf -y install glibc-headers glibc-devel"));
-        assert!(spec.contains("microdnf -y install glibc-headers glibc-devel"));
-        assert!(spec.contains("export C_INCLUDE_PATH=\"/usr/include:${C_INCLUDE_PATH:-}\""));
-        assert!(spec.contains("export CPATH=\"/usr/include:${CPATH:-}\""));
+        assert!(spec.contains("bioconda2rpm replaced raven cmake build invocation"));
+        assert!(spec.contains("cat >> ./build.sh <<'RAVENRPMEOF'"));
+        assert!(spec.contains("find build -type f \\( -name flags.make -o -name build.make -o -name build.ninja \\) | while IFS= read -r fm; do"));
+        assert!(spec.contains("cmake --build build --target install -j \"${CPU_COUNT}\" -v"));
     }
 
     #[test]
@@ -15245,8 +15296,10 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"vcfanno\" ]]; then"));
+        assert!(spec.contains("bioconda2rpm replaced unsafe vcfanno install line"));
+        assert!(spec.contains("cat >> ./build.sh <<'VCFANNORPMEOF'"));
         assert!(spec.contains(
-            "for f in ./vcfanno*; do [ -f \"$f\" ] \\&\\& [ -x \"$f\" ] \\&\\& install -v -m 0755 \"$f\" \"$PREFIX/bin\"; done"
+            "for f in ./vcfanno*; do"
         ));
     }
 
@@ -15290,7 +15343,7 @@ requirements:
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"bwa-mem2\" ]]; then"));
         assert!(spec.contains(
-            "perl -i -pe 's/^\\s*install\\s+-v\\s+-m\\s+0755\\s+bwa-mem2(?:\\*|\\s.*)\\n//mg' ./build.sh || true"
+            "sed -E -i 's|^[[:space:]]*install[[:space:]]+-v[[:space:]]+-m[[:space:]]+0755[[:space:]]+bwa-mem2([[:space:]].*)?$|: # bioconda2rpm replaced bwa-mem2 install line|g' ./build.sh || true"
         ));
         assert!(spec.contains("cat >> ./build.sh <<'BWA2RPMEOF'"));
         assert!(spec.contains("for f in ./bwa-mem2*; do"));
@@ -15338,13 +15391,13 @@ requirements:
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"entrez-direct\" ]]; then"));
         assert!(spec.contains(
-            "perl -i -pe 's@^\\s*install\\s+-m\\s+755\\s+bin/.*$@: # bioconda2rpm replaced unsafe entrez-direct bin install@mg' ./build.sh || true"
+            "sed -E -i 's|^[[:space:]]*install[[:space:]]+-m[[:space:]]+755[[:space:]]+bin/.*$|: # bioconda2rpm replaced unsafe entrez-direct bin install|g' ./build.sh || true"
         ));
         assert!(spec.contains("cat >> ./build.sh <<'ENTREZRPMMAINEOF'"));
         assert!(spec.contains("mkdir -p \"$PREFIX/bin\""));
         assert!(spec.contains("for nested in cmd/build.sh extern/build.sh; do"));
         assert!(spec.contains(
-            "perl -i -pe 's@^\\s*install\\s+-m\\s+755\\s+bin/.*$@: # bioconda2rpm replaced unsafe entrez-direct bin install@mg' \"$nested\" || true"
+            "sed -E -i 's|^[[:space:]]*install[[:space:]]+-m[[:space:]]+755[[:space:]]+bin/.*$|: # bioconda2rpm replaced unsafe entrez-direct bin install|g' \"$nested\" || true"
         ));
         assert!(spec.contains("cat >> \"$nested\" <<'ENTREZRPMEOF'"));
         assert!(spec.contains("dest=\"${target:-${PREFIX}/bin}\""));
@@ -15390,8 +15443,10 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"ntlink\" ]]; then"));
+        assert!(spec.contains("bioconda2rpm replaced unsafe ntLink copy"));
+        assert!(spec.contains("cat >> ./build.sh <<'NTLINKRPMEOF'"));
         assert!(spec.contains(
-            "for f in ./ntLink*; do [ -f \"$f\" ] \\&\\& cp -f \"$f\" \"$PREFIX/bin/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM\"; done"
+            "for f in ./ntLink*; do"
         ));
     }
 
