@@ -6750,6 +6750,11 @@ EOF\n\
     if [[ -f ./bin/prokka ]]; then\n\
       perl -0pi -e 's@^\\s*use\\s+Bio::Root::Version\\s*;\\s*$@BEGIN {{ eval {{ require Bio::Root::Version; Bio::Root::Version->import(); 1 }} or do {{ package Bio::Root::Version; our \\$VERSION = \"0\"; sub import {{ return 1; }} 1; }}; }}@m' ./bin/prokka || true\n\
     fi\n\
+    if [[ -f ./build.sh ]]; then\n\
+      sed -i 's|mv bin/\\* \"${PREFIX}/bin/\"|cp -a bin/. \"${PREFIX}/bin/\"|g' ./build.sh || true\n\
+      sed -i 's|mv db/\\* \"${PREFIX}/db/\"|cp -a db/. \"${PREFIX}/db/\"|g' ./build.sh || true\n\
+      sed -i '/mkdir -p \"${PREFIX}\\/bin\" \"${PREFIX}\\/db\" \"${PREFIX}\\/share\\/doc\\/prokka\"/a export PATH=\"${PREFIX}/bin:$PATH\"' ./build.sh || true\n\
+    fi\n\
     fi\n\
     \n\
     # pychopper imports pkg_resources during metadata build; setuptools>=81 can\n\
@@ -12144,6 +12149,8 @@ requirements:
         assert!(spec.contains("export LD_LIBRARY_PATH=\"$blast_ncbi_lib:$blast_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\""));
         assert!(spec.contains("for dep_lib in /usr/local/phoreus/hmmer/*/lib /usr/local/phoreus/gsl/*/lib /usr/local/phoreus/gsl/*/lib64; do"));
         assert!(spec.contains("dnf -y install gsl >/dev/null 2>&1 || true"));
+        assert!(spec.contains("cp -a db/. \"${PREFIX}/db/\""));
+        assert!(spec.contains("export PATH=\"${PREFIX}/bin:$PATH\""));
         assert!(spec.contains("if ! perl -MBio::SeqIO -e1 >/dev/null 2>&1; then"));
         assert!(spec.contains("cpanm -n --local-lib-contained \"$PREFIX\" Bio::Perl"));
         assert!(spec.contains("use\\s+Bio::Root::Version"));
