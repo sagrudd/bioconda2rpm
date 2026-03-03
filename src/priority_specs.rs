@@ -6694,7 +6694,7 @@ EOF\n\
     # compatibility. Provide a guarded fallback stub so prokka can launch.\n\
     if [[ \"%{{tool}}\" == \"prokka\" ]]; then\n\
     if [[ -f ./bin/prokka ]]; then\n\
-      perl -0pi -e 's@^\\s*use\\s+Bio::Root::Version\\s*;\\s*$@BEGIN {{ eval {{ require Bio::Root::Version; Bio::Root::Version->import(); 1 }} or do {{ package Bio::Root::Version; our $VERSION = \"0\"; sub import {{ return 1; }} 1; }}; }}@m' ./bin/prokka || true\n\
+      perl -0pi -e 's@^\\s*use\\s+Bio::Root::Version\\s*;\\s*$@BEGIN {{ eval {{ require Bio::Root::Version; Bio::Root::Version->import(); 1 }} or do {{ package Bio::Root::Version; our \\$VERSION = \"0\"; sub import {{ return 1; }} 1; }}; }}@m' ./bin/prokka || true\n\
     fi\n\
     fi\n\
     \n\
