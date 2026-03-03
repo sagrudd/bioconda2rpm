@@ -6427,7 +6427,7 @@ EOF\n\
     export LDFLAGS=\"-L/usr/lib64 -L/usr/lib ${{LDFLAGS:-}}\"\n\
     fi\n\
     if [[ \"%{{tool}}\" == \"perl-bio-tools-run-alignment-tcoffee\" ]]; then\n\
-    tcoffee_bin=$(find /usr/local/phoreus/t-coffee -mindepth 3 -maxdepth 3 -type f -name t_coffee 2>/dev/null | sort | tail -n 1 || true)\n\
+    tcoffee_bin=$(find /usr/local/phoreus/t-coffee -mindepth 4 -maxdepth 4 -type f -name t_coffee 2>/dev/null | sort | tail -n 1 || true)\n\
     if [[ -n \"$tcoffee_bin\" ]]; then\n\
       export PATH=\"$(dirname \"$tcoffee_bin\"):$PATH\"\n\
       ln -snf \"$tcoffee_bin\" /usr/local/bin/t_coffee || true\n\
@@ -11993,7 +11993,7 @@ requirements:
             "if [[ \"%{tool}\" == \"perl-bio-tools-run-alignment-tcoffee\" ]]; then"
         ));
         assert!(spec.contains(
-            "find /usr/local/phoreus/t-coffee -mindepth 3 -maxdepth 3 -type f -name t_coffee"
+            "find /usr/local/phoreus/t-coffee -mindepth 4 -maxdepth 4 -type f -name t_coffee"
         ));
         assert!(spec.contains("ln -snf \"$tcoffee_bin\" /usr/local/bin/t_coffee || true"));
     }
