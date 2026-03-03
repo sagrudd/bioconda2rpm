@@ -5388,8 +5388,12 @@ fn render_payload_spec(
             || recipe_dep_mentions(parsed, "igraph")
             || recipe_dep_mentions(parsed, "python-igraph"));
     let python_venv_setup = render_python_venv_setup_block(python_recipe, &python_requirements);
-    let r_runtime_setup =
-        render_r_runtime_setup_block(r_runtime_required, r_project_recipe, &r_cran_requirements);
+    let r_runtime_setup = render_r_runtime_setup_block(
+        &parsed.package_name,
+        r_runtime_required,
+        r_project_recipe,
+        &r_cran_requirements,
+    );
     let rust_runtime_setup = render_rust_runtime_setup_block(rust_runtime_required);
     let nim_runtime_setup = render_nim_runtime_setup_block(nim_runtime_required);
     let core_c_dep_bootstrap = render_core_c_dep_bootstrap_block(
@@ -8076,6 +8080,7 @@ export PIP_DISABLE_PIP_VERSION_CHECK=1\n\
 }
 
 fn render_r_runtime_setup_block(
+    package_name: &str,
     r_runtime_required: bool,
     r_project_recipe: bool,
     cran_requirements: &[String],
@@ -8094,6 +8099,21 @@ fn render_r_runtime_setup_block(
             .join(", ");
         format!("c({pkgs})")
     };
+    let mut optional_unavailable = vec!["cghflasso".to_string()];
+    if normalize_name(package_name) == "seurat-scripts" {
+        optional_unavailable.extend([
+            "loom".to_string(),
+            "seuratdisk".to_string(),
+            "workflowscriptscommon".to_string(),
+            "metap".to_string(),
+            "qqconf".to_string(),
+        ]);
+    }
+    let optional_unavailable = optional_unavailable
+        .into_iter()
+        .map(|pkg| format!("\"{pkg}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
     let cran_restore = format!(
         "cat > ./.bioconda2rpm-r-deps.R <<'REOF'\n\
 base_pkgs <- c(\"R\", \"base\", \"stats\", \"utils\", \"methods\", \"graphics\", \"grDevices\", \"datasets\", \"tools\", \"grid\", \"compiler\", \"parallel\", \"splines\", \"tcltk\")\n\
@@ -8127,7 +8147,7 @@ avail <- tryCatch(rownames(available.packages(repos = repos)), error = function(
 normalize_pkg_key <- function(pkg) {{\n\
   tolower(gsub(\"[-_]\", \".\", pkg))\n\
 }}\n\
-optional_unavailable_keys <- normalize_pkg_key(c(\"cghflasso\"))\n\
+optional_unavailable_keys <- normalize_pkg_key(c({optional_unavailable}))\n\
 if (length(req)) {{\n\
   req <- req[!(normalize_pkg_key(req) %in% optional_unavailable_keys)]\n\
 }}\n\
@@ -8238,7 +8258,8 @@ if (length(still_missing)) {{\n\
 REOF\n\
 \"$RSCRIPT\" ./.bioconda2rpm-r-deps.R\n\
 rm -f ./.bioconda2rpm-r-deps.R\n",
-        requested_pkgs = requested_pkgs
+        requested_pkgs = requested_pkgs,
+        optional_unavailable = optional_unavailable
     );
 
     let renv_restore = if r_project_recipe {
@@ -12563,11 +12584,22 @@ requirements:
 
     #[test]
     fn r_runtime_setup_skips_known_unavailable_optional_cran_packages() {
-        let block = render_r_runtime_setup_block(true, false, &["cghflasso".to_string()]);
+        let block = render_r_runtime_setup_block("cnvkit", true, false, &["cghflasso".to_string()]);
         assert!(block.contains("optional_unavailable_keys <- normalize_pkg_key(c(\"cghflasso\"))"));
         assert!(
             block.contains("req <- req[!(normalize_pkg_key(req) %in% optional_unavailable_keys)]")
         );
+    }
+
+    #[test]
+    fn r_runtime_setup_treats_seurat_scripts_missing_r_pkgs_as_optional() {
+        let block = render_r_runtime_setup_block("seurat-scripts", true, false, &[]);
+        assert!(block.contains("optional_unavailable_keys <- normalize_pkg_key(c("));
+        assert!(block.contains("\"seuratdisk\""));
+        assert!(block.contains("\"workflowscriptscommon\""));
+        assert!(block.contains("\"loom\""));
+        assert!(block.contains("\"metap\""));
+        assert!(block.contains("\"qqconf\""));
     }
 
     #[test]
