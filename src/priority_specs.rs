@@ -6722,6 +6722,10 @@ EOF\n\
         esac\n\
       fi\n\
     done < <(find /work/.build-work /usr/local/phoreus -type f -path '*/Bio/SeqIO.pm' 2>/dev/null | sort -u)\n\
+    blast_lib=$(find /usr/local/phoreus/blast -mindepth 2 -maxdepth 3 -type d -name lib 2>/dev/null | sort | tail -n 1 || true)\n\
+    if [[ -n \"$blast_lib\" ]]; then\n\
+      export LD_LIBRARY_PATH=\"$blast_lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n\
+    fi\n\
     if ! perl -MBio::SeqIO -e1 >/dev/null 2>&1; then\n\
       export PERL5LIB=\"$PREFIX/lib/perl5:$PREFIX/lib64/perl5${{PERL5LIB:+:$PERL5LIB}}\"\n\
       if command -v dnf >/dev/null 2>&1; then dnf -y install perl-App-cpanminus >/dev/null 2>&1 || true; fi\n\
@@ -12122,6 +12126,8 @@ requirements:
         assert!(spec.contains("export PERL5LIB=\"$bioperl_lib${PERL5LIB:+:$PERL5LIB}\""));
         assert!(spec.contains("/usr/local/phoreus/perl/5.32/lib/perl5"));
         assert!(spec.contains("find /work/.build-work /usr/local/phoreus -type f -path '*/Bio/SeqIO.pm'"));
+        assert!(spec.contains("find /usr/local/phoreus/blast -mindepth 2 -maxdepth 3 -type d -name lib"));
+        assert!(spec.contains("export LD_LIBRARY_PATH=\"$blast_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\""));
         assert!(spec.contains("if ! perl -MBio::SeqIO -e1 >/dev/null 2>&1; then"));
         assert!(spec.contains("cpanm -n --local-lib-contained \"$PREFIX\" Bio::Perl"));
         assert!(spec.contains("use\\s+Bio::Root::Version"));
