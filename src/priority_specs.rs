@@ -6950,6 +6950,14 @@ EOF\n\
     sed -i 's|install -m 755 bin/\\* \\$PREFIX/bin|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] && install -m 755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
     fi\n\
     \n\
+    # probcons install steps can collide with a top-level source directory named\n\
+    # `probcons`, causing `cp probcons $PREFIX/bin` to fail. Install only regular\n\
+    # executable files for both expected binaries.\n\
+    if [[ \"%{{tool}}\" == \"probcons\" ]]; then\n\
+    sed -i 's|^cp probcons \\$PREFIX/bin$|[[ -f probcons && -x probcons ]] \\&\\& install -m 0755 probcons \"$PREFIX/bin\"|g' ./build.sh || true\n\
+    sed -i 's|^cp compare \\$PREFIX/bin$|[[ -f compare && -x compare ]] \\&\\& install -m 0755 compare \"$PREFIX/bin\"|g' ./build.sh || true\n\
+    fi\n\
+    \n\
     # RNA-SeQC v2.4.2 bundles a BWA fork that hard-requires x86 SSE headers\n\
     # (emmintrin.h) and is not portable to Linux/aarch64 in this release.\n\
     if [[ \"%{{tool}}\" == \"rna-seqc\" && \"${{BIOCONDA_TARGET_ARCH:-}}\" == \"aarch64\" ]]; then\n\
@@ -14791,6 +14799,50 @@ requirements:
         assert!(spec.contains("if [[ \"%{tool}\" == \"probconsrna\" && -f SafeVector.h ]]; then"));
         assert!(spec.contains("sed -i '/#include <vector>/a #include <cstddef>' SafeVector.h"));
         assert!(spec.contains("sed -i 's/SafeVector (size_t size)/SafeVector (std::size_t size)/g' SafeVector.h"));
+    }
+
+    #[test]
+    fn probcons_spec_installs_only_regular_executable_binaries() {
+        let parsed = ParsedMeta {
+            package_name: "probcons".to_string(),
+            version: "1.12".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/probcons.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/probcons".to_string(),
+            license: "GPL-2.0-or-later".to_string(),
+            summary: "probcons".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("mkdir -p $PREFIX/bin\ncp probcons $PREFIX/bin\ncp compare $PREFIX/bin\n".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["make".to_string()],
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::from(["make".to_string()]),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "probcons",
+            &parsed,
+            "bioconda-probcons-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"probcons\" ]]; then"));
+        assert!(spec.contains(
+            "sed -i 's|^cp probcons \\$PREFIX/bin$|[[ -f probcons && -x probcons ]] \\&\\& install -m 0755 probcons \"$PREFIX/bin\"|g' ./build.sh || true"
+        ));
+        assert!(spec.contains(
+            "sed -i 's|^cp compare \\$PREFIX/bin$|[[ -f compare && -x compare ]] \\&\\& install -m 0755 compare \"$PREFIX/bin\"|g' ./build.sh || true"
+        ));
     }
 
     #[test]
