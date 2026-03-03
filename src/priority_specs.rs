@@ -6950,6 +6950,15 @@ EOF\n\
     sed -i 's|install -m 755 bin/\\* \\$PREFIX/bin|for f in bin/*; do [[ -f \"$f\" && -x \"$f\" ]] && install -m 755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
     fi\n\
     \n\
+    # vcfanno installs with wildcard `vcfanno*`, which can include directories\n\
+    # and source files (for example vcfanno-<version>, vcfanno.go). Restrict to\n\
+    # executable regular files only.\n\
+    if [[ \"%{{tool}}\" == \"vcfanno\" ]]; then\n\
+    sed -i 's|install -v -m 0755 vcfanno\\* \"\\${{PREFIX}}/bin\"|for f in ./vcfanno*; do [[ -f \"$f\" && -x \"$f\" ]] && install -v -m 0755 \"$f\" \"${{PREFIX}}/bin\"; done|g' ./build.sh || true\n\
+    sed -i 's|install -v -m 0755 vcfanno\\* \\\"\\$PREFIX/bin\\\"|for f in ./vcfanno*; do [[ -f \"$f\" && -x \"$f\" ]] && install -v -m 0755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
+    sed -i 's|install -v -m 0755 vcfanno\\* \\$PREFIX/bin|for f in ./vcfanno*; do [[ -f \"$f\" && -x \"$f\" ]] && install -v -m 0755 \"$f\" \"$PREFIX/bin\"; done|g' ./build.sh || true\n\
+    fi\n\
+    \n\
     # raven-assembler can fail with libstdc++ include_next resolution when\n\
     # /usr/include is injected as a system include by environment propagation.\n\
     # Remove /usr/include include injections from env and generated CMake files\n\
@@ -14990,6 +14999,49 @@ requirements:
         assert!(spec.contains("unset CPATH"));
         assert!(spec.contains("find build -type f \\( -name flags.make -o -name build.make -o -name build.ninja \\) | while IFS= read -r fm; do"));
         assert!(spec.contains("sed -i \"s# -isystem /usr/include##g; s# -I/usr/include##g\" \"\\$fm\" || true"));
+    }
+
+    #[test]
+    fn vcfanno_spec_installs_only_executable_wildcard_matches() {
+        let parsed = ParsedMeta {
+            package_name: "vcfanno".to_string(),
+            version: "0.3.7".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/vcfanno.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/vcfanno".to_string(),
+            license: "MIT".to_string(),
+            summary: "vcfanno".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "go get .\nmake build\ninstall -v -m 0755 vcfanno* \"${PREFIX}/bin\"\n".to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["go".to_string(), "make".to_string()],
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::from(["go".to_string(), "make".to_string()]),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "vcfanno",
+            &parsed,
+            "bioconda-vcfanno-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"%{tool}\" == \"vcfanno\" ]]; then"));
+        assert!(spec.contains(
+            "for f in ./vcfanno*; do [[ -f \"$f\" && -x \"$f\" ]] && install -v -m 0755 \"$f\" \"$PREFIX/bin\"; done"
+        ));
     }
 
     #[test]
