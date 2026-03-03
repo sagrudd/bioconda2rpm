@@ -6689,6 +6689,15 @@ EOF\n\
     sed -i 's|cp -fv $PREFIX/bin/raxmlHPC $PREFIX/bin/raxml && chmod 0755 $PREFIX/bin/raxml|if [[ -x $PREFIX/bin/raxmlHPC ]]; then cp -fv $PREFIX/bin/raxmlHPC $PREFIX/bin/raxml \\&\\& chmod 0755 $PREFIX/bin/raxml; fi|g' ./build.sh || true\n\
     fi\n\
     \n\
+    # prokka imports Bio::Root::Version unconditionally, but some packaged\n\
+    # Bioperl layouts in EL9 omit that legacy module while keeping runtime\n\
+    # compatibility. Provide a guarded fallback stub so prokka can launch.\n\
+    if [[ \"%{{tool}}\" == \"prokka\" ]]; then\n\
+    if [[ -f ./bin/prokka ]]; then\n\
+      perl -0pi -e 's@^\\s*use\\s+Bio::Root::Version\\s*;\\s*$@BEGIN {{ eval {{ require Bio::Root::Version; Bio::Root::Version->import(); 1 }} or do {{ package Bio::Root::Version; our $VERSION = \"0\"; sub import {{ return 1; }} 1; }}; }}@m' ./bin/prokka || true\n\
+    fi\n\
+    fi\n\
+    \n\
     # pychopper imports pkg_resources during metadata build; setuptools>=81 can\n\
     # omit legacy pkg_resources behavior expected by older setup.py flows.\n\
     if [[ \"%{{tool}}\" == \"pychopper\" ]]; then\n\
@@ -11998,6 +12007,44 @@ requirements:
         ));
         assert!(spec.contains("chmod +x \"$tcoffee_bin\" || true"));
         assert!(spec.contains("ln -snf \"$tcoffee_bin\" /usr/local/bin/t_coffee || true"));
+    }
+
+    #[test]
+    fn prokka_spec_relaxes_bio_root_version_requirement() {
+        let parsed = ParsedMeta {
+            package_name: "prokka".to_string(),
+            version: "1.14.6".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/prokka-1.14.6.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/prokka".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "prokka".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("perl ./bin/prokka --version\n".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let spec = render_payload_spec(
+            "prokka",
+            &parsed,
+            "bioconda-prokka-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains("if [[ \"%{tool}\" == \"prokka\" ]]; then"));
+        assert!(spec.contains("use\\s+Bio::Root::Version"));
+        assert!(spec.contains("package Bio::Root::Version"));
     }
 
     #[test]
