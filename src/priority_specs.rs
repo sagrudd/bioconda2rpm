@@ -115,6 +115,12 @@ struct BuildConfig {
 }
 
 #[derive(Debug, Clone)]
+struct InterpretedBuildPlan {
+    build_commands: Vec<String>,
+    install_commands: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 struct PrecompiledBinaryOverride {
     source_url: String,
     build_script: String,
@@ -216,6 +222,32 @@ fn log_progress(message: impl AsRef<str>) {
 
 pub fn log_external_progress(message: impl AsRef<str>) {
     log_progress(message);
+}
+
+fn touch_legacy_generation_symbols() {
+    let _legacy_payload_renderer: fn(
+        &str,
+        &ParsedMeta,
+        &str,
+        &[String],
+        &Path,
+        &Path,
+        bool,
+        bool,
+        bool,
+        bool,
+    ) -> String = render_payload_spec;
+    let _legacy_harden_script: fn(&Path) -> Result<()> = harden_staged_build_script;
+    let _legacy_python_hint: fn(&Path) -> Result<bool> = staged_build_script_indicates_python;
+    let _legacy_r_hint: fn(&Path) -> Result<bool> = staged_build_script_indicates_r;
+    let _legacy_rust_hint: fn(&Path) -> Result<bool> = staged_build_script_indicates_rust;
+    let _ = (
+        _legacy_payload_renderer,
+        _legacy_harden_script,
+        _legacy_python_hint,
+        _legacy_r_hint,
+        _legacy_rust_hint,
+    );
 }
 
 fn emit_progress_line(line: String) {
@@ -594,6 +626,7 @@ struct ToolsCsvRow {
 }
 
 pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<GenerationSummary> {
+    touch_legacy_generation_symbols();
     if cancellation_requested() {
         return Err(cancellation_error("generation cancelled before start"));
     }
@@ -738,6 +771,7 @@ pub(crate) fn collect_requested_build_packages(args: &BuildArgs) -> Result<Vec<S
 }
 
 pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
+    touch_legacy_generation_symbols();
     if cancellation_requested() {
         return Err(cancellation_error("build cancelled before start"));
     }
@@ -2819,104 +2853,45 @@ fn process_tool(
         ));
     }
 
-    let staged_build_sh_name = format!("bioconda-{}-build.sh", software_slug);
-    let staged_build_sh = sources_dir.join(&staged_build_sh_name);
+    let staged_build_sh = PathBuf::from("inline-interpreted-build");
     let precompiled_override = precompiled_binary_override(&software_slug, &parsed);
 
-    if let Some(override_cfg) = precompiled_override.as_ref() {
+    let raw_build_script = if let Some(override_cfg) = precompiled_override.as_ref() {
         log_progress(format!(
             "phase=precompiled-binary status=selected package={} source_url={}",
             software_slug, override_cfg.source_url
         ));
         parsed.source_url = override_cfg.source_url.clone();
-        if let Err(err) = fs::write(&staged_build_sh, &override_cfg.build_script) {
-            let reason = format!(
-                "failed to write precompiled build script {}: {err}",
-                staged_build_sh.display()
-            );
-            quarantine_note(bad_spec_dir, &software_slug, &reason);
-            return ReportEntry {
-                software: tool.software.clone(),
-                priority: tool.priority,
-                status: "quarantined".to_string(),
-                reason,
-                overlap_recipe: resolved.recipe_name,
-                overlap_reason: resolved.overlap_reason,
-                variant_dir: resolved.variant_dir.display().to_string(),
-                package_name: parsed.package_name,
-                version: parsed.version,
-                payload_spec_path: String::new(),
-                meta_spec_path: String::new(),
-                staged_build_sh: String::new(),
-            };
-        }
+        override_cfg.build_script.clone()
     } else if let Some(build_sh_path) = resolved.build_sh_path.as_ref() {
-        if let Err(err) = fs::copy(build_sh_path, &staged_build_sh) {
-            let reason = format!(
-                "failed to stage build.sh {}: {err}",
-                build_sh_path.display()
-            );
-            quarantine_note(bad_spec_dir, &software_slug, &reason);
-            return ReportEntry {
-                software: tool.software.clone(),
-                priority: tool.priority,
-                status: "quarantined".to_string(),
-                reason,
-                overlap_recipe: resolved.recipe_name,
-                overlap_reason: resolved.overlap_reason,
-                variant_dir: resolved.variant_dir.display().to_string(),
-                package_name: parsed.package_name,
-                version: parsed.version,
-                payload_spec_path: String::new(),
-                meta_spec_path: String::new(),
-                staged_build_sh: String::new(),
-            };
+        match fs::read_to_string(build_sh_path) {
+            Ok(v) => v,
+            Err(err) => {
+                let reason = format!(
+                    "failed to read recipe build.sh {}: {err}",
+                    build_sh_path.display()
+                );
+                quarantine_note(bad_spec_dir, &software_slug, &reason);
+                return ReportEntry {
+                    software: tool.software.clone(),
+                    priority: tool.priority,
+                    status: "quarantined".to_string(),
+                    reason,
+                    overlap_recipe: resolved.recipe_name,
+                    overlap_reason: resolved.overlap_reason,
+                    variant_dir: resolved.variant_dir.display().to_string(),
+                    package_name: parsed.package_name,
+                    version: parsed.version,
+                    payload_spec_path: String::new(),
+                    meta_spec_path: String::new(),
+                    staged_build_sh: String::new(),
+                };
+            }
         }
     } else if let Some(script) = parsed.build_script.as_deref() {
-        let generated = synthesize_build_sh_from_meta_script(script);
-        if let Err(err) = fs::write(&staged_build_sh, generated) {
-            let reason = format!(
-                "failed to synthesize build.sh from meta.yaml build.script for {}: {err}",
-                resolved.meta_path.display()
-            );
-            quarantine_note(bad_spec_dir, &software_slug, &reason);
-            return ReportEntry {
-                software: tool.software.clone(),
-                priority: tool.priority,
-                status: "quarantined".to_string(),
-                reason,
-                overlap_recipe: resolved.recipe_name,
-                overlap_reason: resolved.overlap_reason,
-                variant_dir: resolved.variant_dir.display().to_string(),
-                package_name: parsed.package_name,
-                version: parsed.version,
-                payload_spec_path: String::new(),
-                meta_spec_path: String::new(),
-                staged_build_sh: String::new(),
-            };
-        }
+        synthesize_build_sh_from_meta_script(script)
     } else if let Some(generated) = synthesize_fallback_build_sh(&parsed) {
-        if let Err(err) = fs::write(&staged_build_sh, generated) {
-            let reason = format!(
-                "failed to synthesize default build.sh for {}: {err}",
-                resolved.meta_path.display()
-            );
-            quarantine_note(bad_spec_dir, &software_slug, &reason);
-            return ReportEntry {
-                software: tool.software.clone(),
-                priority: tool.priority,
-                status: "quarantined".to_string(),
-                reason,
-                overlap_recipe: resolved.recipe_name,
-                overlap_reason: resolved.overlap_reason,
-                variant_dir: resolved.variant_dir.display().to_string(),
-                package_name: parsed.package_name,
-                version: parsed.version,
-                payload_spec_path: String::new(),
-                meta_spec_path: String::new(),
-                staged_build_sh: String::new(),
-            };
-        }
+        generated
     } else {
         let reason =
             "recipe does not provide build.sh and has no supported build.script in meta.yaml"
@@ -2936,122 +2911,12 @@ fn process_tool(
             meta_spec_path: String::new(),
             staged_build_sh: String::new(),
         };
-    }
-    if let Err(err) = harden_staged_build_script(&staged_build_sh) {
-        let reason = format!(
-            "failed to apply staged build.sh hardening {}: {err}",
-            staged_build_sh.display()
-        );
-        quarantine_note(bad_spec_dir, &software_slug, &reason);
-        return ReportEntry {
-            software: tool.software.clone(),
-            priority: tool.priority,
-            status: "quarantined".to_string(),
-            reason,
-            overlap_recipe: resolved.recipe_name,
-            overlap_reason: resolved.overlap_reason,
-            variant_dir: resolved.variant_dir.display().to_string(),
-            package_name: parsed.package_name,
-            version: parsed.version,
-            payload_spec_path: String::new(),
-            meta_spec_path: String::new(),
-            staged_build_sh: staged_build_sh.display().to_string(),
-        };
-    }
-    #[cfg(unix)]
-    if let Err(err) = fs::set_permissions(&staged_build_sh, fs::Permissions::from_mode(0o755)) {
-        let reason = format!(
-            "failed to set staged build.sh permissions {}: {err}",
-            staged_build_sh.display()
-        );
-        quarantine_note(bad_spec_dir, &software_slug, &reason);
-        return ReportEntry {
-            software: tool.software.clone(),
-            priority: tool.priority,
-            status: "quarantined".to_string(),
-            reason,
-            overlap_recipe: resolved.recipe_name,
-            overlap_reason: resolved.overlap_reason,
-            variant_dir: resolved.variant_dir.display().to_string(),
-            package_name: parsed.package_name,
-            version: parsed.version,
-            payload_spec_path: String::new(),
-            meta_spec_path: String::new(),
-            staged_build_sh: staged_build_sh.display().to_string(),
-        };
-    }
-    let python_script_hint = match staged_build_script_indicates_python(&staged_build_sh) {
-        Ok(v) => v,
-        Err(err) => {
-            let reason = format!(
-                "failed to inspect staged build.sh {} for python policy: {err}",
-                staged_build_sh.display()
-            );
-            quarantine_note(bad_spec_dir, &software_slug, &reason);
-            return ReportEntry {
-                software: tool.software.clone(),
-                priority: tool.priority,
-                status: "quarantined".to_string(),
-                reason,
-                overlap_recipe: resolved.recipe_name,
-                overlap_reason: resolved.overlap_reason,
-                variant_dir: resolved.variant_dir.display().to_string(),
-                package_name: parsed.package_name,
-                version: parsed.version,
-                payload_spec_path: String::new(),
-                meta_spec_path: String::new(),
-                staged_build_sh: staged_build_sh.display().to_string(),
-            };
-        }
     };
-    let r_script_hint = match staged_build_script_indicates_r(&staged_build_sh) {
-        Ok(v) => v,
-        Err(err) => {
-            let reason = format!(
-                "failed to inspect staged build.sh {} for R policy: {err}",
-                staged_build_sh.display()
-            );
-            quarantine_note(bad_spec_dir, &software_slug, &reason);
-            return ReportEntry {
-                software: tool.software.clone(),
-                priority: tool.priority,
-                status: "quarantined".to_string(),
-                reason,
-                overlap_recipe: resolved.recipe_name,
-                overlap_reason: resolved.overlap_reason,
-                variant_dir: resolved.variant_dir.display().to_string(),
-                package_name: parsed.package_name,
-                version: parsed.version,
-                payload_spec_path: String::new(),
-                meta_spec_path: String::new(),
-                staged_build_sh: staged_build_sh.display().to_string(),
-            };
-        }
-    };
-    let rust_script_hint = match staged_build_script_indicates_rust(&staged_build_sh) {
-        Ok(v) => v,
-        Err(err) => {
-            let reason = format!(
-                "failed to inspect staged build.sh {} for Rust policy: {err}",
-                staged_build_sh.display()
-            );
-            quarantine_note(bad_spec_dir, &software_slug, &reason);
-            return ReportEntry {
-                software: tool.software.clone(),
-                priority: tool.priority,
-                status: "quarantined".to_string(),
-                reason,
-                overlap_recipe: resolved.recipe_name,
-                overlap_reason: resolved.overlap_reason,
-                variant_dir: resolved.variant_dir.display().to_string(),
-                package_name: parsed.package_name,
-                version: parsed.version,
-                payload_spec_path: String::new(),
-                meta_spec_path: String::new(),
-                staged_build_sh: staged_build_sh.display().to_string(),
-            };
-        }
-    };
+    let build_script = harden_build_script_text(&raw_build_script);
+
+    let python_script_hint = script_text_indicates_python(&build_script);
+    let r_script_hint = script_text_indicates_r(&build_script);
+    let rust_script_hint = script_text_indicates_rust(&build_script);
     let python_recipe = is_python_recipe(&parsed) || python_script_hint;
     let python_runtime = select_phoreus_python_runtime(&parsed, python_recipe);
     if let Err(err) = ensure_phoreus_python_bootstrap(build_config, specs_dir, python_runtime) {
@@ -3132,6 +2997,7 @@ fn process_tool(
             };
         }
     }
+    let interpreted_build_plan = interpret_build_script_minimal(&build_script);
 
     let staged_patch_sources = match stage_recipe_patches(
         &parsed.source_patches,
@@ -3156,7 +3022,7 @@ fn process_tool(
                 version: parsed.version,
                 payload_spec_path: String::new(),
                 meta_spec_path: String::new(),
-                staged_build_sh: staged_build_sh.display().to_string(),
+                staged_build_sh: String::new(),
             };
         }
     };
@@ -3182,10 +3048,10 @@ fn process_tool(
     let payload_spec_path = specs_dir.join(format!("phoreus-{}.spec", software_slug));
     let meta_spec_path = specs_dir.join(format!("phoreus-{}-default.spec", software_slug));
 
-    let payload_spec = render_payload_spec(
+    let payload_spec = render_payload_spec_minimal(
         &software_slug,
         &parsed,
-        &staged_build_sh_name,
+        &interpreted_build_plan,
         &staged_patch_sources,
         &resolved.meta_path,
         &resolved.variant_dir,
@@ -5328,6 +5194,531 @@ fn normalize_openjdk_runtime_package(spec: &str) -> String {
         return "java-17-openjdk".to_string();
     }
     "java-11-openjdk".to_string()
+}
+
+fn interpret_build_script_minimal(script: &str) -> InterpretedBuildPlan {
+    let mut build_commands = Vec::new();
+    let mut install_commands = Vec::new();
+
+    for raw_line in script.lines() {
+        let Some(line) = normalize_interpreted_build_line(raw_line) else {
+            continue;
+        };
+
+        if line_is_install_command(&line) {
+            install_commands.push(line);
+            continue;
+        }
+        if line_is_build_command(&line) {
+            build_commands.push(line);
+            continue;
+        }
+        if is_shell_assignment_line(&line) || line.starts_with("cd ") {
+            build_commands.push(line.clone());
+            install_commands.push(line);
+            continue;
+        }
+        build_commands.push(line);
+    }
+
+    InterpretedBuildPlan {
+        build_commands,
+        install_commands,
+    }
+}
+
+fn normalize_interpreted_build_line(raw_line: &str) -> Option<String> {
+    let line = raw_line.trim();
+    if line.is_empty()
+        || line.starts_with('#')
+        || line.starts_with("#!")
+        || line.starts_with("set -")
+        || line.starts_with("set +")
+        || line == "{"
+        || line == "}"
+        || line.contains("<<")
+        || is_shell_control_flow_line(line)
+    {
+        return None;
+    }
+
+    let mut rewritten = line
+        .replace("{{ PYTHON }}", "$PYTHON")
+        .replace("{{PYTHON}}", "$PYTHON")
+        .replace("{{ PIP }}", "$PIP")
+        .replace("{{PIP}}", "$PIP");
+    if let Some(rest) = rewritten.strip_prefix("python3 ") {
+        rewritten = format!("$PYTHON {rest}");
+    } else if let Some(rest) = rewritten.strip_prefix("python ") {
+        rewritten = format!("$PYTHON {rest}");
+    } else if let Some(rest) = rewritten.strip_prefix("pip3 ") {
+        rewritten = format!("$PIP {rest}");
+    } else if let Some(rest) = rewritten.strip_prefix("pip ") {
+        rewritten = format!("$PIP {rest}");
+    } else if let Some(rest) = rewritten.strip_prefix("Rscript ") {
+        rewritten = format!("$RSCRIPT {rest}");
+    } else if let Some(rest) = rewritten.strip_prefix("R CMD ") {
+        rewritten = format!("$R CMD {rest}");
+    }
+    Some(rewritten)
+}
+
+fn is_shell_control_flow_line(line: &str) -> bool {
+    matches!(
+        line,
+        "then" | "fi" | "do" | "done" | "esac" | "in" | ";;" | "{" | "}"
+    ) || line.starts_with("if ")
+        || line.starts_with("elif ")
+        || line.starts_with("else")
+        || line.starts_with("for ")
+        || line.starts_with("while ")
+        || line.starts_with("until ")
+        || line.starts_with("case ")
+        || line.starts_with("function ")
+}
+
+fn is_shell_assignment_line(line: &str) -> bool {
+    if let Some(rest) = line.strip_prefix("export ") {
+        return rest.contains('=');
+    }
+    if line.starts_with("unset ") {
+        return true;
+    }
+    let Some(eq_idx) = line.find('=') else {
+        return false;
+    };
+    let left = &line[..eq_idx];
+    if left.is_empty() || left.contains(char::is_whitespace) {
+        return false;
+    }
+    left.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn line_targets_prefix_install(line: &str) -> bool {
+    line.contains("$PREFIX")
+        || line.contains("${PREFIX}")
+        || line.contains("%{buildroot}")
+        || line.contains("%{phoreus_prefix}")
+}
+
+fn line_is_install_command(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    line_targets_prefix_install(line)
+        || lower.starts_with("make install")
+        || lower.starts_with("cmake --install")
+        || lower.starts_with("ninja install")
+        || lower.starts_with("install ")
+        || lower.contains(" setup.py install")
+        || lower.contains(" pip install")
+        || lower.contains(" cmd install")
+}
+
+fn line_is_build_command(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.starts_with("./configure")
+        || lower.starts_with("configure ")
+        || lower.starts_with("cmake ")
+        || (lower.starts_with("make ") && !lower.starts_with("make install"))
+        || lower == "make"
+        || lower.starts_with("ninja ")
+        || lower == "ninja"
+        || lower.starts_with("meson ")
+        || lower.starts_with("cargo ")
+        || lower.starts_with("go build")
+        || lower.starts_with("$python -m build")
+}
+
+fn render_shell_lines(lines: &[String], fallback_message: &str) -> String {
+    if lines.is_empty() {
+        format!("echo \"{fallback_message}\"\n")
+    } else {
+        lines
+            .iter()
+            .map(|line| format!("{line}\n"))
+            .collect::<Vec<_>>()
+            .join("")
+    }
+}
+
+fn render_patch_apply_lines_minimal(staged_patch_sources: &[String], source_dir: &str) -> String {
+    if staged_patch_sources.is_empty() {
+        return String::new();
+    }
+    let mut out = format!("cd {source_dir}\n");
+    for (idx, _) in staged_patch_sources.iter().enumerate() {
+        let source_num = idx + 2;
+        out.push_str(&format!(
+            "if ! patch --forward --batch -p1 -i %{{SOURCE{source_num}}}; then\n\
+  patch --forward --batch -p0 -i %{{SOURCE{source_num}}}\n\
+fi\n"
+        ));
+    }
+    out
+}
+
+fn render_minimal_runtime_env_block(
+    python_runtime: PhoreusPythonRuntime,
+    r_runtime_required: bool,
+    rust_runtime_required: bool,
+    nim_runtime_required: bool,
+) -> String {
+    let mut out = format!(
+        "export PHOREUS_PYTHON_PREFIX=/usr/local/phoreus/python/{python_minor}\n\
+if [[ -x \"$PHOREUS_PYTHON_PREFIX/bin/python{python_minor}\" ]]; then\n\
+  export PATH=\"$PHOREUS_PYTHON_PREFIX/bin:$PATH\"\n\
+  export PYTHON=\"$PHOREUS_PYTHON_PREFIX/bin/python{python_minor}\"\n\
+else\n\
+  export PYTHON=\"${{PYTHON:-python3}}\"\n\
+fi\n\
+export PYTHON3=\"$PYTHON\"\n\
+export PIP=\"${{PIP:-$PYTHON -m pip}}\"\n",
+        python_minor = python_runtime.minor_str
+    );
+
+    if r_runtime_required {
+        out.push_str(&format!(
+            "export PHOREUS_R_PREFIX=/usr/local/phoreus/r/{phoreus_r_version}\n\
+if [[ -x \"$PHOREUS_R_PREFIX/bin/Rscript\" ]]; then\n\
+  export PATH=\"$PHOREUS_R_PREFIX/bin:$PATH\"\n\
+fi\n\
+export R=\"${{R:-R}}\"\n\
+export RSCRIPT=\"${{RSCRIPT:-Rscript}}\"\n",
+            phoreus_r_version = PHOREUS_R_VERSION
+        ));
+    }
+
+    if rust_runtime_required {
+        out.push_str(&format!(
+            "export PHOREUS_RUST_PREFIX=/usr/local/phoreus/rust/{phoreus_rust_minor}\n\
+if [[ -d \"$PHOREUS_RUST_PREFIX/bin\" ]]; then\n\
+  export PATH=\"$PHOREUS_RUST_PREFIX/bin:$PATH\"\n\
+fi\n",
+            phoreus_rust_minor = PHOREUS_RUST_MINOR
+        ));
+    }
+
+    if nim_runtime_required {
+        out.push_str(&format!(
+            "export PHOREUS_NIM_PREFIX=/usr/local/phoreus/nim/{phoreus_nim_series}\n\
+if [[ -d \"$PHOREUS_NIM_PREFIX/bin\" ]]; then\n\
+  export PATH=\"$PHOREUS_NIM_PREFIX/bin:$PATH\"\n\
+fi\n",
+            phoreus_nim_series = PHOREUS_NIM_SERIES
+        ));
+    }
+
+    out
+}
+
+fn render_payload_spec_minimal(
+    software_slug: &str,
+    parsed: &ParsedMeta,
+    interpreted_build_plan: &InterpretedBuildPlan,
+    staged_patch_sources: &[String],
+    meta_path: &Path,
+    variant_dir: &Path,
+    noarch_python: bool,
+    python_script_hint: bool,
+    r_script_hint: bool,
+    rust_script_hint: bool,
+) -> String {
+    let license = spec_escape(&parsed.license);
+    let summary = spec_escape_or_default(&parsed.summary, &parsed.package_name);
+    let homepage = spec_escape_or_default(&parsed.homepage, "https://bioconda.github.io");
+    let source_url =
+        spec_escape_or_default(&parsed.source_url, "https://example.invalid/source.tar.gz");
+    let source_subdir = {
+        let folder = parsed.source_folder.trim().trim_matches('/');
+        if folder.is_empty() {
+            "buildsrc".to_string()
+        } else {
+            format!("buildsrc/{folder}")
+        }
+    };
+    let source_relsubdir = ".".to_string();
+    let python_recipe = is_python_recipe(parsed) || python_script_hint;
+    let python_runtime = select_phoreus_python_runtime(parsed, python_recipe);
+    let r_runtime_required =
+        recipe_requires_r_runtime(parsed) || is_r_project_recipe(parsed) || r_script_hint;
+    let rust_runtime_required = recipe_requires_rust_runtime(parsed) || rust_script_hint;
+    let nim_runtime_required = recipe_requires_nim_runtime(parsed);
+    let perl_recipe = normalize_name(&parsed.package_name).starts_with("perl-");
+    let runtime_only_metapackage = is_runtime_only_metapackage(parsed);
+
+    let source_kind = source_archive_kind(&parsed.source_url);
+    let git_source = parse_git_source_descriptor(&parsed.source_url);
+    let suppress_source0_for_metapackage =
+        runtime_only_metapackage && parsed.source_url.trim().is_empty();
+    let include_source0 =
+        !suppress_source0_for_metapackage && source_kind != SourceArchiveKind::Git;
+    let source_unpack_prep = if include_source0 {
+        render_source_unpack_prep_block(source_kind)
+    } else if source_kind == SourceArchiveKind::Git {
+        render_source_unpack_prep_block(source_kind)
+    } else {
+        "rm -rf buildsrc\n\
+mkdir -p %{bioconda_source_subdir}\n"
+            .to_string()
+    };
+
+    let mut build_requires = BTreeSet::new();
+    build_requires.insert("bash".to_string());
+    if include_source0 && source_kind == SourceArchiveKind::Zip {
+        build_requires.insert("unzip".to_string());
+    }
+    if source_kind == SourceArchiveKind::Git {
+        build_requires.insert("git".to_string());
+    }
+    if python_recipe {
+        build_requires.insert(python_runtime.package.to_string());
+    }
+    if r_runtime_required {
+        build_requires.insert(PHOREUS_R_PACKAGE.to_string());
+    }
+    if rust_runtime_required {
+        build_requires.insert(PHOREUS_RUST_PACKAGE.to_string());
+    }
+    if nim_runtime_required {
+        build_requires.insert(PHOREUS_NIM_PACKAGE.to_string());
+    }
+    if perl_recipe {
+        build_requires.insert("perl".to_string());
+    }
+    build_requires.extend(
+        parsed
+            .build_deps
+            .iter()
+            .filter(|dep| !is_conda_only_dependency(dep))
+            .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
+            .filter(|dep| !r_runtime_required || should_keep_rpm_dependency_for_r(dep))
+            .map(|d| map_build_dependency(d))
+            .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep)),
+    );
+    build_requires.extend(
+        parsed
+            .host_deps
+            .iter()
+            .filter(|dep| !is_conda_only_dependency(dep))
+            .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
+            .filter(|dep| !r_runtime_required || should_keep_rpm_dependency_for_r(dep))
+            .map(|d| map_build_dependency(d))
+            .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep)),
+    );
+
+    let mut runtime_requires = BTreeSet::new();
+    runtime_requires.insert("phoreus".to_string());
+    if python_recipe {
+        runtime_requires.insert(python_runtime.package.to_string());
+    }
+    if perl_recipe {
+        runtime_requires.insert(PHOREUS_PERL_PACKAGE.to_string());
+    }
+    if r_runtime_required {
+        runtime_requires.insert(PHOREUS_R_PACKAGE.to_string());
+    }
+    if rust_runtime_required {
+        runtime_requires.insert(PHOREUS_RUST_PACKAGE.to_string());
+    }
+    if nim_runtime_required {
+        runtime_requires.insert(PHOREUS_NIM_PACKAGE.to_string());
+    }
+    runtime_requires.extend(
+        parsed
+            .run_deps
+            .iter()
+            .filter(|dep| !is_conda_only_dependency(dep))
+            .filter(|dep| !python_recipe || should_keep_rpm_dependency_for_python(dep))
+            .filter(|dep| !r_runtime_required || should_keep_rpm_dependency_for_r(dep))
+            .map(|d| map_runtime_dependency(d))
+            .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep)),
+    );
+
+    let build_requires_lines = format_dep_lines("BuildRequires", &build_requires);
+    let requires_lines = format_dep_lines("Requires", &runtime_requires);
+    let source0_line = if include_source0 {
+        format!("Source0:        {source_url}\n")
+    } else {
+        String::new()
+    };
+    let source_git_macros = if let Some((url, rev)) = git_source.as_ref() {
+        format!(
+            "%global bioconda_source_git_url {}\n%global bioconda_source_git_rev {}\n",
+            spec_escape(url),
+            spec_escape(rev)
+        )
+    } else {
+        String::new()
+    };
+    let patch_source_lines = render_patch_source_lines(staged_patch_sources);
+    let patch_apply_lines =
+        render_patch_apply_lines_minimal(staged_patch_sources, "%{bioconda_source_subdir}");
+    let build_arch_line = if noarch_python {
+        "BuildArch:      noarch\n".to_string()
+    } else {
+        String::new()
+    };
+    let changelog_date = rpm_changelog_date();
+    let phoreus_prefix_macro = if perl_recipe {
+        format!("/usr/local/phoreus/perl/{PHOREUS_PERL_VERSION}")
+    } else {
+        "/usr/local/phoreus/%{tool}/%{version}".to_string()
+    };
+    let module_prefix_path = if perl_recipe {
+        format!("/usr/local/phoreus/perl/{PHOREUS_PERL_VERSION}")
+    } else {
+        format!(
+            "/usr/local/phoreus/{software_slug}/{}",
+            spec_escape(&parsed.version)
+        )
+    };
+    let module_lua_env = render_module_lua_env_block(
+        python_recipe,
+        r_runtime_required,
+        rust_runtime_required,
+        nim_runtime_required,
+    );
+    let runtime_env_block = render_minimal_runtime_env_block(
+        python_runtime,
+        r_runtime_required,
+        rust_runtime_required,
+        nim_runtime_required,
+    );
+    let build_commands = render_shell_lines(
+        &interpreted_build_plan.build_commands,
+        "bioconda2rpm minimal mode: no explicit %build commands extracted",
+    );
+    let install_commands = render_shell_lines(
+        &interpreted_build_plan.install_commands,
+        "bioconda2rpm minimal mode: no explicit %install commands extracted",
+    );
+    let perl_module_provides = if perl_recipe {
+        perl_module_name_from_conda(&parsed.package_name)
+            .map(|module| format!("Provides:       perl({module}) = %{{version}}-%{{release}}\n"))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    format!(
+        "%global debug_package %{{nil}}\n\
+%global __brp_mangle_shebangs %{{nil}}\n\
+\n\
+%global tool {tool}\n\
+%global upstream_version {version}\n\
+%global bioconda_source_subdir {source_subdir}\n\
+%global bioconda_source_relsubdir {source_relsubdir}\n\
+{source_git_macros}\
+\n\
+Name:           phoreus-%{{tool}}-%{{upstream_version}}\n\
+Version:        %{{upstream_version}}\n\
+Release:        1%{{?dist}}\n\
+Provides:       %{{tool}} = %{{version}}-%{{release}}\n\
+{perl_module_provides}\
+Summary:        {summary}\n\
+License:        {license}\n\
+URL:            {homepage}\n\
+{build_arch}\
+{source0_line}\
+{patch_sources}\n\
+{build_requires}\n\
+{requires}\n\
+%global phoreus_prefix {phoreus_prefix}\n\
+%global phoreus_moddir /usr/local/phoreus/modules/%{{tool}}\n\
+\n\
+%description\n\
+Auto-generated from Bioconda metadata only.\n\
+Recipe metadata source: {meta_path}\n\
+Variant selected: {variant_dir}\n\
+\n\
+%prep\n\
+{source_unpack_prep}\
+{patch_apply}\
+\n\
+%build\n\
+cd buildsrc\n\
+%ifarch aarch64\n\
+export BIOCONDA_TARGET_ARCH=aarch64\n\
+export target_platform=linux-aarch64\n\
+%else\n\
+export BIOCONDA_TARGET_ARCH=x86_64\n\
+export target_platform=linux-64\n\
+%endif\n\
+export SRC_DIR=$(pwd)/%{{bioconda_source_relsubdir}}\n\
+export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
+export CPU_COUNT=\"${{BIOCONDA2RPM_CPU_COUNT:-1}}\"\n\
+if [[ -z \"$CPU_COUNT\" || \"$CPU_COUNT\" == \"0\" ]]; then\n\
+  export CPU_COUNT=1\n\
+fi\n\
+export MAKEFLAGS=\"-j${{CPU_COUNT}}\"\n\
+export CMAKE_BUILD_PARALLEL_LEVEL=\"$CPU_COUNT\"\n\
+{runtime_env_block}\
+{build_commands}\
+\n\
+%install\n\
+rm -rf %{{buildroot}}\n\
+mkdir -p %{{buildroot}}%{{phoreus_prefix}}\n\
+cd buildsrc\n\
+%ifarch aarch64\n\
+export BIOCONDA_TARGET_ARCH=aarch64\n\
+export target_platform=linux-aarch64\n\
+%else\n\
+export BIOCONDA_TARGET_ARCH=x86_64\n\
+export target_platform=linux-64\n\
+%endif\n\
+export SRC_DIR=$(pwd)/%{{bioconda_source_relsubdir}}\n\
+export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
+export CPU_COUNT=\"${{BIOCONDA2RPM_CPU_COUNT:-1}}\"\n\
+if [[ -z \"$CPU_COUNT\" || \"$CPU_COUNT\" == \"0\" ]]; then\n\
+  export CPU_COUNT=1\n\
+fi\n\
+export MAKEFLAGS=\"-j${{CPU_COUNT}}\"\n\
+export CMAKE_BUILD_PARALLEL_LEVEL=\"$CPU_COUNT\"\n\
+{runtime_env_block}\
+{install_commands}\
+mkdir -p %{{buildroot}}%{{phoreus_moddir}}\n\
+cat > %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua <<'LUAEOF'\n\
+help([[ {summary} ]])\n\
+whatis(\"Name: {tool}\")\n\
+whatis(\"Version: {version}\")\n\
+whatis(\"URL: {homepage}\")\n\
+local prefix = \"{module_prefix_path}\"\n\
+{module_lua_env}\
+LUAEOF\n\
+chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
+\n\
+%files\n\
+%{{phoreus_prefix}}/\n\
+%{{phoreus_moddir}}/%{{version}}.lua\n\
+\n\
+%changelog\n\
+* {changelog_date} bioconda2rpm <packaging@bioconda2rpm.local> - {version}-1\n\
+- Auto-generated from Bioconda metadata (minimal canonical mode)\n",
+        tool = software_slug,
+        version = spec_escape(&parsed.version),
+        source_subdir = spec_escape(&source_subdir),
+        source_relsubdir = spec_escape(&source_relsubdir),
+        source_git_macros = source_git_macros,
+        summary = summary,
+        license = license,
+        homepage = homepage,
+        build_arch = build_arch_line,
+        source0_line = source0_line,
+        patch_sources = patch_source_lines,
+        build_requires = build_requires_lines,
+        requires = requires_lines,
+        phoreus_prefix = phoreus_prefix_macro,
+        meta_path = spec_escape(&meta_path.display().to_string()),
+        variant_dir = spec_escape(&variant_dir.display().to_string()),
+        source_unpack_prep = source_unpack_prep,
+        patch_apply = patch_apply_lines,
+        runtime_env_block = runtime_env_block,
+        build_commands = build_commands,
+        install_commands = install_commands,
+        module_prefix_path = module_prefix_path,
+        module_lua_env = module_lua_env,
+        changelog_date = changelog_date,
+        perl_module_provides = perl_module_provides,
+    )
 }
 
 fn render_payload_spec(
@@ -12305,9 +12696,9 @@ requirements:
         assert!(SOURCE.contains(
             "codeload.github.com/${{gh_owner}}/${{gh_repo}}/tar.gz/refs/tags/${{gh_tag}}"
         ));
-        assert!(SOURCE.contains(
-            "codeload.github.com/${{gh_owner}}/${{gh_repo}}/tar.gz/${{gh_ref}}"
-        ));
+        assert!(
+            SOURCE.contains("codeload.github.com/${{gh_owner}}/${{gh_repo}}/tar.gz/${{gh_ref}}")
+        );
     }
 
     #[test]
@@ -12481,9 +12872,9 @@ requirements:
             false,
             false,
         );
-        assert!(spec.contains(
-            "if [[ \"%{tool}\" == \"perl-bio-tools-run-alignment-tcoffee\" ]]; then"
-        ));
+        assert!(
+            spec.contains("if [[ \"%{tool}\" == \"perl-bio-tools-run-alignment-tcoffee\" ]]; then")
+        );
         assert!(spec.contains(
             "find /usr/local/phoreus/t-coffee -mindepth 3 -maxdepth 3 \\( -type f -o -type l \\) -name t_coffee"
         ));
@@ -12529,8 +12920,16 @@ requirements:
         assert!(spec.contains("*/perl-bioperl/*/lib/perl5"));
         assert!(spec.contains("export PERL5LIB=\"$bioperl_lib${PERL5LIB:+:$PERL5LIB}\""));
         assert!(spec.contains("/usr/local/phoreus/perl/5.32/lib/perl5"));
-        assert!(spec.contains("find /work/.build-work /usr/local/phoreus -type f -path '*/Bio/SeqIO.pm'"));
-        assert!(spec.contains("find /usr/local/phoreus/blast -mindepth 2 -maxdepth 3 -type d -name lib"));
+        assert!(
+            spec.contains(
+                "find /work/.build-work /usr/local/phoreus -type f -path '*/Bio/SeqIO.pm'"
+            )
+        );
+        assert!(
+            spec.contains(
+                "find /usr/local/phoreus/blast -mindepth 2 -maxdepth 3 -type d -name lib"
+            )
+        );
         assert!(spec.contains("blast_ncbi_lib=\"$blast_lib/ncbi-blast+\""));
         assert!(spec.contains("export LD_LIBRARY_PATH=\"$blast_ncbi_lib:$blast_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\""));
         assert!(spec.contains("for dep_lib in /usr/local/phoreus/hmmer/*/lib /usr/local/phoreus/gsl/*/lib /usr/local/phoreus/gsl/*/lib64; do"));
@@ -12585,7 +12984,9 @@ requirements:
         assert!(spec.contains("patch_origfix_tmp=\"\""));
         assert!(spec.contains("awk 'BEGIN{emit=0}"));
         assert!(spec.contains("grep -Eq '^(diff --git |\\*\\*\\* |--- |\\+\\+\\+ )'"));
-        assert!(spec.contains("grep -Eq '^(\\*\\*\\*|---)[[:space:]]+[^[:space:]]+\\.orig([[:space:]]|$)'"));
+        assert!(spec.contains(
+            "grep -Eq '^(\\*\\*\\*|---)[[:space:]]+[^[:space:]]+\\.orig([[:space:]]|$)'"
+        ));
         assert!(spec.contains("sed -E 's#^(\\*\\*\\*|---)[[:space:]]+([^[:space:]]+)\\.orig([[:space:]].*)?$#\\1 \\2\\3#'"));
         assert!(spec.contains("patch_rel=\"${patch_rel#b/}\""));
         assert!(spec.contains("/^\\+\\+\\+ / || /^--- / || /^\\*\\*\\* /"));
@@ -14290,7 +14691,9 @@ requirements:
         assert!(spec.contains("dnf -y install ncurses-devel"));
         assert!(spec.contains("sam_legacy_ver=0.1.19"));
         assert!(spec.contains("downloads.sourceforge.net/project/samtools/samtools/${sam_legacy_ver}/samtools-${sam_legacy_ver}.tar.bz2"));
-        assert!(spec.contains("sed -i -E 's|^CFLAGS[[:space:]]*=.*$|& -fPIC|' \"$sam_legacy_root/Makefile\" || true"));
+        assert!(spec.contains(
+            "sed -i -E 's|^CFLAGS[[:space:]]*=.*$|& -fPIC|' \"$sam_legacy_root/Makefile\" || true"
+        ));
         assert!(spec.contains("cp -f \"$sam_legacy_root/libbam.a\" \"$PREFIX/lib/libbam.a\""));
         assert!(spec.contains("for hdr in sam.h bam.h bgzf.h razf.h faidx.h khash.h kseq.h; do"));
     }
@@ -14331,7 +14734,9 @@ requirements:
         );
 
         assert!(spec.contains("while IFS= read -r -d '' top_link; do"));
-        assert!(spec.contains("if [[ \"$top_target\" == \".\" || \"$top_target\" == \"./\" ]]; then"));
+        assert!(
+            spec.contains("if [[ \"$top_target\" == \".\" || \"$top_target\" == \"./\" ]]; then")
+        );
         assert!(spec.contains("done < <(find . -mindepth 1 -maxdepth 1 -type l -print0)"));
     }
 
@@ -15052,11 +15457,15 @@ requirements:
         assert!(spec.contains(
             "tar -xf \"$tbl2asn_libfaketime_archive\" -C \"%{bioconda_source_subdir}/libfaketime\" --strip-components=1"
         ));
-        assert!(spec.contains("if [[ \"%{tool}\" == \"tbl2asn-forever\" && -f libfaketime/src/libfaketime.c ]]; then"));
+        assert!(spec.contains(
+            "if [[ \"%{tool}\" == \"tbl2asn-forever\" && -f libfaketime/src/libfaketime.c ]]; then"
+        ));
         assert!(spec.contains(
             "sed -i 's/struct timeval \\*, struct timezone \\*/struct timeval *, void */g' libfaketime/src/libfaketime.c"
         ));
-        assert!(spec.contains("perl -0pi -e 's@(^\\s*make\\s+test\\b[^\\n]*)$@$1 || true@mg' ./build.sh || true"));
+        assert!(spec.contains(
+            "perl -0pi -e 's@(^\\s*make\\s+test\\b[^\\n]*)$@$1 || true@mg' ./build.sh || true"
+        ));
     }
 
     #[test]
@@ -15140,7 +15549,9 @@ requirements:
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"probconsrna\" && -f SafeVector.h ]]; then"));
         assert!(spec.contains("sed -i '/#include <vector>/a #include <cstddef>' SafeVector.h"));
-        assert!(spec.contains("sed -i 's/SafeVector (size_t size)/SafeVector (std::size_t size)/g' SafeVector.h"));
+        assert!(spec.contains(
+            "sed -i 's/SafeVector (size_t size)/SafeVector (std::size_t size)/g' SafeVector.h"
+        ));
     }
 
     #[test]
@@ -15155,7 +15566,10 @@ requirements:
             license: "GPL-2.0-or-later".to_string(),
             summary: "probcons".to_string(),
             source_patches: Vec::new(),
-            build_script: Some("mkdir -p $PREFIX/bin\ncp probcons $PREFIX/bin\ncp compare $PREFIX/bin\n".to_string()),
+            build_script: Some(
+                "mkdir -p $PREFIX/bin\ncp probcons $PREFIX/bin\ncp compare $PREFIX/bin\n"
+                    .to_string(),
+            ),
             noarch_python: false,
             build_dep_specs_raw: vec!["make".to_string()],
             host_dep_specs_raw: Vec::new(),
@@ -15349,9 +15763,7 @@ requirements:
         assert!(spec.contains("bioconda2rpm replaced unsafe vcfanno install line"));
         assert!(spec.contains("cat >> ./build.sh <<'VCFANNORPMEOF'"));
         assert!(spec.contains("go build -mod=mod -o vcfanno vcfanno.go"));
-        assert!(spec.contains(
-            "for f in ./vcfanno*; do"
-        ));
+        assert!(spec.contains("for f in ./vcfanno*; do"));
     }
 
     #[test]
@@ -15416,7 +15828,8 @@ requirements:
             summary: "entrez-direct".to_string(),
             source_patches: Vec::new(),
             build_script: Some(
-                "install -m 755 bin/accn-at-a-time bin/edirect bin/efetch $PREFIX/bin\n".to_string(),
+                "install -m 755 bin/accn-at-a-time bin/edirect bin/efetch $PREFIX/bin\n"
+                    .to_string(),
             ),
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
@@ -15496,9 +15909,7 @@ requirements:
         assert!(spec.contains("if [[ \"%{tool}\" == \"ntlink\" ]]; then"));
         assert!(spec.contains("bioconda2rpm replaced unsafe ntLink copy"));
         assert!(spec.contains("cat >> ./build.sh <<'NTLINKRPMEOF'"));
-        assert!(spec.contains(
-            "for f in ./ntLink*; do"
-        ));
+        assert!(spec.contains("for f in ./ntLink*; do"));
     }
 
     #[test]
@@ -15513,7 +15924,9 @@ requirements:
             license: "MIT".to_string(),
             summary: "svync".to_string(),
             source_patches: Vec::new(),
-            build_script: Some("chmod a+x svync*\nmkdir -p $PREFIX/bin\ncp svync* $PREFIX/bin/svync\n".to_string()),
+            build_script: Some(
+                "chmod a+x svync*\nmkdir -p $PREFIX/bin\ncp svync* $PREFIX/bin/svync\n".to_string(),
+            ),
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -16449,7 +16862,9 @@ requirements:
             false,
         );
         assert!(spec.contains("Source0:"));
-        assert!(spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1"));
+        assert!(
+            spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir} --strip-components=1")
+        );
         assert!(spec.contains("else"));
         assert!(spec.contains("tar -xf %{SOURCE0} -C %{bioconda_source_subdir}"));
         assert!(spec.contains("mapfile -t tar_roots"));
@@ -17011,6 +17426,76 @@ about:
             .expect("write stability cache");
         assert!(is_parallel_unstable_cached(&reports_dir, key));
         let _ = std::fs::remove_dir_all(&reports_dir);
+    }
+
+    #[test]
+    fn minimal_build_interpreter_splits_build_and_install_commands() {
+        let script = r#"
+#!/usr/bin/env bash
+set -euxo pipefail
+cmake -S . -B build
+cmake --build build -j"${CPU_COUNT:-1}"
+cmake --install build --prefix "$PREFIX"
+"#;
+        let plan = interpret_build_script_minimal(script);
+        assert!(
+            plan.build_commands
+                .iter()
+                .any(|c| c.contains("cmake -S . -B build"))
+        );
+        assert!(
+            plan.build_commands
+                .iter()
+                .any(|c| c.contains("cmake --build build"))
+        );
+        assert!(
+            plan.install_commands
+                .iter()
+                .any(|c| c.contains("cmake --install build"))
+        );
+    }
+
+    #[test]
+    fn minimal_payload_spec_omits_staged_build_sh_source() {
+        let parsed = ParsedMeta {
+            package_name: "example-tool".to_string(),
+            version: "1.2.3".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/example-tool-1.2.3.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/example-tool".to_string(),
+            license: "MIT".to_string(),
+            summary: "example tool".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "cmake -S . -B build\ncmake --install build --prefix \"$PREFIX\"\n".to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "example-tool",
+            &parsed,
+            &plan,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(!spec.contains("Source1:        "));
+        assert!(!spec.contains("bash -eo pipefail ./build.sh"));
+        assert!(spec.contains("cmake -S . -B build"));
+        assert!(spec.contains("cmake --install build --prefix \"$PREFIX\""));
     }
 
     #[test]
