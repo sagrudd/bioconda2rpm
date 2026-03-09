@@ -1,5 +1,7 @@
 # bioconda2rpm User Guide
 
+Mirror (mnemosyne-docs): `../mnemosyne-docs/guides/user/bioconda2rpm/bioconda2rpm-user-guide.md`
+
 ## 1. Purpose
 
 `bioconda2rpm` converts Bioconda recipe metadata into Phoreus-style RPM artifacts with dependency-first build ordering.

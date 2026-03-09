@@ -163,3 +163,11 @@
 - Nightly regression runs against the full corpus.
 - Implemented via `bioconda2rpm regression --mode pr --top-n <N>` and `--mode nightly`.
 - Optional curated corpus file support added via `--software-list <path>` (newline-delimited), overriding mode/top-N selection.
+
+## 2026-03-09
+
+### Ingress deprecation and CLI-surface testing policy
+- `src/ingress.rs` is deprecated and removed from the compiled crate surface.
+- Validation focus moves to explicitly exposed CLI behavior (`build`, `regression`, `generate-priority-specs`, `recipes`, `lookup`).
+- CLI-surface integration tests are added under `tests/` to keep coverage anchored to public command contracts.
+- Public documentation remains canonical in this repository and is mirrored into `../mnemosyne-docs`.

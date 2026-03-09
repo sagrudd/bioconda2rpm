@@ -3,6 +3,7 @@
 Version: 0.2
 Date: March 2, 2026
 Status: Draft (decision-aligned baseline)
+Mirror (mnemosyne-docs): `../mnemosyne-docs/architecture/ards/products/bioconda2rpm/ARD-001-bioconda2rpm-architecture-review.md`
 
 ## 1. Objective
 

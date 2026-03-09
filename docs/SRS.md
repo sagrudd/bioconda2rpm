@@ -3,6 +3,7 @@
 Version: 0.2
 Date: March 2, 2026
 Status: Draft (decision-aligned baseline)
+Mirror (mnemosyne-docs): `../mnemosyne-docs/requirements/srs/products/bioconda2rpm/BIOCONDA2RPM_SRS.md`
 
 ## 1. Purpose
 

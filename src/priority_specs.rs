@@ -5486,6 +5486,8 @@ mkdir -p %{bioconda_source_subdir}\n"
                 .to_string()
         }
     };
+    // HEURISTIC-TEMP(issue=bioconda2rpm#tbl2asn-libfaketime-bootstrap-retirement):
+    // Bioconda tbl2asn-forever expects libfaketime source to exist in-tree.
     if software_slug == "tbl2asn-forever" {
         source_unpack_prep.push_str(
             "if [[ ! -d \"%{bioconda_source_subdir}/libfaketime\" ]]; then\n\

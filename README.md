@@ -82,6 +82,7 @@ Defaults when omitted:
 - `docs/USERGUIDE.md`
 - `docs/SRS.md`
 - `docs/ARD.md`
+- `docs/DOCUMENTATION_CROSSWALK.md`
 - `docs/CLI_contract.md`
 - `docs/dependency_policy.md`
 - `docs/decision_log.md`
