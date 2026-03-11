@@ -5510,6 +5510,9 @@ fi\n"
 
 fn render_minimal_runtime_env_block(
     python_runtime: PhoreusPythonRuntime,
+    conda_pkg_name: &str,
+    conda_pkg_version: &str,
+    conda_pkg_build_number: &str,
     r_runtime_required: bool,
     rust_runtime_required: bool,
     nim_runtime_required: bool,
@@ -5529,6 +5532,16 @@ export CC=\"${{CC:-gcc}}\"\n\
 export CXX=\"${{CXX:-g++}}\"\n",
         python_minor = python_runtime.minor_str
     );
+    out.push_str(&format!(
+        "export RECIPE_DIR=/work/SOURCES\n\
+export PKG_NAME=\"${{PKG_NAME:-{conda_pkg_name}}}\"\n\
+export PKG_VERSION=\"${{PKG_VERSION:-{conda_pkg_version}}}\"\n\
+export PKG_BUILDNUM=\"${{PKG_BUILDNUM:-{conda_pkg_build_number}}}\"\n\
+export PKG_BUILD_STRING=\"${{PKG_BUILD_STRING:-${{PKG_BUILDNUM}}}}\"\n",
+        conda_pkg_name = spec_escape(conda_pkg_name),
+        conda_pkg_version = spec_escape(conda_pkg_version),
+        conda_pkg_build_number = spec_escape(conda_pkg_build_number),
+    ));
 
     if r_runtime_required {
         out.push_str(&format!(
@@ -5738,6 +5751,9 @@ mkdir -p %{bioconda_source_subdir}\n"
     );
     let runtime_env_block = render_minimal_runtime_env_block(
         python_runtime,
+        &parsed.package_name,
+        &parsed.version,
+        &parsed.build_number,
         r_runtime_required,
         rust_runtime_required,
         nim_runtime_required,
@@ -5834,6 +5850,25 @@ export MAKEFLAGS=\"-j${{CPU_COUNT}}\"\n\
 export CMAKE_BUILD_PARALLEL_LEVEL=\"$CPU_COUNT\"\n\
 {runtime_env_block}\
 {install_commands}\
+    while IFS= read -r -d '' link_path; do\n\
+    link_target=$(readlink \"$link_path\" || true)\n\
+    [[ -n \"$link_target\" ]] || continue\n\
+    link_dir=$(dirname \"$link_path\")\n\
+    case \"$link_target\" in\n\
+      %{{buildroot}}/*) target_fs=\"$link_target\" ;;\n\
+      /*) target_fs=\"$link_target\" ;;\n\
+      *) target_fs=\"$link_dir/$link_target\" ;;\n\
+    esac\n\
+    fixed_target=\"\"\n\
+    if command -v realpath >/dev/null 2>&1; then\n\
+      fixed_target=$(realpath -m --relative-to \"$link_dir\" \"$target_fs\" 2>/dev/null || true)\n\
+    elif [[ \"$target_fs\" == %{{buildroot}}/* ]]; then\n\
+      fixed_target=\"${{target_fs#%{{buildroot}}}}\"\n\
+    fi\n\
+    if [[ -n \"$fixed_target\" ]]; then\n\
+      ln -snf \"$fixed_target\" \"$link_path\"\n\
+    fi\n\
+    done < <(find %{{buildroot}}%{{phoreus_prefix}} -type l -print0 2>/dev/null)\n\
 mkdir -p %{{buildroot}}%{{phoreus_moddir}}\n\
 cat > %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua <<'LUAEOF'\n\
 help([[ {summary} ]])\n\
@@ -18017,10 +18052,36 @@ $R CMD INSTALL --build .
 
     #[test]
     fn minimal_runtime_env_exports_python_linker_and_rust_homes() {
-        let block = render_minimal_runtime_env_block(PHOREUS_PYTHON_RUNTIME_311, false, true, false);
+        let block = render_minimal_runtime_env_block(
+            PHOREUS_PYTHON_RUNTIME_311,
+            "example-tool",
+            "1.2.3",
+            "0",
+            false,
+            true,
+            false,
+        );
         assert!(block.contains("export LD_LIBRARY_PATH=\"$PHOREUS_PYTHON_PREFIX/lib"));
         assert!(block.contains("export CARGO_HOME=\"$PHOREUS_RUST_PREFIX\""));
         assert!(block.contains("export RUSTUP_HOME=\"$PHOREUS_RUST_PREFIX/.rustup\""));
+    }
+
+    #[test]
+    fn minimal_runtime_env_exports_recipe_dir_and_conda_pkg_variables() {
+        let block = render_minimal_runtime_env_block(
+            PHOREUS_PYTHON_RUNTIME_311,
+            "fastqc",
+            "0.12.1",
+            "0",
+            false,
+            false,
+            false,
+        );
+        assert!(block.contains("export RECIPE_DIR=/work/SOURCES"));
+        assert!(block.contains("export PKG_NAME=\"${PKG_NAME:-fastqc}\""));
+        assert!(block.contains("export PKG_VERSION=\"${PKG_VERSION:-0.12.1}\""));
+        assert!(block.contains("export PKG_BUILDNUM=\"${PKG_BUILDNUM:-0}\""));
+        assert!(block.contains("export PKG_BUILD_STRING=\"${PKG_BUILD_STRING:-${PKG_BUILDNUM}}\""));
     }
 
     #[test]
@@ -18107,6 +18168,52 @@ $R CMD INSTALL --build .
         assert!(!spec.contains("bash -eo pipefail ./build.sh"));
         assert!(spec.contains("cmake -S . -B build"));
         assert!(spec.contains("cmake --install build --prefix \"$PREFIX\""));
+    }
+
+    #[test]
+    fn minimal_payload_spec_normalizes_install_symlinks_after_interpreted_commands() {
+        let parsed = ParsedMeta {
+            package_name: "fastqc".to_string(),
+            version: "0.12.1".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/fastqc_v0.12.1.zip".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/fastqc".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "fastqc".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "fastqc=$PREFIX/opt/$PKG_NAME-$PKG_VERSION\nmkdir -p $PREFIX/bin\nln -s $fastqc/fastqc $PREFIX/bin/fastqc\n"
+                    .to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "fastqc",
+            &parsed,
+            &plan,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains("export PKG_NAME=\"${PKG_NAME:-fastqc}\""));
+        assert!(spec.contains("ln -s $fastqc/fastqc $PREFIX/bin/fastqc || true"));
+        assert!(spec.contains("done < <(find %{buildroot}%{phoreus_prefix} -type l -print0 2>/dev/null)"));
+        assert!(spec.contains(
+            "fixed_target=$(realpath -m --relative-to \"$link_dir\" \"$target_fs\" 2>/dev/null || true)"
+        ));
     }
 
     #[test]

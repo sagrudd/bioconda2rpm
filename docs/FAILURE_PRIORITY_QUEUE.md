@@ -23,10 +23,9 @@ The queue is strict:
 ### P0. R / Bioconductor quoted-shell root failures
 
 Status:
-- In progress
-- Regression tests added
-- Generator patch landed locally
-- Rerun still required
+- Closed on March 11, 2026
+- Rerun result: `10/10` generated, `0` quarantined
+- Regression tests and documentation in place
 
 Root packages:
 - `bioconductor-ctc`
@@ -62,7 +61,9 @@ Exit criteria:
 ### P1. BuildRoot symlink contamination
 
 Status:
-- Next class to fix
+- In progress
+- March 11 rerun result: `1/9` generated, `8/9` quarantined
+- `barrnap` cleared; remaining failures narrowed to minimal-mode path and wrapper/symlink normalization
 
 Root packages:
 - `bpipe`
@@ -79,6 +80,7 @@ Observed pattern:
 - absolute symlink into `BUILDROOT`
 - wildcard symlink payloads such as `bin/*`
 - dangling symlink chmod operations
+- unset minimal-mode `PKG_*` / `RECIPE_DIR` variables causing malformed install roots such as `opt/-` and `share/--`
 
 Blocked dependents:
 - `trim-galore`
@@ -92,6 +94,7 @@ Blocked dependents:
 
 Exit criteria:
 - Normalize or replace generated symlinks so installed payloads do not point into `BUILDROOT`
+- Export the Conda-era variable surface required by translated minimal-mode install commands
 - Add regression coverage for wildcard and dangling-symlink cases
 
 ### P2. BuildRoot path text contamination

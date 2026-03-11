@@ -189,3 +189,9 @@
 - Post-install buildroot scrubbing now performs a deterministic pre-pass across installed metadata and launcher file classes (`.pc`, `.la`, `.prl`, script-like files, `bin/*`, `libexec/*`) before the historical grep-discovered fallback pass.
 - This broadening is required because some installed wrappers and metadata are executable or otherwise not reliably selected by `grep -RIlZ`, yet still fail RPM `check-buildroot`.
 - Regression tests now require both the pre-scrub pass and the historical grep fallback to remain present.
+
+### Minimal canonical wrapper install normalization
+- The March 11 reruns closed the Bioconductor root class (`10/10` generated) and narrowed the remaining wrapper failures to minimal-mode environment drift plus direct in-prefix symlink emission.
+- Minimal canonical SPECs now export `RECIPE_DIR` and the Conda-era `PKG_NAME`, `PKG_VERSION`, `PKG_BUILDNUM`, and `PKG_BUILD_STRING` variables so translated recipe commands do not collapse into malformed paths such as `opt/-` or `share/--`.
+- Minimal canonical `%install` now performs the same relative-target symlink normalization needed to prevent RPM payloads from retaining absolute `%{buildroot}`-anchored links.
+- Regression tests cover both the exported variable surface and post-install symlink normalization in minimal mode.
