@@ -179,3 +179,8 @@
 - Multi-line quoted shell commands (for example `.R/Makevars` writes emitted via `echo -e "..." > ~/.R/Makevars`) are treated as single logical commands during interpretation.
 - Safe build-tree setup steps (`mv`, `grep`, `mkdir`, `echo`, `printf`, `sed`, related file preparation commands) are retained in `%build`; install actions remain in `%install`.
 - Regression tests now cover the Bioconductor `DESCRIPTION` rewrite plus `.R/Makevars` emission path so future interpreter changes cannot reintroduce this quoting failure class unnoticed.
+
+### BuildRoot symlink normalization hardening
+- Post-install normalization now rewrites in-tree absolute symlinks to relative targets instead of leaving path prefixes anchored to `%{buildroot}`.
+- Wildcard symlink artifacts (for example `bin/* -> .../opt/.../*`) are removed and replaced with per-file relative links resolved from the realized target directory contents.
+- Regression tests cover both direct BuildRoot-to-relative rewriting and wildcard symlink expansion so wrapper-heavy payloads remain protected against this failure class.

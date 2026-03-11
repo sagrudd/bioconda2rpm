@@ -8292,21 +8292,58 @@ SVYNCEOF\n\
     link_target=$(readlink \"$link_path\" || true)\n\
     [[ -n \"$link_target\" ]] || continue\n\
     link_base=$(basename \"$link_path\")\n\
+    link_dir=$(dirname \"$link_path\")\n\
     if [[ \"$link_target\" == \"$link_base\" ]]; then\n\
       rm -f \"$link_path\"\n\
       continue\n\
     fi\n\
-    fixed_target=\"\"\n\
+    if [[ \"$link_base\" == *'*'* || \"$link_base\" == *'?'* || \"$link_base\" == *'['* || \"$link_target\" == *'*'* || \"$link_target\" == *'?'* || \"$link_target\" == *'['* ]]; then\n\
+      case \"$link_target\" in\n\
+      %{{buildroot}}/*)\n\
+        target_glob=\"$link_target\"\n\
+        ;;\n\
+      /*)\n\
+        target_glob=\"$link_target\"\n\
+        ;;\n\
+      *)\n\
+        target_glob=\"$link_dir/$link_target\"\n\
+        ;;\n\
+      esac\n\
+      rm -f \"$link_path\"\n\
+      target_dir=$(dirname \"$target_glob\")\n\
+      target_pat=$(basename \"$target_glob\")\n\
+      if [[ -d \"$target_dir\" ]]; then\n\
+        while IFS= read -r -d '' matched_target; do\n\
+          matched_base=$(basename \"$matched_target\")\n\
+          fixed_target=\"\"\n\
+          if command -v realpath >/dev/null 2>&1; then\n\
+            fixed_target=$(realpath -m --relative-to \"$link_dir\" \"$matched_target\" 2>/dev/null || true)\n\
+          fi\n\
+          if [[ -n \"$fixed_target\" ]]; then\n\
+            ln -snf \"$fixed_target\" \"$link_dir/$matched_base\"\n\
+          fi\n\
+        done < <(find \"$target_dir\" -maxdepth 1 -mindepth 1 -name \"$target_pat\" -print0 2>/dev/null)\n\
+      fi\n\
+      continue\n\
+    fi\n\
+    target_fs=\"\"\n\
     case \"$link_target\" in\n\
     %{{buildroot}}/*)\n\
-      fixed_target=\"${{link_target#%{{buildroot}}}}\"\n\
+      target_fs=\"$link_target\"\n\
       ;;\n\
     /*)\n\
-      if command -v realpath >/dev/null 2>&1; then\n\
-        fixed_target=$(realpath -m --relative-to \"$(dirname \"$link_path\")\" \"$link_target\" 2>/dev/null || true)\n\
-      fi\n\
+      target_fs=\"$link_target\"\n\
+      ;;\n\
+    *)\n\
+      target_fs=\"$link_dir/$link_target\"\n\
       ;;\n\
     esac\n\
+    fixed_target=\"\"\n\
+    if command -v realpath >/dev/null 2>&1; then\n\
+      fixed_target=$(realpath -m --relative-to \"$link_dir\" \"$target_fs\" 2>/dev/null || true)\n\
+    elif [[ \"$target_fs\" == %{{buildroot}}/* ]]; then\n\
+      fixed_target=\"${{target_fs#%{{buildroot}}}}\"\n\
+    fi\n\
     if [[ -n \"$fixed_target\" ]]; then\n\
       ln -snf \"$fixed_target\" \"$link_path\"\n\
     fi\n\
@@ -15566,6 +15603,92 @@ requirements:
         ));
         assert!(spec.contains("buildroot_root=\"%{buildroot}\""));
         assert!(spec.contains("sed -i \"s|$buildroot_root||g\" \"$text_path\" || true"));
+    }
+
+    #[test]
+    fn payload_spec_normalizes_buildroot_symlinks_to_relative_targets() {
+        let parsed = ParsedMeta {
+            package_name: "fastqc".to_string(),
+            version: "0.12.1".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/fastqc_v0.12.1.zip".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/fastqc".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "fastqc".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "fastqc",
+            &parsed,
+            "bioconda-fastqc-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("link_dir=$(dirname \"$link_path\")"));
+        assert!(spec.contains("target_fs=\"$link_target\""));
+        assert!(spec.contains(
+            "fixed_target=$(realpath -m --relative-to \"$link_dir\" \"$target_fs\" 2>/dev/null || true)"
+        ));
+    }
+
+    #[test]
+    fn payload_spec_expands_globbed_buildroot_symlinks_into_real_links() {
+        let parsed = ParsedMeta {
+            package_name: "bpipe".to_string(),
+            version: "0.9.13".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/bpipe.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/bpipe".to_string(),
+            license: "MIT".to_string(),
+            summary: "bpipe".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("echo install".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "bpipe",
+            &parsed,
+            "bioconda-bpipe-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("if [[ \"$link_base\" == *'*'* || \"$link_base\" == *'?'* || \"$link_base\" == *'['* || \"$link_target\" == *'*'* || \"$link_target\" == *'?'* || \"$link_target\" == *'['* ]]; then"));
+        assert!(spec.contains("rm -f \"$link_path\""));
+        assert!(spec.contains("target_pat=$(basename \"$target_glob\")"));
+        assert!(spec.contains(
+            "done < <(find \"$target_dir\" -maxdepth 1 -mindepth 1 -name \"$target_pat\" -print0 2>/dev/null)"
+        ));
+        assert!(spec.contains("ln -snf \"$fixed_target\" \"$link_dir/$matched_base\""));
     }
 
     #[test]
