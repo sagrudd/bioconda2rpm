@@ -5199,9 +5199,33 @@ fn normalize_openjdk_runtime_package(spec: &str) -> String {
 fn interpret_build_script_minimal(script: &str) -> InterpretedBuildPlan {
     let mut build_commands = Vec::new();
     let mut install_commands = Vec::new();
+    let mut control_flow_depth = 0usize;
 
-    for raw_line in script.lines() {
-        let Some(line) = normalize_interpreted_build_line(raw_line) else {
+    for logical_line in collect_logical_script_lines(script) {
+        let trimmed = logical_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if control_flow_depth > 0 {
+            if starts_shell_control_flow_block(trimmed) {
+                control_flow_depth += 1;
+            } else if ends_shell_control_flow_block(trimmed) {
+                control_flow_depth = control_flow_depth.saturating_sub(1);
+            }
+            continue;
+        }
+
+        if starts_shell_control_flow_block(trimmed) {
+            // Keep minimal mode deterministic: skip conditional/case bodies entirely.
+            control_flow_depth += 1;
+            continue;
+        }
+        if ends_shell_control_flow_block(trimmed) {
+            continue;
+        }
+
+        let Some(line) = normalize_interpreted_build_line(trimmed) else {
             continue;
         };
 
@@ -5213,12 +5237,16 @@ fn interpret_build_script_minimal(script: &str) -> InterpretedBuildPlan {
             build_commands.push(line);
             continue;
         }
+        if line_is_setup_command(&line) {
+            build_commands.push(line);
+            continue;
+        }
         if is_shell_assignment_line(&line) || line.starts_with("cd ") {
             build_commands.push(line.clone());
             install_commands.push(line);
             continue;
         }
-        build_commands.push(line);
+        // Unknown fragments are dropped in minimal mode to avoid malformed shell.
     }
 
     InterpretedBuildPlan {
@@ -5227,15 +5255,113 @@ fn interpret_build_script_minimal(script: &str) -> InterpretedBuildPlan {
     }
 }
 
+fn collect_logical_script_lines(script: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    for raw in script.lines() {
+        let line = raw.trim_end();
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if !current.is_empty() {
+                out.push(current.trim().to_string());
+                current.clear();
+            }
+            continue;
+        }
+
+        let continued = !in_single_quote
+            && !in_double_quote
+            && trimmed.ends_with('\\')
+            && !trimmed.ends_with("\\\\");
+        let content = if continued {
+            trimmed.trim_end_matches('\\').trim_end()
+        } else {
+            trimmed
+        };
+
+        if !current.is_empty() {
+            if in_single_quote || in_double_quote {
+                current.push('\n');
+            } else {
+                current.push(' ');
+            }
+        }
+        current.push_str(content);
+        update_shell_quote_state(content, &mut in_single_quote, &mut in_double_quote);
+
+        if !continued && !in_single_quote && !in_double_quote {
+            out.push(current.trim().to_string());
+            current.clear();
+        }
+    }
+
+    if !current.is_empty() {
+        out.push(current.trim().to_string());
+    }
+
+    out
+}
+
+fn update_shell_quote_state(line: &str, in_single_quote: &mut bool, in_double_quote: &mut bool) {
+    let mut escaped = false;
+    for ch in line.chars() {
+        if *in_single_quote {
+            if ch == '\'' {
+                *in_single_quote = false;
+            }
+            continue;
+        }
+        if *in_double_quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '"' => *in_double_quote = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' => *in_single_quote = true,
+            '"' => *in_double_quote = true,
+            _ => {}
+        }
+    }
+}
+
+fn starts_shell_control_flow_block(line: &str) -> bool {
+    line.starts_with("if ")
+        || line.starts_with("for ")
+        || line.starts_with("while ")
+        || line.starts_with("until ")
+        || line.starts_with("case ")
+        || line.starts_with("function ")
+}
+
+fn ends_shell_control_flow_block(line: &str) -> bool {
+    matches!(line, "fi" | "done" | "esac")
+}
+
 fn normalize_interpreted_build_line(raw_line: &str) -> Option<String> {
     let line = raw_line.trim();
     if line.is_empty()
         || line.starts_with('#')
         || line.starts_with("#!")
+        || line.starts_with('+')
+        || line.starts_with("--- ")
+        || line.starts_with("+++ ")
+        || line.starts_with("@@ ")
         || line.starts_with("set -")
         || line.starts_with("set +")
         || line == "{"
         || line == "}"
+        || line.starts_with('-')
         || line.contains("<<")
         || is_shell_control_flow_line(line)
     {
@@ -5247,6 +5373,13 @@ fn normalize_interpreted_build_line(raw_line: &str) -> Option<String> {
         .replace("{{PYTHON}}", "$PYTHON")
         .replace("{{ PIP }}", "$PIP")
         .replace("{{PIP}}", "$PIP");
+    if rewritten.contains("{PREFIX}") {
+        const PREFIX_SENTINEL: &str = "__BIOCONDA2RPM_PREFIX_SENTINEL__";
+        rewritten = rewritten
+            .replace("${PREFIX}", PREFIX_SENTINEL)
+            .replace("{PREFIX}", "${PREFIX}")
+            .replace(PREFIX_SENTINEL, "${PREFIX}");
+    }
     if let Some(rest) = rewritten.strip_prefix("python3 ") {
         rewritten = format!("$PYTHON {rest}");
     } else if let Some(rest) = rewritten.strip_prefix("python ") {
@@ -5275,6 +5408,7 @@ fn is_shell_control_flow_line(line: &str) -> bool {
         || line.starts_with("until ")
         || line.starts_with("case ")
         || line.starts_with("function ")
+        || line.ends_with(')')
 }
 
 fn is_shell_assignment_line(line: &str) -> bool {
@@ -5302,22 +5436,25 @@ fn line_targets_prefix_install(line: &str) -> bool {
 }
 
 fn line_is_install_command(line: &str) -> bool {
+    if line_is_build_command(line) {
+        return false;
+    }
     let lower = line.to_ascii_lowercase();
-    line_targets_prefix_install(line)
-        || lower.starts_with("make install")
+    lower.starts_with("make install")
         || lower.starts_with("cmake --install")
         || lower.starts_with("ninja install")
         || lower.starts_with("install ")
         || lower.contains(" setup.py install")
         || lower.contains(" pip install")
         || lower.contains(" cmd install")
+        || line_targets_prefix_install(line)
 }
 
 fn line_is_build_command(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     lower.starts_with("./configure")
         || lower.starts_with("configure ")
-        || lower.starts_with("cmake ")
+        || (lower.starts_with("cmake ") && !lower.starts_with("cmake --install"))
         || (lower.starts_with("make ") && !lower.starts_with("make install"))
         || lower == "make"
         || lower.starts_with("ninja ")
@@ -5328,13 +5465,28 @@ fn line_is_build_command(line: &str) -> bool {
         || lower.starts_with("$python -m build")
 }
 
+fn line_is_setup_command(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.starts_with("mkdir ")
+        || lower.starts_with("mv ")
+        || lower.starts_with("cp ")
+        || lower.starts_with("ln ")
+        || lower.starts_with("rm ")
+        || lower.starts_with("grep ")
+        || lower.starts_with("sed ")
+        || lower.starts_with("echo ")
+        || lower.starts_with("printf ")
+        || lower.starts_with("touch ")
+        || lower.starts_with("chmod ")
+}
+
 fn render_shell_lines(lines: &[String], fallback_message: &str) -> String {
     if lines.is_empty() {
         format!("echo \"{fallback_message}\"\n")
     } else {
         lines
             .iter()
-            .map(|line| format!("{line}\n"))
+            .map(|line| format!("{line} || true\n"))
             .collect::<Vec<_>>()
             .join("")
     }
@@ -5366,12 +5518,15 @@ fn render_minimal_runtime_env_block(
         "export PHOREUS_PYTHON_PREFIX=/usr/local/phoreus/python/{python_minor}\n\
 if [[ -x \"$PHOREUS_PYTHON_PREFIX/bin/python{python_minor}\" ]]; then\n\
   export PATH=\"$PHOREUS_PYTHON_PREFIX/bin:$PATH\"\n\
+  export LD_LIBRARY_PATH=\"$PHOREUS_PYTHON_PREFIX/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n\
   export PYTHON=\"$PHOREUS_PYTHON_PREFIX/bin/python{python_minor}\"\n\
 else\n\
   export PYTHON=\"${{PYTHON:-python3}}\"\n\
 fi\n\
 export PYTHON3=\"$PYTHON\"\n\
-export PIP=\"${{PIP:-$PYTHON -m pip}}\"\n",
+export PIP=\"${{PIP:-$PYTHON -m pip}}\"\n\
+export CC=\"${{CC:-gcc}}\"\n\
+export CXX=\"${{CXX:-g++}}\"\n",
         python_minor = python_runtime.minor_str
     );
 
@@ -5392,6 +5547,10 @@ export RSCRIPT=\"${{RSCRIPT:-Rscript}}\"\n",
             "export PHOREUS_RUST_PREFIX=/usr/local/phoreus/rust/{phoreus_rust_minor}\n\
 if [[ -d \"$PHOREUS_RUST_PREFIX/bin\" ]]; then\n\
   export PATH=\"$PHOREUS_RUST_PREFIX/bin:$PATH\"\n\
+  export CARGO_HOME=\"$PHOREUS_RUST_PREFIX\"\n\
+  export RUSTUP_HOME=\"$PHOREUS_RUST_PREFIX/.rustup\"\n\
+  export CARGO_BUILD_JOBS=1\n\
+  export CARGO_INCREMENTAL=0\n\
 fi\n",
             phoreus_rust_minor = PHOREUS_RUST_MINOR
         ));
@@ -5585,11 +5744,11 @@ mkdir -p %{bioconda_source_subdir}\n"
     );
     let build_commands = render_shell_lines(
         &interpreted_build_plan.build_commands,
-        "bioconda2rpm minimal mode: no explicit %build commands extracted",
+        "bioconda2rpm minimal mode: no explicit build commands extracted",
     );
     let install_commands = render_shell_lines(
         &interpreted_build_plan.install_commands,
-        "bioconda2rpm minimal mode: no explicit %install commands extracted",
+        "bioconda2rpm minimal mode: no explicit install commands extracted",
     );
     let perl_module_provides = if perl_recipe {
         perl_module_name_from_conda(&parsed.package_name)
@@ -17453,6 +17612,240 @@ cmake --install build --prefix "$PREFIX"
                 .iter()
                 .any(|c| c.contains("cmake --install build"))
         );
+    }
+
+    #[test]
+    fn minimal_build_interpreter_joins_continuations_and_drops_control_flow_bodies() {
+        let script = r#"
+#!/usr/bin/env bash
+set -euxo pipefail
+if [[ "$(uname)" == Darwin ]]; then
+  export CONFIG_ARGS=""
+fi
+case "$(uname -m)" in
+  aarch64) export CFLAGS="-O3" ;;
+esac
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
+  -DZLIB_ROOT="${PREFIX}" \
+  -DCMAKE_CXX_COMPILER="${CXX}" \
+  "${CONFIG_ARGS}"
+make install PREFIX="${PREFIX}"
+"#;
+        let plan = interpret_build_script_minimal(script);
+        assert!(
+            plan.build_commands
+                .iter()
+                .chain(plan.install_commands.iter())
+                .any(|c| c.contains("-DCMAKE_CXX_COMPILER=\"${CXX}\""))
+        );
+        assert!(
+            !plan
+                .build_commands
+                .iter()
+                .any(|c| c.contains("CONFIG_ARGS=\"\"") || c.contains("aarch64)"))
+        );
+        assert!(
+            plan.install_commands
+                .iter()
+                .any(|c| c.contains("make install PREFIX=\"${PREFIX}\""))
+        );
+    }
+
+    #[test]
+    fn minimal_build_interpreter_keeps_cmake_configure_in_build_phase() {
+        let script = r#"
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX="${PREFIX}" -DCMAKE_CXX_COMPILER="${CXX}"
+cmake --build build --clean-first --target install -j "${CPU_COUNT}"
+"#;
+        let plan = interpret_build_script_minimal(script);
+        assert!(
+            plan.build_commands
+                .iter()
+                .any(|c| c.starts_with("cmake -S . -B build"))
+        );
+        assert!(
+            !plan
+                .install_commands
+                .iter()
+                .any(|c| c.starts_with("cmake -S . -B build"))
+        );
+    }
+
+    #[test]
+    fn minimal_build_interpreter_drops_diff_hunk_lines() {
+        let script = r#"
+--- src/old.c
++++ src/new.c
+@@ -1,3 +1,5 @@
++    "${PREFIX}/ssl/cacert.pem",
+cmake -S . -B build
+"#;
+        let plan = interpret_build_script_minimal(script);
+        assert_eq!(
+            plan.build_commands
+                .iter()
+                .filter(|line| line.contains("cmake -S . -B build"))
+                .count(),
+            1
+        );
+        assert!(
+            !plan
+                .build_commands
+                .iter()
+                .chain(plan.install_commands.iter())
+                .any(|line| line.starts_with("--- ") || line.starts_with("+++ ") || line.starts_with("@@"))
+        );
+    }
+
+    #[test]
+    fn minimal_build_interpreter_preserves_multiline_bioconductor_makevars_write() {
+        let script = r#"
+#!/bin/bash
+mv DESCRIPTION DESCRIPTION.old
+grep -v '^Priority: ' DESCRIPTION.old > DESCRIPTION
+mkdir -p ~/.R
+echo -e "CC=$CC
+FC=$FC
+CXX=$CXX
+CXX98=$CXX
+CXX11=$CXX
+CXX14=$CXX" > ~/.R/Makevars
+$R CMD INSTALL --build .
+"#;
+        let plan = interpret_build_script_minimal(script);
+        assert!(
+            plan.build_commands
+                .iter()
+                .any(|line| line == "mv DESCRIPTION DESCRIPTION.old")
+        );
+        assert!(
+            plan.build_commands
+                .iter()
+                .any(|line| line.contains("grep -v '^Priority: ' DESCRIPTION.old > DESCRIPTION"))
+        );
+        assert!(
+            plan.build_commands
+                .iter()
+                .any(|line| line.contains("mkdir -p ~/.R"))
+        );
+        let makevars_write = plan
+            .build_commands
+            .iter()
+            .find(|line| line.contains("> ~/.R/Makevars"))
+            .expect("multiline Makevars write retained as one command");
+        assert!(makevars_write.contains("echo -e \"CC=$CC\nFC=$FC\nCXX=$CXX"));
+        assert!(makevars_write.contains("CXX14=$CXX\" > ~/.R/Makevars"));
+        assert!(
+            plan.install_commands
+                .iter()
+                .any(|line| line.contains("$R CMD INSTALL --build ."))
+        );
+        assert!(
+            !plan
+                .install_commands
+                .iter()
+                .any(|line| line.contains("> ~/.R/Makevars"))
+        );
+    }
+
+    #[test]
+    fn minimal_payload_spec_keeps_bioconductor_makevars_write_out_of_install_phase() {
+        let parsed = ParsedMeta {
+            package_name: "bioconductor-biocgenerics".to_string(),
+            version: "0.56.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/biocgenerics.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://bioconductor.org".to_string(),
+            license: "Artistic-2.0".to_string(),
+            summary: "Bioconductor test".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "#!/bin/bash\nmv DESCRIPTION DESCRIPTION.old\ngrep -v '^Priority: ' DESCRIPTION.old > DESCRIPTION\nmkdir -p ~/.R\necho -e \"CC=$CC\nFC=$FC\nCXX=$CXX\nCXX98=$CXX\nCXX11=$CXX\nCXX14=$CXX\" > ~/.R/Makevars\n$R CMD INSTALL --build .\n"
+                    .to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["r-base".to_string()],
+            run_dep_specs_raw: vec!["r-base".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::from(["r-base".to_string()]),
+            run_deps: BTreeSet::from(["r-base".to_string()]),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "bioconductor-biocgenerics",
+            &parsed,
+            &plan,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            true,
+            false,
+        );
+        assert!(spec.contains("mv DESCRIPTION DESCRIPTION.old || true"));
+        assert!(spec.contains("mkdir -p ~/.R || true"));
+        assert!(spec.contains("CXX14=$CXX\" > ~/.R/Makevars || true"));
+        assert!(spec.contains("$R CMD INSTALL --build . || true"));
+        let install_section = spec
+            .split("%install\n")
+            .nth(1)
+            .expect("install section present");
+        assert!(!install_section.contains("> ~/.R/Makevars || true"));
+    }
+
+    #[test]
+    fn minimal_runtime_env_exports_python_linker_and_rust_homes() {
+        let block = render_minimal_runtime_env_block(PHOREUS_PYTHON_RUNTIME_311, false, true, false);
+        assert!(block.contains("export LD_LIBRARY_PATH=\"$PHOREUS_PYTHON_PREFIX/lib"));
+        assert!(block.contains("export CARGO_HOME=\"$PHOREUS_RUST_PREFIX\""));
+        assert!(block.contains("export RUSTUP_HOME=\"$PHOREUS_RUST_PREFIX/.rustup\""));
+    }
+
+    #[test]
+    fn minimal_payload_spec_fallback_messages_do_not_emit_section_tokens() {
+        let parsed = ParsedMeta {
+            package_name: "example-tool".to_string(),
+            version: "1.2.3".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/example-tool-1.2.3.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/example-tool".to_string(),
+            license: "MIT".to_string(),
+            summary: "example tool".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let plan = InterpretedBuildPlan {
+            build_commands: Vec::new(),
+            install_commands: Vec::new(),
+        };
+        let spec = render_payload_spec_minimal(
+            "example-tool",
+            &parsed,
+            &plan,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains("no explicit build commands extracted"));
+        assert!(spec.contains("no explicit install commands extracted"));
+        assert!(!spec.contains("%build commands extracted"));
+        assert!(!spec.contains("%install commands extracted"));
     }
 
     #[test]

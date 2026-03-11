@@ -171,3 +171,11 @@
 - Validation focus moves to explicitly exposed CLI behavior (`build`, `regression`, `generate-priority-specs`, `recipes`, `lookup`).
 - CLI-surface integration tests are added under `tests/` to keep coverage anchored to public command contracts.
 - Public documentation remains canonical in this repository and is mirrored into `../mnemosyne-docs`.
+
+## 2026-03-11
+
+### Bioconductor minimal-script interpretation hardening
+- Minimal canonical SPEC generation must interpret common Bioconductor `build.sh` patterns into shell-safe RPM sections rather than replaying fragmented source lines.
+- Multi-line quoted shell commands (for example `.R/Makevars` writes emitted via `echo -e "..." > ~/.R/Makevars`) are treated as single logical commands during interpretation.
+- Safe build-tree setup steps (`mv`, `grep`, `mkdir`, `echo`, `printf`, `sed`, related file preparation commands) are retained in `%build`; install actions remain in `%install`.
+- Regression tests now cover the Bioconductor `DESCRIPTION` rewrite plus `.R/Makevars` emission path so future interpreter changes cannot reintroduce this quoting failure class unnoticed.

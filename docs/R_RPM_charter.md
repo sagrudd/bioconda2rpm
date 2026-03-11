@@ -165,6 +165,29 @@ During `%build`, the RPM MUST:
 
 The library MUST reside inside the Phoreus prefix.
 
+## 7.2 Bioconductor Recipe Translation Rules
+
+For Bioconda-origin `r-*` and `bioconductor-*` recipes, `bioconda2rpm` SHALL prefer minimal canonical SPEC instructions over direct `build.sh` execution.
+
+The generator MUST:
+
+1. Interpret recipe intent into explicit RPM shell commands
+2. Preserve multi-line quoted shell writes as single commands
+3. Keep build-tree mutation and setup steps in `%build`
+4. Keep the actual `R CMD INSTALL` action in `%install`
+5. Avoid emitting fragmented shell assignments that can produce invalid `%build` or `%install` scripts
+
+This rule exists to keep public SPEC files small, reviewable, and regression-testable while still preserving the build semantics required by Bioconductor packages.
+
+## 7.3 Regression Requirement
+
+Every newly modelled R or Bioconductor build exception MUST ship with:
+
+1. A focused unit or regression test that reproduces the failing shell or dependency pattern
+2. A documentation update in this repository describing the decision or exception handling change
+
+R packaging fixes are not complete until both conditions are satisfied.
+
 ---
 
 # 8. Example SPEC Template — R Application
@@ -332,4 +355,3 @@ Under Phoreus, R applications are immutable, isolated runtime stacks distributed
 
 **End of R Packaging Charter**
 **Phoreus Packaging Authority**
-
