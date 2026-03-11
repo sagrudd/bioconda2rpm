@@ -195,3 +195,9 @@
 - Minimal canonical SPECs now export `RECIPE_DIR` and the Conda-era `PKG_NAME`, `PKG_VERSION`, `PKG_BUILDNUM`, and `PKG_BUILD_STRING` variables so translated recipe commands do not collapse into malformed paths such as `opt/-` or `share/--`.
 - Minimal canonical `%install` now performs the same relative-target symlink normalization needed to prevent RPM payloads from retaining absolute `%{buildroot}`-anchored links.
 - Regression tests cover both the exported variable surface and post-install symlink normalization in minimal mode.
+
+### Minimal canonical BuildRoot text scrubbing parity
+- The focused March 11 P2 inspection showed that minimal canonical SPECs for `kmer-jellyfish` and `nextflow` still emitted `%install` bodies without the BuildRoot text scrub pass that already existed in the full payload renderer.
+- Minimal canonical `%install` now runs the same deterministic pre-scrub and grep fallback for `%{buildroot}%{phoreus_prefix}` and raw `%{buildroot}` tokens across wrapper and metadata file classes.
+- Regression coverage now requires this scrub logic to remain present in minimal canonical SPEC generation.
+- Live package rerun for this class is pending Docker Desktop recovery after an external VM filesystem error (`EXT4-fs ... error -5`) interrupted the first verification attempt.

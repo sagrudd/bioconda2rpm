@@ -5869,6 +5869,29 @@ export CMAKE_BUILD_PARALLEL_LEVEL=\"$CPU_COUNT\"\n\
       ln -snf \"$fixed_target\" \"$link_path\"\n\
     fi\n\
     done < <(find %{{buildroot}}%{{phoreus_prefix}} -type l -print0 2>/dev/null)\n\
+    buildroot_prefix=\"%{{buildroot}}%{{phoreus_prefix}}\"\n\
+    final_prefix=\"%{{phoreus_prefix}}\"\n\
+    while IFS= read -r -d '' text_path; do\n\
+    case \"$text_path\" in\n\
+      *.pc|*.la|*.prl|*.pm|*.pl|*.py|*.sh|*.bash|*.zsh|*/bin/*|*/libexec/*)\n\
+        sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true\n\
+        ;;\n\
+    esac\n\
+    done < <(find %{{buildroot}}%{{phoreus_prefix}} -type f -print0 2>/dev/null)\n\
+    while IFS= read -r -d '' text_path; do\n\
+    sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true\n\
+    done < <(grep -RIlZ -- \"$buildroot_prefix\" %{{buildroot}}%{{phoreus_prefix}} 2>/dev/null || true)\n\
+    buildroot_root=\"%{{buildroot}}\"\n\
+    while IFS= read -r -d '' text_path; do\n\
+    case \"$text_path\" in\n\
+      *.pc|*.la|*.prl|*.pm|*.pl|*.py|*.sh|*.bash|*.zsh|*/bin/*|*/libexec/*)\n\
+        sed -i \"s|$buildroot_root||g\" \"$text_path\" || true\n\
+        ;;\n\
+    esac\n\
+    done < <(find %{{buildroot}}%{{phoreus_prefix}} -type f -print0 2>/dev/null)\n\
+    while IFS= read -r -d '' text_path; do\n\
+    sed -i \"s|$buildroot_root||g\" \"$text_path\" || true\n\
+    done < <(grep -RIlZ -- \"$buildroot_root\" %{{buildroot}}%{{phoreus_prefix}} 2>/dev/null || true)\n\
 mkdir -p %{{buildroot}}%{{phoreus_moddir}}\n\
 cat > %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua <<'LUAEOF'\n\
 help([[ {summary} ]])\n\
@@ -18213,6 +18236,59 @@ $R CMD INSTALL --build .
         assert!(spec.contains("done < <(find %{buildroot}%{phoreus_prefix} -type l -print0 2>/dev/null)"));
         assert!(spec.contains(
             "fixed_target=$(realpath -m --relative-to \"$link_dir\" \"$target_fs\" 2>/dev/null || true)"
+        ));
+    }
+
+    #[test]
+    fn minimal_payload_spec_pre_scrubs_buildroot_prefixes_in_wrappers_and_metadata() {
+        let parsed = ParsedMeta {
+            package_name: "nextflow".to_string(),
+            version: "25.10.4".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/nextflow".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/nextflow".to_string(),
+            license: "Apache-2.0".to_string(),
+            summary: "nextflow".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "mkdir -p $PREFIX/bin\nsed \"s|^NXF_DIST=.*|NXF_DIST=$PREFIX/share/$PKG_NAME/dist|\" nextflow > $PREFIX/bin/nextflow\n"
+                    .to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "nextflow",
+            &parsed,
+            &plan,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(spec.contains("buildroot_prefix=\"%{buildroot}%{phoreus_prefix}\""));
+        assert!(spec.contains("final_prefix=\"%{phoreus_prefix}\""));
+        assert!(spec.contains(
+            "sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true"
+        ));
+        assert!(spec.contains(
+            "done < <(grep -RIlZ -- \"$buildroot_prefix\" %{buildroot}%{phoreus_prefix} 2>/dev/null || true)"
+        ));
+        assert!(spec.contains("buildroot_root=\"%{buildroot}\""));
+        assert!(spec.contains("sed -i \"s|$buildroot_root||g\" \"$text_path\" || true"));
+        assert!(spec.contains(
+            "done < <(grep -RIlZ -- \"$buildroot_root\" %{buildroot}%{phoreus_prefix} 2>/dev/null || true)"
         ));
     }
 

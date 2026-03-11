@@ -99,6 +99,11 @@ Exit criteria:
 
 ### P2. BuildRoot path text contamination
 
+Status:
+- In progress
+- First focused rerun was interrupted by Docker Desktop VM filesystem corruption, so package-level closure is still pending
+- Minimal canonical renderer parity patch is now required because the text scrub pass was present in full payload specs but missing from minimal canonical specs
+
 Root packages:
 - `kmer-jellyfish`
 - `nextflow`
