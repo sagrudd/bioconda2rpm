@@ -8354,11 +8354,25 @@ SVYNCEOF\n\
     buildroot_prefix=\"%{{buildroot}}%{{phoreus_prefix}}\"\n\
     final_prefix=\"%{{phoreus_prefix}}\"\n\
     while IFS= read -r -d '' text_path; do\n\
+    case \"$text_path\" in\n\
+      *.pc|*.la|*.prl|*.pm|*.pl|*.py|*.sh|*.bash|*.zsh|*/bin/*|*/libexec/*)\n\
+        sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true\n\
+        ;;\n\
+    esac\n\
+    done < <(find %{{buildroot}}%{{phoreus_prefix}} -type f -print0 2>/dev/null)\n\
+    while IFS= read -r -d '' text_path; do\n\
     sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true\n\
     done < <(grep -RIlZ -- \"$buildroot_prefix\" %{{buildroot}}%{{phoreus_prefix}} 2>/dev/null || true)\n\
     # Some configure metadata stores raw %{{buildroot}} without the install prefix\n\
     # suffix (for example linker probes in config.status). Scrub those tokens too.\n\
     buildroot_root=\"%{{buildroot}}\"\n\
+    while IFS= read -r -d '' text_path; do\n\
+    case \"$text_path\" in\n\
+      *.pc|*.la|*.prl|*.pm|*.pl|*.py|*.sh|*.bash|*.zsh|*/bin/*|*/libexec/*)\n\
+        sed -i \"s|$buildroot_root||g\" \"$text_path\" || true\n\
+        ;;\n\
+    esac\n\
+    done < <(find %{{buildroot}}%{{phoreus_prefix}} -type f -print0 2>/dev/null)\n\
     while IFS= read -r -d '' text_path; do\n\
     sed -i \"s|$buildroot_root||g\" \"$text_path\" || true\n\
     done < <(grep -RIlZ -- \"$buildroot_root\" %{{buildroot}}%{{phoreus_prefix}} 2>/dev/null || true)\n\
@@ -15689,6 +15703,87 @@ requirements:
             "done < <(find \"$target_dir\" -maxdepth 1 -mindepth 1 -name \"$target_pat\" -print0 2>/dev/null)"
         ));
         assert!(spec.contains("ln -snf \"$fixed_target\" \"$link_dir/$matched_base\""));
+    }
+
+    #[test]
+    fn payload_spec_pre_scrubs_buildroot_prefixes_in_pkgconfig_and_wrappers() {
+        let parsed = ParsedMeta {
+            package_name: "nextflow".to_string(),
+            version: "25.10.4".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/nextflow".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/nextflow".to_string(),
+            license: "Apache-2.0".to_string(),
+            summary: "nextflow".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec(
+            "nextflow",
+            &parsed,
+            "bioconda-nextflow-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("case \"$text_path\" in"));
+        assert!(spec.contains("*.pc|*.la|*.prl|*.pm|*.pl|*.py|*.sh|*.bash|*.zsh|*/bin/*|*/libexec/*)"));
+        assert!(spec.contains("sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true"));
+        assert!(spec.contains("sed -i \"s|$buildroot_root||g\" \"$text_path\" || true"));
+        assert!(spec.contains("done < <(find %{buildroot}%{phoreus_prefix} -type f -print0 2>/dev/null)"));
+    }
+
+    #[test]
+    fn trinity_spec_retains_grep_fallback_after_pre_scrub_pass() {
+        let parsed = ParsedMeta {
+            package_name: "trinity".to_string(),
+            version: "2.15.2".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/trinity.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/trinity".to_string(),
+            license: "BSD-3-Clause".to_string(),
+            summary: "trinity".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("make -j${CPU_COUNT}".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["cmake".to_string(), "pkg-config".to_string()],
+            host_dep_specs_raw: vec!["r-base".to_string(), "perl".to_string()],
+            run_dep_specs_raw: vec!["r-base".to_string(), "perl".to_string()],
+            build_deps: BTreeSet::from(["cmake".to_string(), "pkg-config".to_string()]),
+            host_deps: BTreeSet::from(["r-base".to_string(), "perl".to_string()]),
+            run_deps: BTreeSet::from(["r-base".to_string(), "perl".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "trinity",
+            &parsed,
+            "bioconda-trinity-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("grep -RIlZ -- \"$buildroot_prefix\" %{buildroot}%{phoreus_prefix} 2>/dev/null || true"));
+        assert!(spec.contains("grep -RIlZ -- \"$buildroot_root\" %{buildroot}%{phoreus_prefix} 2>/dev/null || true"));
     }
 
     #[test]

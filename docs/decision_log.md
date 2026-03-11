@@ -184,3 +184,8 @@
 - Post-install normalization now rewrites in-tree absolute symlinks to relative targets instead of leaving path prefixes anchored to `%{buildroot}`.
 - Wildcard symlink artifacts (for example `bin/* -> .../opt/.../*`) are removed and replaced with per-file relative links resolved from the realized target directory contents.
 - Regression tests cover both direct BuildRoot-to-relative rewriting and wildcard symlink expansion so wrapper-heavy payloads remain protected against this failure class.
+
+### BuildRoot text scrub broadening
+- Post-install buildroot scrubbing now performs a deterministic pre-pass across installed metadata and launcher file classes (`.pc`, `.la`, `.prl`, script-like files, `bin/*`, `libexec/*`) before the historical grep-discovered fallback pass.
+- This broadening is required because some installed wrappers and metadata are executable or otherwise not reliably selected by `grep -RIlZ`, yet still fail RPM `check-buildroot`.
+- Regression tests now require both the pre-scrub pass and the historical grep fallback to remain present.
