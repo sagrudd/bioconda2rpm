@@ -34,6 +34,7 @@ The product is structured as layered components:
 2. Recipe Discovery Layer
 - Resolves package recipe location under managed default root or user-provided override.
 - Manages first-run repository bootstrap by cloning Bioconda recipes into `<topdir>/bioconda-recipes` when absent.
+- Treats repository bootstrap/repair as a shared runtime contract for library consumers such as Phoreus, not a CLI-only behavior.
 - Supports sync and explicit ref checkout (branch/tag/commit) for managed repository state control.
 - Applies versioned-subdirectory selection rule (highest version).
 - Resolves overlap from priority input tools to Bioconda recipe directories.
@@ -131,6 +132,7 @@ The product is structured as layered components:
   - Container runtime must use controlled build profiles only (`almalinux-9.7`, `almalinux-10.1`, `fedora-43`), defaulting to `almalinux-9.7`.
   - Missing local container image for a selected profile is auto-built from `containers/rpm-build-images/` before package build stages run.
   - Managed Bioconda recipe synchronization/checkout must be implemented in-process and must not require a system `git` binary.
+  - Managed Bioconda recipe bootstrap/repair semantics must remain identical for CLI and shared-library consumers.
 
 ## 4. Platform and Build Strategy
 

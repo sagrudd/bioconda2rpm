@@ -84,9 +84,11 @@ FR-010 Artifact/output location
 - The CLI shall create default output directories when missing.
 - The CLI shall default Bioconda recipe root to `~/bioconda2rpm/bioconda-recipes/recipes` when `--recipe-root` is omitted.
 - On first run with default recipe root, the system shall clone `https://github.com/bioconda/bioconda-recipes`.
+- Managed repository preparation shall clone or repair the Bioconda repository at `<topdir>/bioconda-recipes` when the managed root is absent or incomplete.
 - The build/regression/generation commands shall expose recipe repository sync (`--sync-recipes`) and explicit ref selection (`--recipe-ref`).
 - The recipes command shall expose equivalent lifecycle controls (`--sync`, `--recipe-ref`).
 - Managed recipe repository operations shall not require a system `git` executable.
+- Phoreus integrations consuming recipe metadata through the shared library surface shall use the same managed repository contract and shall not implement divergent recipe-root discovery rules.
 - Canonical recipe-derived assets shall remain shared at `<topdir>/SPECS` and `<topdir>/SOURCES`.
 - SRPM/RPM/report/quarantine outputs shall be isolated per build target under `<topdir>/targets/<target-id>/...`.
 - `<target-id>` shall be a deterministic slug derived from container image and target architecture.
