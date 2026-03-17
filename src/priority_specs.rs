@@ -9533,6 +9533,10 @@ for patch_dir in \"${{patch_dirs[@]}}\"; do\n\
       patch_applied=1\n\
       break 2\n\
     fi\n\
+    if (cd \"$patch_dir\" && patch -l --binary --forward --batch -p\"$patch_strip\" -i \"$patch_input\"); then\n\
+      patch_applied=1\n\
+      break 2\n\
+    fi\n\
   done\n\
 done\n\
 if [[ -n \"$patch_trim_tmp\" ]]; then\n\
@@ -9551,6 +9555,52 @@ fi\n",
         }
         out
     }
+}
+
+fn source_validation_shell_function() -> &'static str {
+    "validate_source_file() {\n\
+  local source_path=\"$1\"\n\
+  [[ -s \"$source_path\" ]] || return 1\n\
+  case \"$source_path\" in\n\
+    *.tar.gz|*.tgz)\n\
+      if command -v gzip >/dev/null 2>&1; then gzip -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      if command -v tar >/dev/null 2>&1; then tar -tzf \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      ;;\n\
+    *.tar.bz2|*.tbz2)\n\
+      if command -v bzip2 >/dev/null 2>&1; then bzip2 -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      if command -v tar >/dev/null 2>&1; then tar -tjf \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      ;;\n\
+    *.tar.xz|*.txz)\n\
+      if command -v xz >/dev/null 2>&1; then xz -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      if command -v tar >/dev/null 2>&1; then tar -tJf \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      ;;\n\
+    *.tar)\n\
+      if command -v tar >/dev/null 2>&1; then tar -tf \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      ;;\n\
+    *.zip)\n\
+      if command -v unzip >/dev/null 2>&1; then unzip -tqq \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      ;;\n\
+    *.gz)\n\
+      if command -v gzip >/dev/null 2>&1; then gzip -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      ;;\n\
+    *.bz2)\n\
+      if command -v bzip2 >/dev/null 2>&1; then bzip2 -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      ;;\n\
+    *.xz)\n\
+      if command -v xz >/dev/null 2>&1; then xz -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      ;;\n\
+    *)\n\
+      if command -v tar >/dev/null 2>&1 && tar -tzf \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
+      if command -v tar >/dev/null 2>&1 && tar -tf \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
+      if command -v unzip >/dev/null 2>&1 && unzip -tqq \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
+      if command -v gzip >/dev/null 2>&1 && gzip -t \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
+      if command -v bzip2 >/dev/null 2>&1 && bzip2 -t \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
+      if command -v xz >/dev/null 2>&1 && xz -t \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
+      return 1\n\
+      ;;\n\
+  esac\n\
+  return 0\n\
+}\n"
 }
 
 fn stage_recipe_patches(
@@ -11300,42 +11350,7 @@ if [[ \"$source0_url\" =~ ^https?://(www\\.)?clustal\\.org/omega/(clustal-omega-
   source_candidates+=(\"https://github.com/GSLBiotech/clustal-omega/archive/refs/tags/${{clustalo_version}}.tar.gz\")\n\
   source_candidates+=(\"https://github.com/GSLBiotech/clustal-omega/archive/${{BASH_REMATCH[2]}}.tar.gz\")\n\
 fi\n\
-validate_source_file() {{\n\
-  local source_path=\"$1\"\n\
-  [[ -s \"$source_path\" ]] || return 1\n\
-  case \"$source_path\" in\n\
-    *.tar.gz|*.tgz)\n\
-      if command -v gzip >/dev/null 2>&1; then gzip -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
-      if command -v tar >/dev/null 2>&1; then tar -tzf \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
-      ;;\n\
-    *.tar.bz2|*.tbz2)\n\
-      if command -v bzip2 >/dev/null 2>&1; then bzip2 -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
-      if command -v tar >/dev/null 2>&1; then tar -tjf \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
-      ;;\n\
-    *.tar.xz|*.txz)\n\
-      if command -v xz >/dev/null 2>&1; then xz -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
-      if command -v tar >/dev/null 2>&1; then tar -tJf \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
-      ;;\n\
-    *.tar)\n\
-      if command -v tar >/dev/null 2>&1; then tar -tf \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
-      ;;\n\
-    *.zip)\n\
-      if command -v unzip >/dev/null 2>&1; then unzip -tqq \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
-      ;;\n\
-    *.gz)\n\
-      if command -v gzip >/dev/null 2>&1; then gzip -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
-      ;;\n\
-    *.bz2)\n\
-      if command -v bzip2 >/dev/null 2>&1; then bzip2 -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
-      ;;\n\
-    *.xz)\n\
-      if command -v xz >/dev/null 2>&1; then xz -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
-      ;;\n\
-    *)\n\
-      ;;\n\
-  esac\n\
-  return 0\n\
-}}\n\
+{source_validation}\
 spectool_ok=0\n\
 if [[ -z \"$source0_url\" ]]; then\n\
   spectool_ok=1\n\
@@ -11738,6 +11753,7 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
         target_arch = build_config.target_arch,
         initial_jobs = initial_jobs,
         adaptive_retry = if adaptive_retry_enabled { 1 } else { 0 },
+        source_validation = source_validation_shell_function(),
     );
 
     let run_once = |attempt: usize| -> Result<(std::process::ExitStatus, String)> {
@@ -13269,6 +13285,11 @@ requirements:
                 "patch --binary --forward --batch -p\"$patch_strip\" -i \"$patch_input\""
             )
         );
+        assert!(
+            spec.contains(
+                "patch -l --binary --forward --batch -p\"$patch_strip\" -i \"$patch_input\""
+            )
+        );
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(spec.contains("retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\""));
         assert!(spec.contains("export CPU_COUNT=\"${BIOCONDA2RPM_CPU_COUNT:-1}\""));
@@ -13342,6 +13363,16 @@ requirements:
             source_archive_kind("https://example.invalid/nextflow"),
             SourceArchiveKind::File
         );
+    }
+
+    #[test]
+    fn source_validation_shell_function_probes_extensionless_archives() {
+        let shell = source_validation_shell_function();
+
+        assert!(shell.contains("if command -v tar >/dev/null 2>&1 && tar -tzf \"$source_path\" >/dev/null 2>&1; then return 0; fi"));
+        assert!(shell.contains("if command -v tar >/dev/null 2>&1 && tar -tf \"$source_path\" >/dev/null 2>&1; then return 0; fi"));
+        assert!(shell.contains("if command -v unzip >/dev/null 2>&1 && unzip -tqq \"$source_path\" >/dev/null 2>&1; then return 0; fi"));
+        assert!(shell.contains("return 1"));
     }
 
     #[test]

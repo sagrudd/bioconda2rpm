@@ -90,6 +90,7 @@ Defaults when omitted:
 - `docs/STATISTICAL_SAMPLING_STRATEGY.md`
 - `docs/NORMALIZATION_READINESS_GATE.md`
 - `docs/NORMALIZATION_MATURITY_INDEX.md`
+- `docs/P95_ACCEPTANCE_STRATEGY.md`
 - `docs/ECOSYSTEM_STABILITY_STRESS_TEST_FRAMEWORK.md`
 - `docs/LONG_TERM_ECOSYSTEM_EVOLUTION_MODEL.md`
 - `docs/historical_log_mining/historical_log_mining_report.md`

@@ -1,0 +1,8 @@
+abyss
+advntr
+alevin-fry
+any2fasta
+args_oap
+assembly-scan
+bamtools
+bandage

@@ -6,10 +6,12 @@ use git2::{AutotagOption, FetchOptions, ObjectType, Oid, RemoteCallbacks, Reposi
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
 const BIOCONDA_RECIPES_REMOTE: &str = "https://github.com/bioconda/bioconda-recipes.git";
+const RECIPE_CLONE_BACKEND_ENV: &str = "BIOCONDA2RPM_RECIPE_CLONE_BACKEND";
 
 #[derive(Debug, Clone)]
 pub struct RecipeRepoRequest {
@@ -339,6 +341,20 @@ fn short_oid(oid: Oid) -> String {
 
 fn clone_repository(repo_root: &Path) -> Result<()> {
     let started = Instant::now();
+    let clone_backend = std::env::var(RECIPE_CLONE_BACKEND_ENV).ok();
+    if clone_backend.as_deref() == Some("git") {
+        priority_specs::log_external_progress(format!(
+            "phase=recipe-sync status=running action=clone backend=git_cli repo={}",
+            repo_root.to_string_lossy()
+        ));
+        clone_repository_with_git_cli(repo_root)?;
+        priority_specs::log_external_progress(format!(
+            "phase=recipe-sync status=completed action=clone backend=git_cli elapsed={}",
+            format_elapsed(started.elapsed())
+        ));
+        return Ok(());
+    }
+
     let mut fetch_options = FetchOptions::new();
     fetch_options.download_tags(AutotagOption::All);
     fetch_options.remote_callbacks(make_transfer_callbacks("clone"));
@@ -352,6 +368,21 @@ fn clone_repository(repo_root: &Path) -> Result<()> {
         format_elapsed(started.elapsed())
     ));
     Ok(())
+}
+
+fn clone_repository_with_git_cli(repo_root: &Path) -> Result<()> {
+    let status = Command::new("git")
+        .arg("clone")
+        .arg("--progress")
+        .arg(BIOCONDA_RECIPES_REMOTE)
+        .arg(repo_root)
+        .status()
+        .context("running git CLI clone for recipes repository")?;
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("git CLI clone failed with status {status}");
+    }
 }
 
 fn make_transfer_callbacks(action: &'static str) -> RemoteCallbacks<'static> {

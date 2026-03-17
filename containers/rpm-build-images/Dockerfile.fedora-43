@@ -1,8 +1,6 @@
 # syntax=docker/dockerfile:1.7
-ARG TARGETPLATFORM=linux/amd64
-FROM --platform=$TARGETPLATFORM fedora:43
+FROM fedora:43
 
-ARG TARGETPLATFORM
 ARG TARGETARCH
 
 LABEL org.opencontainers.image.title="bioconda2rpm build image (Fedora 43)" \

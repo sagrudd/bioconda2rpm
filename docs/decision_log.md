@@ -201,3 +201,8 @@
 - Minimal canonical `%install` now runs the same deterministic pre-scrub and grep fallback for `%{buildroot}%{phoreus_prefix}` and raw `%{buildroot}` tokens across wrapper and metadata file classes.
 - Regression coverage now requires this scrub logic to remain present in minimal canonical SPEC generation.
 - Live package rerun for this class is pending Docker Desktop recovery after an external VM filesystem error (`EXT4-fs ... error -5`) interrupted the first verification attempt.
+
+### Patch and source-validation hardening for prep-time failures
+- `%prep` patch application now retries each candidate directory and strip level with whitespace-insensitive matching (`patch -l`) after the strict pass, which covers drift like the `ucsc-*` userApps patches where context changed only in tab-versus-space formatting.
+- Container source validation now probes archive content even when the fetched filename loses its extension (for example GitHub codeload fallbacks writing `v2.6.4` instead of `v2.6.4.tar.gz`), so truncated downloads are rejected before `rpmbuild -bs`.
+- Regression coverage now pins both the whitespace-tolerant patch fallback and the extensionless archive validation path.
