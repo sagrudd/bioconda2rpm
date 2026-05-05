@@ -135,6 +135,8 @@ struct MinimalBuildScope {
     symlink_normalization_required: bool,
     buildroot_text_scrub_required: bool,
     sparsehash_configure_fallback_required: bool,
+    recipe_build_sh_required: bool,
+    blast_compat_required: bool,
 }
 
 impl MinimalBuildScope {
@@ -175,6 +177,12 @@ impl MinimalBuildScope {
         }
         if self.sparsehash_configure_fallback_required {
             labels.push("sparsehash-configure-fallback");
+        }
+        if self.recipe_build_sh_required {
+            labels.push("recipe-build-sh");
+        }
+        if self.blast_compat_required {
+            labels.push("blast-compat");
         }
         if labels.is_empty() {
             labels.push("base");
@@ -2960,7 +2968,8 @@ fn process_tool(
         ));
     }
 
-    let staged_build_sh = PathBuf::from("inline-interpreted-build");
+    let mut staged_build_sh = PathBuf::from("inline-interpreted-build");
+    let mut staged_build_sh_name: Option<String> = None;
     let precompiled_override = precompiled_binary_override(&software_slug, &parsed);
 
     let raw_build_script = if let Some(override_cfg) = precompiled_override.as_ref() {
@@ -3153,6 +3162,56 @@ fn process_tool(
             staged_build_sh: staged_build_sh.display().to_string(),
         };
     }
+    if package_requires_original_build_script(&software_slug, &parsed, &interpreted_build_plan) {
+        let build_sh_source_name = format!("bioconda-{software_slug}-build.sh");
+        let build_sh_source_path = sources_dir.join(&build_sh_source_name);
+        if let Err(err) = fs::write(&build_sh_source_path, &build_script) {
+            let reason = format!("failed to stage recipe build.sh: {err}");
+            quarantine_note(bad_spec_dir, &software_slug, &reason);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "quarantined".to_string(),
+                reason,
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: build_sh_source_path.display().to_string(),
+            };
+        }
+        #[cfg(unix)]
+        {
+            if let Err(err) =
+                fs::set_permissions(&build_sh_source_path, fs::Permissions::from_mode(0o755))
+            {
+                let reason = format!(
+                    "failed to set staged build.sh permissions {}: {err}",
+                    build_sh_source_path.display()
+                );
+                quarantine_note(bad_spec_dir, &software_slug, &reason);
+                return ReportEntry {
+                    software: tool.software.clone(),
+                    priority: tool.priority,
+                    status: "quarantined".to_string(),
+                    reason,
+                    overlap_recipe: resolved.recipe_name,
+                    overlap_reason: resolved.overlap_reason,
+                    variant_dir: resolved.variant_dir.display().to_string(),
+                    package_name: parsed.package_name,
+                    version: parsed.version,
+                    payload_spec_path: String::new(),
+                    meta_spec_path: String::new(),
+                    staged_build_sh: build_sh_source_path.display().to_string(),
+                };
+            }
+        }
+        staged_build_sh = build_sh_source_path;
+        staged_build_sh_name = Some(build_sh_source_name);
+    }
 
     let payload_spec_path = specs_dir.join(format!("phoreus-{}.spec", software_slug));
     let meta_spec_path = specs_dir.join(format!("phoreus-{}-default.spec", software_slug));
@@ -3161,6 +3220,7 @@ fn process_tool(
         &software_slug,
         &parsed,
         &interpreted_build_plan,
+        staged_build_sh_name.as_deref(),
         &staged_patch_sources,
         &resolved.meta_path,
         &resolved.variant_dir,
@@ -5555,10 +5615,13 @@ fn line_targets_prefix_install(line: &str) -> bool {
 }
 
 fn line_is_install_command(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    if lower.starts_with("cmake --build") && lower.contains("--target install") {
+        return true;
+    }
     if line_is_build_command(line) {
         return false;
     }
-    let lower = line.to_ascii_lowercase();
     lower.starts_with("make install")
         || lower.starts_with("cmake --install")
         || lower.starts_with("ninja install")
@@ -5687,7 +5750,24 @@ fn recipe_dep_mentions_any(parsed: &ParsedMeta, dep_names: &[&str]) -> bool {
         .any(|dep| dep_names.iter().any(|name| dep == *name))
 }
 
+fn package_requires_original_build_script(
+    software_slug: &str,
+    _parsed: &ParsedMeta,
+    _interpreted_build_plan: &InterpretedBuildPlan,
+) -> bool {
+    // HEURISTIC-TEMP(issue=bioconda2rpm#blast-minimal-build-script-scope):
+    // BLAST's Bioconda build.sh is stateful; splitting it loses configure state.
+    software_slug == "blast"
+}
+
+fn package_requires_blast_compat(software_slug: &str) -> bool {
+    // HEURISTIC-TEMP(issue=bioconda2rpm#blast-minimal-build-script-scope):
+    // Keep BLAST-specific RPM compatibility edits scoped to BLAST only.
+    software_slug == "blast"
+}
+
 fn compute_minimal_build_scope(
+    software_slug: &str,
     parsed: &ParsedMeta,
     interpreted_build_plan: &InterpretedBuildPlan,
     python_script_hint: bool,
@@ -5725,6 +5805,9 @@ fn compute_minimal_build_scope(
         && command_mentions_any(&all_commands, &["--with-sparsehash"]);
     let buildroot_text_scrub_required =
         command_mentions_buildroot_text_risk(&interpreted_build_plan.install_commands);
+    let recipe_build_sh_required =
+        package_requires_original_build_script(software_slug, parsed, interpreted_build_plan);
+    let blast_compat_required = package_requires_blast_compat(software_slug);
 
     MinimalBuildScope {
         python_runtime_required,
@@ -5741,6 +5824,8 @@ fn compute_minimal_build_scope(
         ),
         buildroot_text_scrub_required,
         sparsehash_configure_fallback_required,
+        recipe_build_sh_required,
+        blast_compat_required,
     }
 }
 
@@ -5892,10 +5977,42 @@ fi\n",
     out
 }
 
+fn render_minimal_blast_compat_block(scope: &MinimalBuildScope) -> String {
+    if !scope.blast_compat_required {
+        return String::new();
+    }
+
+    "export CPPFLAGS=\"${CPPFLAGS:-}\"\n\
+export CFLAGS=\"${CFLAGS:-} -fPIC\"\n\
+export LDFLAGS=\"${LDFLAGS:-}\"\n\
+export CXXFLAGS=\"${CXXFLAGS:-}\"\n\
+export AR=\"${AR:-ar}\"\n\
+export ncbi_cv_lib_boost_test=no\n\
+vdb_prefix=$(find /usr/local/phoreus/ncbi-vdb -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1 || true)\n\
+if [[ -n \"$vdb_prefix\" ]]; then\n\
+  sed -i 's|--with-vdb=$PREFIX|--with-vdb='\"$vdb_prefix\"'|g' ./build.sh\n\
+  sed -i 's|--with-vdb=${PREFIX}|--with-vdb='\"$vdb_prefix\"'|g' ./build.sh\n\
+fi\n\
+sed -i 's|--with-z=$PREFIX|--with-z=/usr|g' ./build.sh\n\
+sed -i 's|--with-z=${PREFIX}|--with-z=/usr|g' ./build.sh\n\
+sed -i 's|--with-bz2=$PREFIX|--with-bz2=/usr|g' ./build.sh\n\
+sed -i 's|--with-bz2=${PREFIX}|--with-bz2=/usr|g' ./build.sh\n\
+sed -i 's|--with-sqlite3=$PREFIX|--with-sqlite3=/usr|g' ./build.sh\n\
+sed -i 's|--with-sqlite3=${PREFIX}|--with-sqlite3=/usr|g' ./build.sh\n\
+sed -i 's|--with-bin-release|--without-bin-release|g' ./build.sh\n\
+sed -i 's|n_workers=8|n_workers=1|g' ./build.sh\n\
+sed -i 's|n_workers=${CPU_COUNT:-1}|n_workers=1|g' ./build.sh\n\
+sed -i 's|ln -s \"$RESULT_PATH/lib\" \"$LIB_INSTALL_DIR\"|mkdir -p \"$(dirname \"$LIB_INSTALL_DIR\")\"\\nln -s \"$RESULT_PATH/lib\" \"$LIB_INSTALL_DIR\"|g' ./build.sh\n\
+sed -i 's|rm \"$LIB_INSTALL_DIR\"|rm -rf \"$LIB_INSTALL_DIR\"|g' ./build.sh\n\
+sed -E -i 's|cp \"\\$RESULT_PATH/lib/\"\\* \"\\$LIB_INSTALL_DIR\"|for blast_lib_path in \"$RESULT_PATH\"/lib/*; do if [[ -f \"$blast_lib_path\" ]]; then cp \"$blast_lib_path\" \"$LIB_INSTALL_DIR\"/; fi; done|g' ./build.sh\n"
+        .to_string()
+}
+
 fn render_payload_spec_minimal(
     software_slug: &str,
     parsed: &ParsedMeta,
     interpreted_build_plan: &InterpretedBuildPlan,
+    staged_build_sh_name: Option<&str>,
     staged_patch_sources: &[String],
     meta_path: &Path,
     variant_dir: &Path,
@@ -5921,6 +6038,7 @@ fn render_payload_spec_minimal(
     let python_recipe = is_python_recipe(parsed) || python_script_hint;
     let python_runtime = select_phoreus_python_runtime(parsed, python_recipe);
     let scope = compute_minimal_build_scope(
+        software_slug,
         parsed,
         interpreted_build_plan,
         python_script_hint,
@@ -6028,6 +6146,13 @@ mkdir -p %{bioconda_source_subdir}\n"
     } else {
         String::new()
     };
+    let source1_line = if scope.recipe_build_sh_required {
+        staged_build_sh_name
+            .map(|build_sh| format!("Source1:        {}\n", spec_escape(build_sh)))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     let source_git_macros = if let Some((url, rev)) = git_source.as_ref() {
         format!(
             "%global bioconda_source_git_url {}\n%global bioconda_source_git_rev {}\n",
@@ -6040,6 +6165,13 @@ mkdir -p %{bioconda_source_subdir}\n"
     let patch_source_lines = render_patch_source_lines(staged_patch_sources);
     let patch_apply_lines =
         render_patch_apply_lines_minimal(staged_patch_sources, "%{bioconda_source_subdir}");
+    let staged_build_sh_prep = if scope.recipe_build_sh_required {
+        "cp %{SOURCE1} buildsrc/build.sh\n\
+chmod 0755 buildsrc/build.sh\n"
+            .to_string()
+    } else {
+        String::new()
+    };
     let build_arch_line = if noarch_python {
         "BuildArch:      noarch\n".to_string()
     } else {
@@ -6072,16 +6204,25 @@ mkdir -p %{bioconda_source_subdir}\n"
         &parsed.build_number,
         &scope,
     );
-    let build_commands = render_scoped_shell_lines(
-        &interpreted_build_plan.build_commands,
-        "bioconda2rpm minimal mode: no explicit build commands extracted",
-        &scope,
-    );
-    let install_commands = render_scoped_shell_lines(
-        &interpreted_build_plan.install_commands,
-        "bioconda2rpm minimal mode: no explicit install commands extracted",
-        &scope,
-    );
+    let build_commands = if scope.recipe_build_sh_required {
+        "echo \"bioconda2rpm minimal mode: recipe build.sh retained for install phase\"\n"
+            .to_string()
+    } else {
+        render_scoped_shell_lines(
+            &interpreted_build_plan.build_commands,
+            "bioconda2rpm minimal mode: no explicit build commands extracted",
+            &scope,
+        )
+    };
+    let install_commands = if scope.recipe_build_sh_required {
+        "bash -eo pipefail ./build.sh\n".to_string()
+    } else {
+        render_scoped_shell_lines(
+            &interpreted_build_plan.install_commands,
+            "bioconda2rpm minimal mode: no explicit install commands extracted",
+            &scope,
+        )
+    };
     let arch_env_block = if scope.arch_env_required {
         "%ifarch aarch64\n\
 export BIOCONDA_TARGET_ARCH=aarch64\n\
@@ -6157,6 +6298,7 @@ export CMAKE_BUILD_PARALLEL_LEVEL=\"$CPU_COUNT\"\n"
     } else {
         String::new()
     };
+    let blast_compat_block = render_minimal_blast_compat_block(&scope);
     let build_scope = scope.label_string();
     let perl_module_provides = if perl_recipe {
         perl_module_name_from_conda(&parsed.package_name)
@@ -6187,6 +6329,7 @@ License:        {license}\n\
 URL:            {homepage}\n\
 {build_arch}\
 {source0_line}\
+{source1_line}\
 {patch_sources}\n\
 {build_requires}\n\
 {requires}\n\
@@ -6201,6 +6344,7 @@ Minimal build scope: %{{bioconda2rpm_build_scope}}\n\
 \n\
 %prep\n\
 {source_unpack_prep}\
+{staged_build_sh_prep}\
 {patch_apply}\
 \n\
 %build\n\
@@ -6221,6 +6365,7 @@ export SRC_DIR=$(pwd)/%{{bioconda_source_relsubdir}}\n\
 export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
 {parallel_env_block}\
 {runtime_env_block}\
+{blast_compat_block}\
 {install_commands}\
 {symlink_normalization_block}\
 {buildroot_text_scrub_block}\
@@ -6253,6 +6398,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         homepage = homepage,
         build_arch = build_arch_line,
         source0_line = source0_line,
+        source1_line = source1_line,
         patch_sources = patch_source_lines,
         build_requires = build_requires_lines,
         requires = requires_lines,
@@ -6260,10 +6406,12 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         meta_path = spec_escape(&meta_path.display().to_string()),
         variant_dir = spec_escape(&variant_dir.display().to_string()),
         source_unpack_prep = source_unpack_prep,
+        staged_build_sh_prep = staged_build_sh_prep,
         patch_apply = patch_apply_lines,
         arch_env_block = arch_env_block,
         parallel_env_block = parallel_env_block,
         runtime_env_block = runtime_env_block,
+        blast_compat_block = blast_compat_block,
         build_commands = build_commands,
         install_commands = install_commands,
         symlink_normalization_block = symlink_normalization_block,
@@ -18323,6 +18471,17 @@ cmake --build build --clean-first --target install -j "${CPU_COUNT}"
                 .iter()
                 .any(|c| c.starts_with("cmake -S . -B build"))
         );
+        assert!(
+            plan.install_commands
+                .iter()
+                .any(|c| c.starts_with("cmake --build build --clean-first --target install"))
+        );
+        assert!(
+            !plan
+                .build_commands
+                .iter()
+                .any(|c| c.starts_with("cmake --build build --clean-first --target install"))
+        );
     }
 
     #[test]
@@ -18434,6 +18593,7 @@ $R CMD INSTALL --build .
             "bioconductor-biocgenerics",
             &parsed,
             &plan,
+            None,
             &[],
             Path::new("/tmp/meta.yaml"),
             Path::new("/tmp"),
@@ -18468,6 +18628,8 @@ $R CMD INSTALL --build .
             symlink_normalization_required: false,
             buildroot_text_scrub_required: false,
             sparsehash_configure_fallback_required: false,
+            recipe_build_sh_required: false,
+            blast_compat_required: false,
         };
         let block = render_minimal_runtime_env_block(
             PHOREUS_PYTHON_RUNTIME_311,
@@ -18496,6 +18658,8 @@ $R CMD INSTALL --build .
             symlink_normalization_required: false,
             buildroot_text_scrub_required: false,
             sparsehash_configure_fallback_required: false,
+            recipe_build_sh_required: false,
+            blast_compat_required: false,
         };
         let block = render_minimal_runtime_env_block(
             PHOREUS_PYTHON_RUNTIME_311,
@@ -18540,6 +18704,7 @@ $R CMD INSTALL --build .
             "example-tool",
             &parsed,
             &plan,
+            None,
             &[],
             Path::new("/tmp/meta.yaml"),
             Path::new("/tmp"),
@@ -18583,6 +18748,7 @@ $R CMD INSTALL --build .
             "example-tool",
             &parsed,
             &plan,
+            None,
             &[],
             Path::new("/tmp/meta.yaml"),
             Path::new("/tmp"),
@@ -18626,6 +18792,7 @@ $R CMD INSTALL --build .
             "abyss",
             &parsed,
             &plan,
+            None,
             &[],
             Path::new("/tmp/meta.yaml"),
             Path::new("/tmp"),
@@ -18654,6 +18821,115 @@ $R CMD INSTALL --build .
         assert!(!spec.contains("bwa-mem2"));
         assert!(!spec.contains("buildroot_prefix=\"%{buildroot}%{phoreus_prefix}\""));
         assert!(!spec.contains("find %{buildroot}%{phoreus_prefix} -type l"));
+    }
+
+    #[test]
+    fn minimal_payload_spec_blast_uses_recipe_build_sh_with_scoped_compat() {
+        let blast_build_script = r#"#!/usr/bin/env bash
+set -o nounset
+BLAST_SRC_DIR="$SRC_DIR/c++"
+RESULT_PATH="$BLAST_SRC_DIR/Release"
+export CPPFLAGS="$CPPFLAGS -I$PREFIX/include"
+export LDFLAGS="$LDFLAGS -L$PREFIX/lib"
+export CXXFLAGS="$CXXFLAGS -Wno-deprecated-declarations"
+LIB_INSTALL_DIR="$PREFIX/lib/ncbi-blast+"
+CONFIGURE_FLAGS="--with-build-root=$RESULT_PATH"
+CONFIGURE_FLAGS="$CONFIGURE_FLAGS --with-bin-release"
+CONFIGURE_FLAGS="$CONFIGURE_FLAGS --with-vdb=$PREFIX"
+CONFIGURE_FLAGS="$CONFIGURE_FLAGS --with-z=$PREFIX"
+CONFIGURE_FLAGS="$CONFIGURE_FLAGS --with-bz2=$PREFIX"
+CONFIGURE_FLAGS="$CONFIGURE_FLAGS --with-sqlite3=$PREFIX"
+cd "$BLAST_SRC_DIR"
+./configure $CONFIGURE_FLAGS >&2
+export AR="${AR} rcs"
+ln -s "$RESULT_PATH/lib" "$LIB_INSTALL_DIR"
+n_workers=${CPU_COUNT:-1}
+n_workers=8
+cd "$RESULT_PATH/build"
+make -j $n_workers -f Makefile.flat $apps >&2
+rm "$LIB_INSTALL_DIR"
+cp "$RESULT_PATH/lib/"* "$LIB_INSTALL_DIR"
+"#;
+        let parsed = ParsedMeta {
+            package_name: "blast".to_string(),
+            version: "2.17.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/blast.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://blast.ncbi.nlm.nih.gov".to_string(),
+            license: "Public-Domain".to_string(),
+            summary: "blast".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(blast_build_script.to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["make".to_string(), "c-compiler".to_string()],
+            host_dep_specs_raw: vec![
+                "zlib".to_string(),
+                "bzip2".to_string(),
+                "ncbi-vdb".to_string(),
+                "curl".to_string(),
+                "sqlite =3".to_string(),
+            ],
+            run_dep_specs_raw: vec!["ncbi-vdb".to_string(), "curl".to_string()],
+            build_deps: BTreeSet::from([
+                "make".to_string(),
+                "c-compiler".to_string(),
+                "cxx-compiler".to_string(),
+            ]),
+            host_deps: BTreeSet::from([
+                "zlib".to_string(),
+                "bzip2".to_string(),
+                "ncbi-vdb".to_string(),
+                "curl".to_string(),
+                "sqlite =3".to_string(),
+            ]),
+            run_deps: BTreeSet::from(["ncbi-vdb".to_string(), "curl".to_string()]),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "blast",
+            &parsed,
+            &plan,
+            Some("bioconda-blast-build.sh"),
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains(
+            "%global bioconda2rpm_build_scope compiler-env,parallel-env,recipe-build-sh,blast-compat"
+        ));
+        assert!(spec.contains("Source1:        bioconda-blast-build.sh"));
+        assert!(spec.contains("cp %{SOURCE1} buildsrc/build.sh"));
+        assert!(spec.contains(
+            "bioconda2rpm minimal mode: recipe build.sh retained for install phase"
+        ));
+        assert!(spec.contains("bash -eo pipefail ./build.sh"));
+        assert!(spec.contains("export ncbi_cv_lib_boost_test=no"));
+        assert!(spec.contains("export CFLAGS=\"${CFLAGS:-} -fPIC\""));
+        assert!(spec.contains("sed -i 's|--with-vdb=$PREFIX|--with-vdb='\"$vdb_prefix\"'|g' ./build.sh"));
+        assert!(spec.contains("sed -i 's|--with-z=$PREFIX|--with-z=/usr|g' ./build.sh"));
+        assert!(spec.contains("sed -i 's|--with-bz2=$PREFIX|--with-bz2=/usr|g' ./build.sh"));
+        assert!(spec.contains("sed -i 's|--with-sqlite3=$PREFIX|--with-sqlite3=/usr|g' ./build.sh"));
+        assert!(spec.contains("sed -i 's|--with-bin-release|--without-bin-release|g' ./build.sh"));
+        assert!(spec.contains("sed -i 's|n_workers=8|n_workers=1|g' ./build.sh"));
+        assert!(spec.contains("mkdir -p \"$(dirname \"$LIB_INSTALL_DIR\")\""));
+        assert!(spec.contains("rm -rf \"$LIB_INSTALL_DIR\""));
+        assert!(spec.contains("for blast_lib_path in \"$RESULT_PATH\"/lib/*"));
+        assert!(!spec.contains("BIOCONDA_TARGET_ARCH"));
+        assert!(!spec.contains("%ifarch"));
+        assert!(!spec.contains("./configure $CONFIGURE_FLAGS || true"));
+        assert!(!spec.contains("PHOREUS_PYTHON_PREFIX"));
+        assert!(!spec.contains("PHOREUS_R_PREFIX"));
+        assert!(!spec.contains("PHOREUS_RUST_PREFIX"));
+        assert!(!spec.contains("if [[ \"%{tool}\" =="));
+        assert!(!spec.contains("bootstrapping capnproto into $PREFIX"));
+        assert!(!spec.contains("perl-xml-libxml"));
     }
 
     #[test]
@@ -18686,6 +18962,7 @@ $R CMD INSTALL --build .
             "fastqc",
             &parsed,
             &plan,
+            None,
             &[],
             Path::new("/tmp/meta.yaml"),
             Path::new("/tmp"),
@@ -18736,6 +19013,7 @@ $R CMD INSTALL --build .
             "nextflow",
             &parsed,
             &plan,
+            None,
             &[],
             Path::new("/tmp/meta.yaml"),
             Path::new("/tmp"),
