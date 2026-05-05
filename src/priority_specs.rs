@@ -1,4 +1,5 @@
 use crate::build_lock;
+use crate::list;
 use crate::cli::{
     BuildArgs, BuildContainerProfile, BuildStage, ContainerMode, DependencyPolicy,
     GeneratePrioritySpecsArgs, MetadataAdapter, MissingDependencyPolicy, NamingProfile,
@@ -630,6 +631,9 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
     sync_reference_python_specs(&specs_dir).context("syncing reference Phoreus Python specs")?;
 
     let mut tools = load_top_tools(&args.tools_csv, args.top_n)?;
+    let topdir_for_cat = topdir.clone();
+    let target_arch_for_cat = target_arch.clone();
+    let target_id_for_cat = target_id.clone();
     tools.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.line_no.cmp(&b.line_no)));
 
     let recipe_dirs = discover_recipe_dirs(&recipe_root)?;
@@ -692,7 +696,27 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
     write_reports(&results, &report_json, &report_csv, &report_md)?;
 
     let generated = results.iter().filter(|r| r.status == "generated").count();
-    let quarantined = results.len().saturating_sub(generated);
+    let quarantined = results.iter().filter(|r| r.status == "quarantined").count();
+
+    // Update the internal catalogue with generated entries.
+    let catalogue_entries: Vec<list::CatalogEntry> = results
+        .iter()
+        .filter(|r| r.status == "generated" || r.status == "up-to-date")
+        .map(|r| list::CatalogEntry {
+            software: r.software.clone(),
+            version: r.version.clone(),
+            arch: target_arch_for_cat.clone(),
+            target_id: target_id_for_cat.clone(),
+        })
+        .collect();
+    if !catalogue_entries.is_empty() {
+        if let Err(err) = list::add_entries_to_catalogue(&topdir_for_cat, &catalogue_entries) {
+            log_external_progress(format!(
+                "phase=catlog-update status=failed reason={}",
+                err
+            ));
+        }
+    }
 
     Ok(GenerationSummary {
         requested: results.len(),
@@ -1771,6 +1795,29 @@ fn run_build_batch_queue(
     let up_to_date = results.iter().filter(|r| r.status == "up-to-date").count();
     let skipped = results.iter().filter(|r| r.status == "skipped").count();
     let quarantined = results.iter().filter(|r| r.status == "quarantined").count();
+
+    // Update the internal catalogue with generated entries.
+    let arch_for_cat = build_config.target_arch.clone();
+    let tid_for_cat = build_config.target_id.clone();
+    let catalogue_entries: Vec<list::CatalogEntry> = results
+        .iter()
+        .filter(|r| r.status == "generated" || r.status == "up-to-date")
+        .map(|r| list::CatalogEntry {
+            software: r.software.clone(),
+            version: r.version.clone(),
+            arch: arch_for_cat.clone(),
+            target_id: tid_for_cat.clone(),
+        })
+        .collect();
+    if !catalogue_entries.is_empty() {
+        if let Err(err) = list::add_entries_to_catalogue(&build_config.topdir, &catalogue_entries) {
+            log_progress(format!(
+                "phase=catlog-update status=failed reason={}",
+                err
+            ));
+        }
+    }
+
     Ok(BuildSummary {
         requested: results.len(),
         generated,
