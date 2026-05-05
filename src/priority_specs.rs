@@ -6072,11 +6072,22 @@ fn command_mentions_buildroot_text_risk(commands: &[String]) -> bool {
     })
 }
 
-fn command_configures_prefix_from_prefix(commands: &[String]) -> bool {
+fn command_configures_install_prefix_from_prefix(commands: &[String]) -> bool {
     commands.iter().any(|line| {
-        line.contains("./configure")
-            && line.contains("--prefix")
-            && (line.contains("$PREFIX") || line.contains("${PREFIX}"))
+        let mentions_prefix = line.contains("$PREFIX") || line.contains("${PREFIX}");
+        mentions_prefix
+            && ((line.contains("./configure") && line.contains("--prefix"))
+                || (line.contains("cmake ") && line.contains("CMAKE_INSTALL_PREFIX")))
+    })
+}
+
+fn command_installs_configured_prefix(commands: &[String]) -> bool {
+    commands.iter().any(|line| {
+        line.contains("make install")
+            || line.contains("cmake --install")
+            || (line.contains("cmake --build")
+                && line.contains("--target")
+                && line.contains("install"))
     })
 }
 
@@ -6145,11 +6156,9 @@ fn compute_minimal_build_scope(
         && command_mentions_any(&all_commands, &["--with-sparsehash"]);
     let buildroot_text_scrub_required =
         command_mentions_buildroot_text_risk(&interpreted_build_plan.install_commands)
-            || (command_configures_prefix_from_prefix(&interpreted_build_plan.build_commands)
-                && command_mentions_any(
-                    &interpreted_build_plan.install_commands,
-                    &["make install"],
-                ));
+            || (command_configures_install_prefix_from_prefix(
+                &interpreted_build_plan.build_commands,
+            ) && command_installs_configured_prefix(&interpreted_build_plan.install_commands));
     let recipe_build_sh_required =
         package_requires_original_build_script(software_slug, parsed, interpreted_build_plan);
     let blast_compat_required = package_requires_blast_compat(software_slug);
@@ -19714,6 +19723,52 @@ cp "$RESULT_PATH/lib/"* "$LIB_INSTALL_DIR"
         assert!(spec.contains("BuildRequires:  chrpath"));
         assert!(spec.contains("chrpath -r \"$final_prefix/lib\" \"$elf_path\""));
         assert!(spec.contains("grep -a -q -- \"$buildroot_prefix\" \"$elf_path\""));
+    }
+
+    #[test]
+    fn minimal_payload_spec_scrubs_cmake_install_prefix_buildroot_rpaths() {
+        let parsed = ParsedMeta {
+            package_name: "bamtools".to_string(),
+            version: "2.5.3".to_string(),
+            build_number: "6".to_string(),
+            source_url: "https://example.invalid/bamtools-2.5.3.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/bamtools".to_string(),
+            license: "MIT".to_string(),
+            summary: "bamtools".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "cmake -S . -B build -DCMAKE_INSTALL_PREFIX=\"${PREFIX}\" -DCMAKE_INSTALL_RPATH=\"${PREFIX}/lib\"\ncmake --build build --clean-first --target install -j \"${CPU_COUNT}\"\n"
+                    .to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["cmake".to_string(), "cxx-compiler".to_string()],
+            host_dep_specs_raw: vec!["zlib".to_string()],
+            run_dep_specs_raw: vec!["zlib".to_string()],
+            build_deps: BTreeSet::from(["cmake".to_string(), "cxx-compiler".to_string()]),
+            host_deps: BTreeSet::from(["zlib".to_string()]),
+            run_deps: BTreeSet::from(["zlib".to_string()]),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "bamtools",
+            &parsed,
+            &plan,
+            None,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("buildroot-text-scrub"));
+        assert!(spec.contains("BuildRequires:  chrpath"));
+        assert!(spec.contains("chrpath -r \"$final_prefix/lib\" \"$elf_path\""));
+        assert!(spec.contains("grep -RIlZ -- \"$buildroot_prefix\""));
     }
 
     #[test]
