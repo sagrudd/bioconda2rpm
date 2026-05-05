@@ -4556,8 +4556,12 @@ fn recipe_requires_python_runtime(parsed: &ParsedMeta) -> bool {
         .iter()
         .chain(parsed.host_deps.iter())
         .chain(parsed.run_deps.iter())
-        .map(|dep| normalize_dependency_token(dep))
-        .any(|dep| dep == "python" || dep.starts_with("python-"))
+        .any(|dep| {
+            let normalized = normalize_dependency_token(dep);
+            normalized == "python"
+                || normalized.starts_with("python-")
+                || is_phoreus_python_toolchain_dependency(&normalized)
+        })
 }
 
 fn is_r_project_recipe(parsed: &ParsedMeta) -> bool {
@@ -10462,7 +10466,7 @@ fn source_validation_shell_function() -> &'static str {
       if [[ \"$(od -An -tx1 -N4 \"$source_path\" 2>/dev/null | tr -d ' \\n')\" == \"7f454c46\" ]]; then return 0; fi\n\
       if head -n 1 \"$source_path\" 2>/dev/null | grep -q '^#!'; then return 0; fi\n\
       if head -c 512 \"$source_path\" 2>/dev/null | tr '[:upper:]' '[:lower:]' | grep -Eq '<!doctype html|<html|<head|<body|not found|access denied|rate limit'; then return 1; fi\n\
-      if command -v file >/dev/null 2>&1 && file -b \"$source_path\" | grep -Eqi 'ELF|script|executable'; then return 0; fi\n\
+      if command -v file >/dev/null 2>&1 && file -b \"$source_path\" | grep -Eqi 'ELF|script|executable|source|text'; then return 0; fi\n\
       return 1\n\
       ;;\n\
   esac\n\
@@ -10756,6 +10760,7 @@ fn map_build_dependency(dep: &str) -> String {
         "nettle" => "nettle-devel".to_string(),
         "ninja" => "ninja-build".to_string(),
         "openssl" => "openssl-devel".to_string(),
+        "openjdk" => "java-11-openjdk".to_string(),
         "openmpi" => "openmpi-devel".to_string(),
         // staden-io-lib link interfaces require liblzma/libbz2 symlinks from
         // -devel packages on EL; keep those available for downstream links
@@ -10768,6 +10773,7 @@ fn map_build_dependency(dep: &str) -> String {
         "qt" => "qt5-qtbase-devel qt5-qtsvg-devel".to_string(),
         "qt6-main" => "qt6-qtbase-devel qt6-qtsvg-devel".to_string(),
         "pybind11" => "pybind11-devel".to_string(),
+        "pybind11-global" => "pybind11-devel".to_string(),
         "llvmdev" => "llvm-devel".to_string(),
         "libvulkan-headers" => "vulkan-headers".to_string(),
         "libvulkan-loader" => "vulkan-loader-devel".to_string(),
@@ -10875,6 +10881,8 @@ fn map_runtime_dependency(dep: &str) -> String {
         "nettle" => "nettle".to_string(),
         "sparsehash" => "sparsehash-devel".to_string(),
         "ninja" => "ninja-build".to_string(),
+        "openjdk" => "java-11-openjdk".to_string(),
+        "pybind11" => "pybind11-devel".to_string(),
         "snappy" => "snappy".to_string(),
         "zstd-static" => "zstd".to_string(),
         "xorg-libxext" => "libXext".to_string(),
@@ -10920,6 +10928,8 @@ fn versioned_rpm_requirement_from_spec(raw: &str, kind: RpmDependencyKind) -> Op
         return None;
     }
     if is_phoreus_python_toolchain_dependency(&parsed.name)
+        || parsed.name == "openjdk"
+        || parsed.name.starts_with("java-")
         || is_r_ecosystem_dependency_name(&parsed.name)
         || is_rust_ecosystem_dependency_name(&parsed.name)
         || is_nim_ecosystem_dependency_name(&parsed.name)
@@ -13539,6 +13549,10 @@ mod tests {
         assert_eq!(map_build_dependency("capnproto"), "capnproto".to_string());
         assert_eq!(map_build_dependency("cffi"), "python3-cffi".to_string());
         assert_eq!(
+            map_build_dependency("pybind11-global"),
+            "pybind11-devel".to_string()
+        );
+        assert_eq!(
             map_build_dependency("xerces-c"),
             "xerces-c-devel".to_string()
         );
@@ -13554,6 +13568,10 @@ mod tests {
         assert_eq!(map_runtime_dependency("argtable2"), "argtable".to_string());
         assert_eq!(map_runtime_dependency("capnproto"), "capnproto".to_string());
         assert_eq!(map_runtime_dependency("cffi"), "python3-cffi".to_string());
+        assert_eq!(
+            map_runtime_dependency("pybind11"),
+            "pybind11-devel".to_string()
+        );
         assert_eq!(map_runtime_dependency("xerces-c"), "xerces-c".to_string());
         assert_eq!(
             map_runtime_dependency("qt6-main"),
@@ -14393,7 +14411,9 @@ requirements:
         assert!(shell.contains("od -An -tx1 -N4 \"$source_path\""));
         assert!(shell.contains("grep -q '^#!'"));
         assert!(shell.contains("<!doctype html|<html|<head|<body|not found|access denied|rate limit"));
-        assert!(shell.contains("file -b \"$source_path\" | grep -Eqi 'ELF|script|executable'"));
+        assert!(shell.contains(
+            "file -b \"$source_path\" | grep -Eqi 'ELF|script|executable|source|text'"
+        ));
         assert!(shell.contains("return 1"));
     }
 
@@ -18012,7 +18032,9 @@ requirements:
         );
         assert!(spec.contains("BuildRequires:  java-21-openjdk-devel"));
         assert!(!spec.contains("BuildRequires:  java-11-openjdk"));
+        assert!(!spec.contains("BuildRequires:  openjdk\n"));
         assert!(spec.contains("Requires:  java-21-openjdk"));
+        assert!(!spec.contains("Requires:  openjdk"));
         assert!(spec.contains("export ORG_GRADLE_JAVA_HOME=\"$JAVA_HOME\""));
     }
 
@@ -19507,6 +19529,57 @@ $R CMD INSTALL --build .
         assert!(!spec.contains("bwa-mem2"));
         assert!(!spec.contains("buildroot_prefix=\"%{buildroot}%{phoreus_prefix}\""));
         assert!(!spec.contains("find %{buildroot}%{phoreus_prefix} -type l"));
+    }
+
+    #[test]
+    fn minimal_payload_spec_python_build_dep_enables_python_runtime() {
+        let parsed = ParsedMeta {
+            package_name: "odgi".to_string(),
+            version: "0.9.4".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/odgi-0.9.4.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/odgi".to_string(),
+            license: "MIT".to_string(),
+            summary: "odgi".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "cmake -S . -B build -DCMAKE_INSTALL_PREFIX=\"${PREFIX}\"\ncmake --build build --target install\n"
+                    .to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["python >=3".to_string(), "pybind11-global".to_string()],
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::from([
+                PHOREUS_PYTHON_PACKAGE.to_string(),
+                "pybind11-global".to_string(),
+            ]),
+            run_deps: BTreeSet::new(),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "odgi",
+            &parsed,
+            &plan,
+            None,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("%global bioconda2rpm_build_scope python-runtime"));
+        assert!(spec.contains(&format!("BuildRequires:  {PHOREUS_PYTHON_PACKAGE}")));
+        assert!(spec.contains("BuildRequires:  pybind11-devel"));
+        assert!(spec.contains("export PHOREUS_PYTHON_PREFIX="));
+        assert!(spec.contains("export PYTHON=\"$PHOREUS_PYTHON_PREFIX/bin/python"));
+        assert!(!spec.contains("BuildRequires:  pybind11-global"));
     }
 
     #[test]
