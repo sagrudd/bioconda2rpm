@@ -685,6 +685,28 @@ struct BuildPlanNode {
     direct_bioconda_deps: BTreeSet<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VersionRequirementOp {
+    Eq,
+    Ne,
+    Gt,
+    Ge,
+    Lt,
+    Le,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VersionRequirement {
+    op: VersionRequirementOp,
+    version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedDependencySpec {
+    name: String,
+    constraints: Vec<VersionRequirement>,
+}
+
 #[derive(Debug, Clone)]
 enum PayloadVersionState {
     NotBuilt,
@@ -2212,6 +2234,7 @@ fn collect_build_plan(
 
     let root_key = visit_build_plan_node(
         root,
+        &[],
         true,
         with_deps,
         policy,
@@ -2237,6 +2260,7 @@ fn collect_build_plan(
 #[allow(clippy::too_many_arguments)]
 fn visit_build_plan_node(
     query: &str,
+    version_constraints: &[VersionRequirement],
     is_root: bool,
     with_deps: bool,
     policy: &DependencyPolicy,
@@ -2249,8 +2273,9 @@ fn visit_build_plan_node(
     nodes: &mut BTreeMap<String, BuildPlanNode>,
     order: &mut Vec<String>,
 ) -> Result<Option<String>> {
-    let resolved_and_parsed = match resolve_and_parse_recipe(
+    let resolved_and_parsed = match resolve_and_parse_recipe_with_constraints(
         query,
+        version_constraints,
         recipe_root,
         recipe_dirs,
         is_root,
@@ -2304,7 +2329,7 @@ fn visit_build_plan_node(
     let mut bioconda_deps = BTreeSet::new();
 
     if with_deps {
-        let selected = selected_dependency_set(&parsed, policy, is_root);
+        let selected = selected_dependency_specs(&parsed, policy, is_root);
         if !selected.is_empty() {
             log_progress(format!(
                 "phase=dependency action=scan package={} selected_count={} policy={:?} is_root={}",
@@ -2314,7 +2339,11 @@ fn visit_build_plan_node(
                 is_root
             ));
         }
-        for dep in selected {
+        for dep_raw in selected {
+            let Some(dep_spec) = parse_dependency_spec(&dep_raw) else {
+                continue;
+            };
+            let dep = dep_spec.name;
             if dep == canonical {
                 log_progress(format!(
                     "phase=dependency action=skip from={} to={} reason=self-reference",
@@ -2377,6 +2406,7 @@ fn visit_build_plan_node(
             ));
             if let Some(dep_key) = visit_build_plan_node(
                 &dep,
+                &dep_spec.constraints,
                 false,
                 with_deps,
                 policy,
@@ -2426,6 +2456,99 @@ fn is_buildable_recipe(resolved: &ResolvedRecipe, parsed: &ParsedMeta) -> bool {
         && (!parsed.source_url.trim().is_empty() || is_runtime_only_metapackage(parsed))
 }
 
+fn selected_dependency_specs(
+    parsed: &ParsedMeta,
+    policy: &DependencyPolicy,
+    is_root: bool,
+) -> BTreeSet<String> {
+    let package_slug = normalize_name(&parsed.package_name);
+    if precompiled_binary_override(&package_slug, parsed).is_some() {
+        return parsed
+            .run_dep_specs_raw
+            .iter()
+            .filter_map(|dep| parse_dependency_spec(dep))
+            .filter(|dep| !is_conda_only_dependency(&dep.name))
+            .map(|dep| dep_to_raw_for_planning(dep))
+            .collect();
+    }
+
+    let mut out = BTreeSet::new();
+    let mut add_specs = |raw_specs: &[String], keep: &dyn Fn(&str) -> bool| {
+        out.extend(
+            raw_specs
+                .iter()
+                .filter_map(|raw| parse_dependency_spec(raw))
+                .filter(|dep| !is_conda_only_dependency(&dep.name))
+                .filter(|dep| keep(&dep.name))
+                .map(dep_to_raw_for_planning),
+        );
+    };
+
+    if is_python_recipe(parsed) {
+        add_specs(&parsed.build_dep_specs_raw, &|dep| {
+            should_keep_rpm_dependency_for_python(dep)
+        });
+        add_specs(&parsed.host_dep_specs_raw, &|dep| {
+            should_keep_rpm_dependency_for_python(dep)
+        });
+        add_specs(&parsed.run_dep_specs_raw, &|dep| {
+            should_keep_rpm_dependency_for_python(dep)
+        });
+        return out;
+    }
+
+    match policy {
+        DependencyPolicy::RunOnly => {
+            add_specs(&parsed.run_dep_specs_raw, &|_| true);
+        }
+        DependencyPolicy::BuildHostRun => {
+            add_specs(&parsed.build_dep_specs_raw, &|_| true);
+            add_specs(&parsed.host_dep_specs_raw, &|_| true);
+            if is_root {
+                add_specs(&parsed.run_dep_specs_raw, &|_| true);
+            }
+        }
+        DependencyPolicy::RuntimeTransitiveRootBuildHost => {
+            if is_root {
+                add_specs(&parsed.build_dep_specs_raw, &|_| true);
+                add_specs(&parsed.host_dep_specs_raw, &|_| true);
+                add_specs(&parsed.run_dep_specs_raw, &|_| true);
+            } else {
+                add_specs(&parsed.run_dep_specs_raw, &|_| true);
+            }
+        }
+    }
+    out
+}
+
+fn dep_to_raw_for_planning(dep: ParsedDependencySpec) -> String {
+    if dep.constraints.is_empty() {
+        return dep.name;
+    }
+    format!(
+        "{} {}",
+        dep.name,
+        dep.constraints
+            .iter()
+            .map(format_conda_version_requirement)
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+fn format_conda_version_requirement(req: &VersionRequirement) -> String {
+    let op = match req.op {
+        VersionRequirementOp::Eq => "=",
+        VersionRequirementOp::Ne => "!=",
+        VersionRequirementOp::Gt => ">",
+        VersionRequirementOp::Ge => ">=",
+        VersionRequirementOp::Lt => "<",
+        VersionRequirementOp::Le => "<=",
+    };
+    format!("{op}{}", req.version)
+}
+
+#[allow(dead_code)]
 fn selected_dependency_set(
     parsed: &ParsedMeta,
     policy: &DependencyPolicy,
@@ -2549,8 +2672,33 @@ fn resolve_and_parse_recipe(
     metadata_adapter: &MetadataAdapter,
     target_arch: &str,
 ) -> Result<Option<ResolvedParsedRecipe>> {
-    let Some(resolved) =
-        resolve_recipe_for_tool_mode(tool_name, recipe_root, recipe_dirs, allow_identifier_lookup)?
+    resolve_and_parse_recipe_with_constraints(
+        tool_name,
+        &[],
+        recipe_root,
+        recipe_dirs,
+        allow_identifier_lookup,
+        metadata_adapter,
+        target_arch,
+    )
+}
+
+fn resolve_and_parse_recipe_with_constraints(
+    tool_name: &str,
+    version_constraints: &[VersionRequirement],
+    recipe_root: &Path,
+    recipe_dirs: &[RecipeDir],
+    allow_identifier_lookup: bool,
+    metadata_adapter: &MetadataAdapter,
+    target_arch: &str,
+) -> Result<Option<ResolvedParsedRecipe>> {
+    let Some(resolved) = resolve_recipe_for_tool_mode_with_constraints(
+        tool_name,
+        version_constraints,
+        recipe_root,
+        recipe_dirs,
+        allow_identifier_lookup,
+    )?
     else {
         return Ok(None);
     };
@@ -3445,6 +3593,22 @@ fn resolve_recipe_for_tool_mode(
     recipe_dirs: &[RecipeDir],
     allow_identifier_lookup: bool,
 ) -> Result<Option<ResolvedRecipe>> {
+    resolve_recipe_for_tool_mode_with_constraints(
+        tool_name,
+        &[],
+        recipe_root,
+        recipe_dirs,
+        allow_identifier_lookup,
+    )
+}
+
+fn resolve_recipe_for_tool_mode_with_constraints(
+    tool_name: &str,
+    version_constraints: &[VersionRequirement],
+    recipe_root: &Path,
+    recipe_dirs: &[RecipeDir],
+    allow_identifier_lookup: bool,
+) -> Result<Option<ResolvedRecipe>> {
     let lower = tool_name.trim().to_lowercase();
     let normalized = normalize_name(tool_name);
 
@@ -3452,25 +3616,45 @@ fn resolve_recipe_for_tool_mode(
         .iter()
         .find(|r| r.name.eq_ignore_ascii_case(tool_name))
     {
-        return build_resolved(recipe, "exact-directory-match");
+        return build_resolved_with_constraints(
+            recipe,
+            "exact-directory-match",
+            version_constraints,
+        );
     }
     if let Some(recipe) = recipe_dirs.iter().find(|r| r.normalized == normalized) {
-        return build_resolved(recipe, "normalized-directory-match");
+        return build_resolved_with_constraints(
+            recipe,
+            "normalized-directory-match",
+            version_constraints,
+        );
     }
 
     let plus_stripped = normalized.replace("-plus", "").replace("-plus-", "-");
     if let Some(recipe) = recipe_dirs.iter().find(|r| r.normalized == plus_stripped) {
-        return build_resolved(recipe, "plus-normalization-match");
+        return build_resolved_with_constraints(
+            recipe,
+            "plus-normalization-match",
+            version_constraints,
+        );
     }
 
     if allow_identifier_lookup && let Some(recipe) = select_fallback_recipe(&lower, recipe_dirs) {
-        return build_resolved(recipe, "fallback-directory-match");
+        return build_resolved_with_constraints(
+            recipe,
+            "fallback-directory-match",
+            version_constraints,
+        );
     }
 
     if allow_identifier_lookup {
         let key = normalize_identifier_key(&lower);
         if let Some(recipe) = find_recipe_by_identifier(recipe_root, &key)? {
-            return build_resolved(&recipe, "identifier-match");
+            return build_resolved_with_constraints(
+                &recipe,
+                "identifier-match",
+                version_constraints,
+            );
         }
     }
 
@@ -3515,8 +3699,21 @@ fn select_fallback_recipe<'a>(
     None
 }
 
+#[allow(dead_code)]
 fn build_resolved(recipe: &RecipeDir, overlap_reason: &str) -> Result<Option<ResolvedRecipe>> {
-    let variant_dir = select_recipe_variant_dir(&recipe.path)?;
+    build_resolved_with_constraints(recipe, overlap_reason, &[])
+}
+
+fn build_resolved_with_constraints(
+    recipe: &RecipeDir,
+    overlap_reason: &str,
+    version_constraints: &[VersionRequirement],
+) -> Result<Option<ResolvedRecipe>> {
+    let Some(variant_dir) =
+        select_recipe_variant_dir_with_constraints(&recipe.path, version_constraints)?
+    else {
+        return Ok(None);
+    };
     let meta_path = meta_file_path(&variant_dir)
         .or_else(|| meta_file_path(&recipe.path))
         .with_context(|| format!("missing meta.yaml/meta.yml in {}", recipe.path.display()))?;
@@ -3577,7 +3774,16 @@ fn find_recipe_by_identifier(recipe_root: &Path, key: &str) -> Result<Option<Rec
     Ok(None)
 }
 
+#[allow(dead_code)]
 pub(crate) fn select_recipe_variant_dir(recipe_dir: &Path) -> Result<PathBuf> {
+    Ok(select_recipe_variant_dir_with_constraints(recipe_dir, &[])?
+        .unwrap_or_else(|| recipe_dir.to_path_buf()))
+}
+
+fn select_recipe_variant_dir_with_constraints(
+    recipe_dir: &Path,
+    version_constraints: &[VersionRequirement],
+) -> Result<Option<PathBuf>> {
     let mut candidates: Vec<(String, PathBuf, bool)> = Vec::new();
 
     if meta_file_path(recipe_dir).is_some() {
@@ -3613,14 +3819,53 @@ pub(crate) fn select_recipe_variant_dir(recipe_dir: &Path) -> Result<PathBuf> {
     }
 
     if candidates.is_empty() {
-        return Ok(recipe_dir.to_path_buf());
+        return Ok(Some(recipe_dir.to_path_buf()));
+    }
+
+    if !version_constraints.is_empty() {
+        candidates.retain(|(version, _, _)| version_satisfies_all(version, version_constraints));
+    }
+    if candidates.is_empty() {
+        return Ok(None);
     }
 
     candidates.sort_by(|a, b| compare_version_labels(&a.0, &b.0).then_with(|| a.2.cmp(&b.2)));
-    Ok(candidates
-        .last()
-        .map(|(_, p, _)| p.clone())
-        .unwrap_or_else(|| recipe_dir.to_path_buf()))
+    Ok(Some(
+        candidates
+            .last()
+            .map(|(_, p, _)| p.clone())
+            .unwrap_or_else(|| recipe_dir.to_path_buf()),
+    ))
+}
+
+fn version_satisfies_all(version: &str, requirements: &[VersionRequirement]) -> bool {
+    requirements
+        .iter()
+        .all(|requirement| version_satisfies_requirement(version, requirement))
+}
+
+fn version_satisfies_requirement(version: &str, requirement: &VersionRequirement) -> bool {
+    if requirement.version.contains('*') {
+        return match requirement.op {
+            VersionRequirementOp::Eq => version_matches_wildcard(version, &requirement.version),
+            VersionRequirementOp::Ne => !version_matches_wildcard(version, &requirement.version),
+            _ => true,
+        };
+    }
+    let ord = compare_version_labels(version, &requirement.version);
+    match requirement.op {
+        VersionRequirementOp::Eq => ord == Ordering::Equal,
+        VersionRequirementOp::Ne => ord != Ordering::Equal,
+        VersionRequirementOp::Gt => ord == Ordering::Greater,
+        VersionRequirementOp::Ge => ord != Ordering::Less,
+        VersionRequirementOp::Lt => ord == Ordering::Less,
+        VersionRequirementOp::Le => ord != Ordering::Greater,
+    }
+}
+
+fn version_matches_wildcard(version: &str, pattern: &str) -> bool {
+    let prefix = pattern.trim_end_matches('*').trim_end_matches('.');
+    version == prefix || version.starts_with(&format!("{prefix}."))
 }
 
 fn rendered_recipe_version(dir: &Path) -> Option<String> {
@@ -4068,6 +4313,93 @@ fn normalize_dep_spec_raw(raw: &str) -> Option<String> {
     } else {
         Some(cleaned.to_string())
     }
+}
+
+fn parse_dependency_spec(raw: &str) -> Option<ParsedDependencySpec> {
+    let cleaned = raw.trim().trim_matches('"').trim_matches('\'').trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+    let first = cleaned.split_whitespace().next().unwrap_or_default();
+    let name_token = extract_dependency_name_from_token(first);
+    if name_token.is_empty() {
+        return None;
+    }
+    let name = normalize_dependency_token(name_token);
+    let constraint_text = cleaned
+        .strip_prefix(name_token)
+        .unwrap_or_default()
+        .trim()
+        .trim_start_matches(',');
+    let mut constraints = Vec::new();
+    let first_suffix = first.strip_prefix(name_token).unwrap_or_default();
+    if !first_suffix.trim().is_empty() {
+        constraints.extend(parse_version_requirements(first_suffix));
+    }
+    if !constraint_text.is_empty() {
+        constraints.extend(parse_version_requirements(constraint_text));
+    }
+    constraints.sort_by(|a, b| {
+        version_requirement_sort_key(a)
+            .cmp(&version_requirement_sort_key(b))
+            .then_with(|| a.version.cmp(&b.version))
+    });
+    constraints.dedup();
+    Some(ParsedDependencySpec { name, constraints })
+}
+
+fn version_requirement_sort_key(req: &VersionRequirement) -> u8 {
+    match req.op {
+        VersionRequirementOp::Eq => 0,
+        VersionRequirementOp::Ge => 1,
+        VersionRequirementOp::Gt => 2,
+        VersionRequirementOp::Le => 3,
+        VersionRequirementOp::Lt => 4,
+        VersionRequirementOp::Ne => 5,
+    }
+}
+
+fn parse_version_requirements(raw: &str) -> Vec<VersionRequirement> {
+    let normalized = raw
+        .replace(" ", "")
+        .split(',')
+        .filter_map(parse_single_version_requirement)
+        .collect::<Vec<_>>();
+    normalized
+}
+
+fn parse_single_version_requirement(raw: &str) -> Option<VersionRequirement> {
+    let cleaned = raw.trim().trim_matches(',');
+    if cleaned.is_empty() || cleaned.starts_with('*') {
+        return None;
+    }
+    for (prefix, op) in [
+        (">=", VersionRequirementOp::Ge),
+        ("<=", VersionRequirementOp::Le),
+        ("==", VersionRequirementOp::Eq),
+        ("!=", VersionRequirementOp::Ne),
+        (">", VersionRequirementOp::Gt),
+        ("<", VersionRequirementOp::Lt),
+        ("=", VersionRequirementOp::Eq),
+    ] {
+        if let Some(version) = cleaned.strip_prefix(prefix) {
+            let version = version.trim();
+            if version.is_empty() || version == "*" {
+                return None;
+            }
+            return Some(VersionRequirement {
+                op,
+                version: version.to_string(),
+            });
+        }
+    }
+    if cleaned.chars().any(|ch| ch.is_ascii_digit()) {
+        return Some(VersionRequirement {
+            op: VersionRequirementOp::Eq,
+            version: cleaned.to_string(),
+        });
+    }
+    None
 }
 
 fn precompiled_binary_override(
@@ -6110,6 +6442,14 @@ mkdir -p %{bioconda_source_subdir}\n"
             .map(|d| map_build_dependency(d))
             .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep)),
     );
+    build_requires.extend(versioned_rpm_requirements_from_specs(
+        &parsed.build_dep_specs_raw,
+        RpmDependencyKind::Build,
+    ));
+    build_requires.extend(versioned_rpm_requirements_from_specs(
+        &parsed.host_dep_specs_raw,
+        RpmDependencyKind::Build,
+    ));
 
     let mut runtime_requires = BTreeSet::new();
     runtime_requires.insert("phoreus".to_string());
@@ -6138,6 +6478,10 @@ mkdir -p %{bioconda_source_subdir}\n"
             .map(|d| map_runtime_dependency(d))
             .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep)),
     );
+    runtime_requires.extend(versioned_rpm_requirements_from_specs(
+        &parsed.run_dep_specs_raw,
+        RpmDependencyKind::Runtime,
+    ));
 
     let build_requires_lines = format_dep_lines("BuildRequires", &build_requires);
     let requires_lines = format_dep_lines("Requires", &runtime_requires);
@@ -6683,6 +7027,20 @@ fi\n",
                 .map(|d| map_build_dependency(d)),
         );
     }
+    build_requires.extend(versioned_rpm_requirements_from_specs(
+        &parsed.build_dep_specs_raw,
+        RpmDependencyKind::Build,
+    ));
+    build_requires.extend(versioned_rpm_requirements_from_specs(
+        &parsed.host_dep_specs_raw,
+        RpmDependencyKind::Build,
+    ));
+    if !python_recipe && !perl_recipe && !runtime_only_metapackage {
+        build_requires.extend(versioned_rpm_requirements_from_specs(
+            &parsed.run_dep_specs_raw,
+            RpmDependencyKind::Build,
+        ));
+    }
     // HEURISTIC-TEMP(issue=HEUR-0004): IGV currently requires Java 21 toolchain at build time.
     if software_slug == "igv" {
         // IGV's Gradle build enforces Java toolchain languageVersion=21.
@@ -6823,6 +7181,10 @@ fi\n",
     if software_slug == "perl-xml-libxml" {
         runtime_requires.remove("perl(Alien::Libxml2)");
     }
+    runtime_requires.extend(versioned_rpm_requirements_from_specs(
+        &parsed.run_dep_specs_raw,
+        RpmDependencyKind::Runtime,
+    ));
 
     let build_requires_lines = format_dep_lines("BuildRequires", &build_requires);
     let requires_lines = format_dep_lines("Requires", &runtime_requires);
@@ -9881,16 +10243,26 @@ ln -sfn %{{upstream_version}}.lua %{{buildroot}}%{{phoreus_moddir}}/default.lua\
 
 fn format_dep_lines(prefix: &str, deps: &BTreeSet<String>) -> String {
     deps.iter()
-        .flat_map(|dep| {
-            dep.split_whitespace()
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
+        .flat_map(|dep| dependency_line_fragments(dep))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .map(|dep| format!("{prefix}:  {dep}"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn dependency_line_fragments(dep: &str) -> Vec<String> {
+    if dep_has_rpm_relation(dep) {
+        vec![dep.to_string()]
+    } else {
+        dep.split_whitespace().map(str::to_string).collect()
+    }
+}
+
+fn dep_has_rpm_relation(dep: &str) -> bool {
+    [" >= ", " <= ", " = ", " < ", " > "]
+        .iter()
+        .any(|op| dep.contains(op))
 }
 
 fn render_patch_source_lines(staged_patch_sources: &[String]) -> String {
@@ -10512,6 +10884,77 @@ fn map_runtime_dependency(dep: &str) -> String {
         }
         "libzlib" => "zlib".to_string(),
         other => other.to_string(),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RpmDependencyKind {
+    Build,
+    Runtime,
+}
+
+fn versioned_rpm_requirements_from_specs(
+    raw_specs: &[String],
+    kind: RpmDependencyKind,
+) -> BTreeSet<String> {
+    raw_specs
+        .iter()
+        .filter_map(|raw| versioned_rpm_requirement_from_spec(raw, kind))
+        .flatten()
+        .collect()
+}
+
+fn versioned_rpm_requirement_from_spec(raw: &str, kind: RpmDependencyKind) -> Option<Vec<String>> {
+    let parsed = parse_dependency_spec(raw)?;
+    if parsed.constraints.is_empty() || is_conda_only_dependency(&parsed.name) {
+        return None;
+    }
+    if is_phoreus_python_toolchain_dependency(&parsed.name)
+        || is_r_ecosystem_dependency_name(&parsed.name)
+        || is_rust_ecosystem_dependency_name(&parsed.name)
+        || is_nim_ecosystem_dependency_name(&parsed.name)
+        || map_perl_core_dependency(&parsed.name).is_some()
+        || map_perl_provider_dependency(&parsed.name).is_some()
+        || map_perl_module_dependency(&parsed.name).is_some()
+    {
+        return None;
+    }
+    let mapped = match kind {
+        RpmDependencyKind::Build => map_build_dependency(&parsed.name),
+        RpmDependencyKind::Runtime => map_runtime_dependency(&parsed.name),
+    };
+    if mapped != parsed.name {
+        return None;
+    }
+
+    let mut out = Vec::new();
+    for constraint in parsed.constraints {
+        if constraint.op == VersionRequirementOp::Ne {
+            continue;
+        }
+        if constraint.op == VersionRequirementOp::Eq && !constraint.version.contains('*') {
+            out.push(format!("phoreus-{}-{}", parsed.name, constraint.version));
+            continue;
+        }
+        if let Some((op, version)) = rpm_relation_from_conda_requirement(&constraint) {
+            out.push(format!("{mapped} {op} {version}"));
+        }
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+fn rpm_relation_from_conda_requirement(req: &VersionRequirement) -> Option<(&'static str, String)> {
+    match req.op {
+        VersionRequirementOp::Eq if req.version.contains('*') => {
+            let base = req.version.trim_end_matches('*').trim_end_matches('.');
+            Some((">=", base.to_string()))
+        }
+        VersionRequirementOp::Eq => Some((">=", req.version.clone())),
+        VersionRequirementOp::Gt => Some((">", req.version.clone())),
+        VersionRequirementOp::Ge => Some((">=", req.version.clone())),
+        VersionRequirementOp::Lt => Some(("<", req.version.clone())),
+        VersionRequirementOp::Le => Some(("<=", req.version.clone())),
+        VersionRequirementOp::Ne => None,
     }
 }
 
@@ -11331,6 +11774,9 @@ fn payload_version_state(
     else {
         return Ok(PayloadVersionState::NotBuilt);
     };
+    if local_payload_has_known_stale_spec(topdir, software_slug) {
+        return Ok(PayloadVersionState::NotBuilt);
+    }
     let ord = compare_version_labels(&existing, target_version);
     if ord == Ordering::Less {
         Ok(PayloadVersionState::Outdated {
@@ -11341,6 +11787,32 @@ fn payload_version_state(
             existing_version: existing,
         })
     }
+}
+
+fn local_payload_has_known_stale_spec(topdir: &Path, software_slug: &str) -> bool {
+    if software_slug != "ncbi-vdb" {
+        return false;
+    }
+    let spec_path = topdir.join("SPECS").join("phoreus-ncbi-vdb.spec");
+    let Ok(spec) = fs::read_to_string(spec_path) else {
+        return false;
+    };
+    spec_section_contains_cmake_target_install(&spec, "%build", "%install")
+}
+
+fn spec_section_contains_cmake_target_install(spec: &str, start: &str, end: &str) -> bool {
+    let Some(start_index) = spec.find(start) else {
+        return false;
+    };
+    let section_after_start = &spec[start_index + start.len()..];
+    let section = match section_after_start.find(end) {
+        Some(end_index) => &section_after_start[..end_index],
+        None => section_after_start,
+    };
+    section.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("cmake --build") && line.contains("--target install")
+    })
 }
 
 fn latest_existing_payload_version(
@@ -12985,6 +13457,54 @@ mod tests {
     #[test]
     fn conda_only_dependencies_include_go_licenses() {
         assert!(is_conda_only_dependency("go-licenses"));
+    }
+
+    #[test]
+    fn dependency_spec_parser_preserves_version_constraints() {
+        let parsed = parse_dependency_spec("ncbi-vdb >=3.2.1,<4.0a0").unwrap();
+        assert_eq!(parsed.name, "ncbi-vdb");
+        assert_eq!(
+            parsed.constraints,
+            vec![
+                VersionRequirement {
+                    op: VersionRequirementOp::Ge,
+                    version: "3.2.1".to_string(),
+                },
+                VersionRequirement {
+                    op: VersionRequirementOp::Lt,
+                    version: "4.0a0".to_string(),
+                },
+            ]
+        );
+
+        let exact = parse_dependency_spec("samtools =0.1.19").unwrap();
+        assert_eq!(exact.name, "samtools");
+        assert_eq!(
+            exact.constraints,
+            vec![VersionRequirement {
+                op: VersionRequirementOp::Eq,
+                version: "0.1.19".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn versioned_rpm_requirements_preserve_bioconda_module_versions() {
+        let raw = vec![
+            "ncbi-vdb >=3.2.1,<4.0a0".to_string(),
+            "samtools =0.1.19".to_string(),
+            "zlib >=1.2".to_string(),
+        ];
+        let requirements = versioned_rpm_requirements_from_specs(&raw, RpmDependencyKind::Build);
+
+        assert!(requirements.contains("ncbi-vdb >= 3.2.1"));
+        assert!(requirements.contains("ncbi-vdb < 4.0a0"));
+        assert!(requirements.contains("phoreus-samtools-0.1.19"));
+        assert!(!requirements.iter().any(|dep| dep.starts_with("zlib-devel")));
+        assert_eq!(
+            format_dep_lines("BuildRequires", &requirements),
+            "BuildRequires:  ncbi-vdb < 4.0a0\nBuildRequires:  ncbi-vdb >= 3.2.1\nBuildRequires:  phoreus-samtools-0.1.19"
+        );
     }
 
     #[test]
@@ -18011,6 +18531,82 @@ error: build stopped\n";
     }
 
     #[test]
+    fn payload_version_state_rebuilds_stale_ncbi_vdb_build_phase_install_spec() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let target_root = tmp.path().join("targets").join("test");
+        let rpm_dir = target_root.join("RPMS").join("aarch64");
+        fs::create_dir_all(&rpm_dir).expect("create rpm dir");
+        fs::write(
+            rpm_dir.join("phoreus-ncbi-vdb-3.4.1-3.4.1-1.el9.aarch64.rpm"),
+            [],
+        )
+        .expect("write rpm placeholder");
+        let specs_dir = tmp.path().join("SPECS");
+        fs::create_dir_all(&specs_dir).expect("create specs dir");
+        fs::write(
+            specs_dir.join("phoreus-ncbi-vdb.spec"),
+            "%build\ncmake --build build_vdb/ --target install -j \"${CPU_COUNT}\" -v || true\n%install\n",
+        )
+        .expect("write stale spec");
+
+        assert!(matches!(
+            payload_version_state(tmp.path(), &target_root, "ncbi-vdb", "3.4.1").unwrap(),
+            PayloadVersionState::NotBuilt
+        ));
+    }
+
+    #[test]
+    fn payload_version_state_keeps_current_ncbi_vdb_install_phase_spec() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let target_root = tmp.path().join("targets").join("test");
+        let rpm_dir = target_root.join("RPMS").join("aarch64");
+        fs::create_dir_all(&rpm_dir).expect("create rpm dir");
+        fs::write(
+            rpm_dir.join("phoreus-ncbi-vdb-3.4.1-3.4.1-1.el9.aarch64.rpm"),
+            [],
+        )
+        .expect("write rpm placeholder");
+        let specs_dir = tmp.path().join("SPECS");
+        fs::create_dir_all(&specs_dir).expect("create specs dir");
+        fs::write(
+            specs_dir.join("phoreus-ncbi-vdb.spec"),
+            "%build\ncmake -S ncbi-vdb/ -B build_vdb\n%install\ncmake --build build_vdb/ --target install -j \"${CPU_COUNT}\" -v || true\n",
+        )
+        .expect("write current spec");
+
+        assert!(matches!(
+            payload_version_state(tmp.path(), &target_root, "ncbi-vdb", "3.4.1").unwrap(),
+            PayloadVersionState::UpToDate { existing_version } if existing_version == "3.4.1"
+        ));
+    }
+
+    #[test]
+    fn variant_selection_honors_dependency_version_constraints() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let recipe = tmp.path().join("samtools");
+        fs::create_dir_all(recipe.join("0.1.19")).expect("create old variant");
+        fs::create_dir_all(recipe.join("1.20")).expect("create new variant");
+        fs::write(
+            recipe.join("0.1.19/meta.yaml"),
+            "package: {name: samtools, version: 0.1.19}",
+        )
+        .expect("write old meta");
+        fs::write(
+            recipe.join("1.20/meta.yaml"),
+            "package: {name: samtools, version: 1.20}",
+        )
+        .expect("write new meta");
+        let constraints = parse_dependency_spec("samtools =0.1.19")
+            .unwrap()
+            .constraints;
+
+        let picked = select_recipe_variant_dir_with_constraints(&recipe, &constraints)
+            .unwrap()
+            .unwrap();
+        assert!(picked.ends_with("0.1.19"));
+    }
+
+    #[test]
     fn variant_selection_prefers_newer_root_meta_version() {
         let tmp = TempDir::new().expect("create temp dir");
         let recipe = tmp.path().join("blast");
@@ -18906,16 +19502,22 @@ cp "$RESULT_PATH/lib/"* "$LIB_INSTALL_DIR"
         ));
         assert!(spec.contains("Source1:        bioconda-blast-build.sh"));
         assert!(spec.contains("cp %{SOURCE1} buildsrc/build.sh"));
-        assert!(spec.contains(
-            "bioconda2rpm minimal mode: recipe build.sh retained for install phase"
-        ));
+        assert!(
+            spec.contains("bioconda2rpm minimal mode: recipe build.sh retained for install phase")
+        );
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(spec.contains("export ncbi_cv_lib_boost_test=no"));
         assert!(spec.contains("export CFLAGS=\"${CFLAGS:-} -fPIC\""));
-        assert!(spec.contains("sed -i 's|--with-vdb=$PREFIX|--with-vdb='\"$vdb_prefix\"'|g' ./build.sh"));
+        assert!(
+            spec.contains(
+                "sed -i 's|--with-vdb=$PREFIX|--with-vdb='\"$vdb_prefix\"'|g' ./build.sh"
+            )
+        );
         assert!(spec.contains("sed -i 's|--with-z=$PREFIX|--with-z=/usr|g' ./build.sh"));
         assert!(spec.contains("sed -i 's|--with-bz2=$PREFIX|--with-bz2=/usr|g' ./build.sh"));
-        assert!(spec.contains("sed -i 's|--with-sqlite3=$PREFIX|--with-sqlite3=/usr|g' ./build.sh"));
+        assert!(
+            spec.contains("sed -i 's|--with-sqlite3=$PREFIX|--with-sqlite3=/usr|g' ./build.sh")
+        );
         assert!(spec.contains("sed -i 's|--with-bin-release|--without-bin-release|g' ./build.sh"));
         assert!(spec.contains("sed -i 's|n_workers=8|n_workers=1|g' ./build.sh"));
         assert!(spec.contains("mkdir -p \"$(dirname \"$LIB_INSTALL_DIR\")\""));

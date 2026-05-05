@@ -65,6 +65,7 @@ FR-005 Multi-output recipes
 
 FR-006 Versioned recipe directories
 - If versioned subdirectories exist for a recipe, the highest versioned subdirectory shall be selected.
+- If a direct recipe dependency includes a version constraint, dependency planning shall select a recipe variant that satisfies that constraint instead of defaulting to the highest available variant.
 
 FR-007 Missing dependency handling
 - Default behavior shall quarantine unresolved packages and continue building the resolvable subset.
@@ -139,6 +140,7 @@ FR-017 Build dependency tolerance and sourcing policy
   3. Enabled distribution/core repositories.
 - The workflow shall tolerate unavailable/auxiliary repositories by using package-manager settings that avoid hard failure from missing optional repos.
 - Generated payload RPMs shall provide the plain software identifier (for example `samtools`) so downstream package builds can consume locally produced RPMs.
+- Generated SPEC dependency declarations shall preserve direct Bioconda version constraints when the dependency maps to a Phoreus-managed Bioconda module; exact constraints shall require the matching versioned payload package and range constraints shall be emitted as RPM dependency relations.
 - If any dependency remains unresolved, the package shall be quarantined and unresolved dependencies shall be recorded in reports.
 
 FR-018 Version freshness and metapackage update policy

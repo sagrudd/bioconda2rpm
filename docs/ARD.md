@@ -36,7 +36,7 @@ The product is structured as layered components:
 - Manages first-run repository bootstrap by cloning Bioconda recipes into `<topdir>/bioconda-recipes` when absent.
 - Treats repository bootstrap/repair as a shared runtime contract for library consumers such as Phoreus, not a CLI-only behavior.
 - Supports sync and explicit ref checkout (branch/tag/commit) for managed repository state control.
-- Applies versioned-subdirectory selection rule (highest version).
+- Applies versioned-subdirectory selection rule, using the highest version for unconstrained root/package lookup and the highest constraint-satisfying variant for dependencies with direct Bioconda version requirements.
 - Resolves overlap from priority input tools to Bioconda recipe directories.
 
 3. Rendering Layer
@@ -45,6 +45,7 @@ The product is structured as layered components:
 4. Dependency Graph Layer
 - Extracts `build/host/run` relationships.
 - Applies configurable policy with default `build+host+run` closure.
+- Carries direct dependency version constraints through graph expansion so dependency nodes prepare the requested Phoreus module version instead of relying on whichever local or repository package happens to be available.
 - Records build-time dependency preflight outcomes with source attribution:
   - `installed` (already present in container)
   - `local_rpm` (reused from `<topdir>/targets/<target-id>/RPMS`, with legacy `<topdir>/RPMS` compatibility reads)
@@ -102,6 +103,7 @@ The product is structured as layered components:
   - already installed packages
   - local RPM artifact reuse
   - repository install with unavailable-repo tolerance settings
+- For Phoreus-managed Bioconda module dependencies, SPEC `BuildRequires`/`Requires` preserve direct version intent: exact Bioconda pins target the matching versioned payload package, while range constraints are emitted as RPM relations.
 
 7. Compliance and Quarantine Layer
 - SPDX normalization and policy evaluation.

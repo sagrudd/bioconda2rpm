@@ -48,7 +48,9 @@ Define dependency closure behavior for `bioconda2rpm build`.
 ## Related Rules
 
 - Multi-output recipes (`outputs:`) expand into discrete package outputs.
-- Versioned recipe directories use highest version selection.
+- Versioned recipe directories use highest version selection for unconstrained package lookup.
+- Direct dependency version constraints select the highest recipe variant satisfying the requested constraint before the dependency node is prepared.
+- Phoreus-managed Bioconda module dependencies preserve direct version intent in generated RPM requirements: exact pins target the matching versioned payload package, while range constraints become RPM dependency relations.
 - Compliance failures (license SPDX/policy) also route to quarantine.
 
 ## BuildRequires Sourcing (Container Rebuild Chain)
