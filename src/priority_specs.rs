@@ -6072,6 +6072,14 @@ fn command_mentions_buildroot_text_risk(commands: &[String]) -> bool {
     })
 }
 
+fn command_configures_prefix_from_prefix(commands: &[String]) -> bool {
+    commands.iter().any(|line| {
+        line.contains("./configure")
+            && line.contains("--prefix")
+            && (line.contains("$PREFIX") || line.contains("${PREFIX}"))
+    })
+}
+
 fn recipe_dep_mentions_any(parsed: &ParsedMeta, dep_names: &[&str]) -> bool {
     parsed
         .build_deps
@@ -6136,7 +6144,12 @@ fn compute_minimal_build_scope(
     let sparsehash_configure_fallback_required = recipe_dep_mentions_any(parsed, &["sparsehash"])
         && command_mentions_any(&all_commands, &["--with-sparsehash"]);
     let buildroot_text_scrub_required =
-        command_mentions_buildroot_text_risk(&interpreted_build_plan.install_commands);
+        command_mentions_buildroot_text_risk(&interpreted_build_plan.install_commands)
+            || (command_configures_prefix_from_prefix(&interpreted_build_plan.build_commands)
+                && command_mentions_any(
+                    &interpreted_build_plan.install_commands,
+                    &["make install"],
+                ));
     let recipe_build_sh_required =
         package_requires_original_build_script(software_slug, parsed, interpreted_build_plan);
     let blast_compat_required = package_requires_blast_compat(software_slug);
@@ -6422,6 +6435,9 @@ mkdir -p %{bioconda_source_subdir}\n"
     if perl_recipe {
         build_requires.insert("perl".to_string());
     }
+    if scope.buildroot_text_scrub_required {
+        build_requires.insert("chrpath".to_string());
+    }
     build_requires.extend(
         parsed
             .build_deps
@@ -6627,6 +6643,13 @@ export CMAKE_BUILD_PARALLEL_LEVEL=\"$CPU_COUNT\"\n"
     while IFS= read -r -d '' text_path; do\n\
     sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true\n\
     done < <(grep -RIlZ -- \"$buildroot_prefix\" %{buildroot}%{phoreus_prefix} 2>/dev/null || true)\n\
+    if command -v chrpath >/dev/null 2>&1; then\n\
+    while IFS= read -r -d '' elf_path; do\n\
+    if grep -a -q -- \"$buildroot_prefix\" \"$elf_path\" 2>/dev/null; then\n\
+      chrpath -r \"$final_prefix/lib\" \"$elf_path\" >/dev/null 2>&1 || chrpath -d \"$elf_path\" >/dev/null 2>&1 || true\n\
+    fi\n\
+    done < <(find %{buildroot}%{phoreus_prefix} -type f -print0 2>/dev/null)\n\
+    fi\n\
     buildroot_root=\"%{buildroot}\"\n\
     while IFS= read -r -d '' text_path; do\n\
     case \"$text_path\" in\n\
@@ -19637,6 +19660,60 @@ cp "$RESULT_PATH/lib/"* "$LIB_INSTALL_DIR"
         assert!(spec.contains(
             "done < <(grep -RIlZ -- \"$buildroot_root\" %{buildroot}%{phoreus_prefix} 2>/dev/null || true)"
         ));
+    }
+
+    #[test]
+    fn minimal_payload_spec_scrubs_configure_prefix_buildroot_rpaths() {
+        let parsed = ParsedMeta {
+            package_name: "kmer-jellyfish".to_string(),
+            version: "2.3.1".to_string(),
+            build_number: "6".to_string(),
+            source_url: "https://example.invalid/jellyfish-2.3.1.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/kmer-jellyfish".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "kmer jellyfish".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "./configure --prefix=\"${PREFIX}\" --enable-python-binding=\"${SP_DIR}/dna_jellyfish\"\nmake -j\"${CPU_COUNT}\"\nmake install\n"
+                    .to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: vec![
+                "cxx-compiler".to_string(),
+                "make".to_string(),
+                "pkg-config".to_string(),
+            ],
+            host_dep_specs_raw: vec!["python".to_string(), "perl".to_string()],
+            run_dep_specs_raw: vec!["python".to_string(), "perl".to_string()],
+            build_deps: BTreeSet::from([
+                "cxx-compiler".to_string(),
+                "make".to_string(),
+                "pkg-config".to_string(),
+            ]),
+            host_deps: BTreeSet::from(["python".to_string(), "perl".to_string()]),
+            run_deps: BTreeSet::from(["python".to_string(), "perl".to_string()]),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "kmer-jellyfish",
+            &parsed,
+            &plan,
+            None,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("buildroot-text-scrub"));
+        assert!(spec.contains("BuildRequires:  chrpath"));
+        assert!(spec.contains("chrpath -r \"$final_prefix/lib\" \"$elf_path\""));
+        assert!(spec.contains("grep -a -q -- \"$buildroot_prefix\" \"$elf_path\""));
     }
 
     #[test]
