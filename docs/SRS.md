@@ -203,6 +203,14 @@ FR-026 Regression corpus campaign modes
   - Nightly mode: full corpus
 - Regression command shall compute arch-adjusted campaign KPI and fail on threshold breach when KPI gate is active.
 
+FR-027 Minimal generated SPEC build scope
+- Generated payload RPM SPEC files shall contain only the shell code, helper setup, runtime activation, and compatibility handling required for the package being built and its direct recipe dependencies.
+- A payload SPEC shall not contain conditional branches, bootstrap logic, or workaround code for unrelated packages, ecosystems, languages, or dependency families outside the immediate package build scope.
+- Build-scope selection shall be derived deterministically from rendered recipe metadata, direct build/host/run requirements, staged build-script content, and selected package policy records.
+- Any package-specific exception that remains required inside a generated SPEC shall be selected only for that package and shall continue to carry `HEURISTIC-TEMP(issue=...)` retirement tracking.
+- Each generated payload SPEC shall expose a compact build-scope label so audit and regression tests can verify which helper surfaces were selected.
+- Regression coverage shall include representative packages, including `abyss`, to verify that minimal package scopes do not include unrelated Python, R, Rust, Nim, Perl, Java, or other package-specific boilerplate.
+
 ## 4. Non-Functional Requirements
 
 NFR-001 Reproducibility

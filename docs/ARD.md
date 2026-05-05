@@ -55,6 +55,11 @@ The product is structured as layered components:
 - Maps recipes to single-SPEC Phoreus naming profile.
 - Keeps one canonical recipe-derived SPEC/SOURCE set under `<topdir>/SPECS` and `<topdir>/SOURCES` shared across OS targets.
 - Expands `outputs:` into discrete RPM packages.
+- Applies minimal SPEC build-scope selection before rendering payload SPEC content:
+  - scope inputs are rendered recipe metadata, direct build/host/run requirements, staged build-script content, and governed package policy records
+  - selected helper code is emitted only when the package or one of its direct dependencies requires that helper surface
+  - unrelated package conditionals, ecosystem bootstrap blocks, and compatibility workarounds are forbidden in the emitted payload SPEC
+  - the selected scope is written into the SPEC as auditable metadata
 - For Python application recipes, enforces hermetic venv packaging:
   - venv rooted at `/usr/local/phoreus/<tool>/<version>/venv`
   - dependency lock/install inside venv with hash-verified pip workflow
@@ -174,6 +179,7 @@ Current baseline includes:
 - Any retained package-specific heuristic must be tagged with `HEURISTIC-TEMP(issue=...)` and associated retirement tracking.
 - Build-time tests enforce that untagged package-specific heuristic blocks are rejected.
 - Heuristics that rewrite build scripts or patch transitive sources must preserve charter traceability requirements: explicit rationale, reproducible transformation, and report-visible evidence.
+- Heuristics selected for one package or dependency family must not be serialized into unrelated generated SPEC files. The minimal build-scope renderer is the enforcement boundary for this rule.
 
 ## 10. Regression Campaign Architecture
 

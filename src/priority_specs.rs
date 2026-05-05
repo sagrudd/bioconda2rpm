@@ -121,6 +121,72 @@ struct InterpretedBuildPlan {
 }
 
 #[derive(Debug, Clone)]
+struct MinimalBuildScope {
+    python_runtime_required: bool,
+    r_runtime_required: bool,
+    rust_runtime_required: bool,
+    nim_runtime_required: bool,
+    perl_runtime_required: bool,
+    compiler_env_required: bool,
+    conda_pkg_vars_required: bool,
+    arch_env_required: bool,
+    parallel_env_required: bool,
+    symlink_normalization_required: bool,
+    buildroot_text_scrub_required: bool,
+    sparsehash_configure_fallback_required: bool,
+}
+
+impl MinimalBuildScope {
+    fn labels(&self) -> Vec<&'static str> {
+        let mut labels = Vec::new();
+        if self.python_runtime_required {
+            labels.push("python-runtime");
+        }
+        if self.r_runtime_required {
+            labels.push("r-runtime");
+        }
+        if self.rust_runtime_required {
+            labels.push("rust-runtime");
+        }
+        if self.nim_runtime_required {
+            labels.push("nim-runtime");
+        }
+        if self.perl_runtime_required {
+            labels.push("perl-runtime");
+        }
+        if self.compiler_env_required {
+            labels.push("compiler-env");
+        }
+        if self.conda_pkg_vars_required {
+            labels.push("conda-pkg-vars");
+        }
+        if self.arch_env_required {
+            labels.push("arch-env");
+        }
+        if self.parallel_env_required {
+            labels.push("parallel-env");
+        }
+        if self.symlink_normalization_required {
+            labels.push("symlink-normalization");
+        }
+        if self.buildroot_text_scrub_required {
+            labels.push("buildroot-text-scrub");
+        }
+        if self.sparsehash_configure_fallback_required {
+            labels.push("sparsehash-configure-fallback");
+        }
+        if labels.is_empty() {
+            labels.push("base");
+        }
+        labels
+    }
+
+    fn label_string(&self) -> String {
+        self.labels().join(",")
+    }
+}
+
+#[derive(Debug, Clone)]
 struct PrecompiledBinaryOverride {
     source_url: String,
     build_script: String,
@@ -2919,23 +2985,25 @@ fn process_tool(
     let rust_script_hint = script_text_indicates_rust(&build_script);
     let python_recipe = is_python_recipe(&parsed) || python_script_hint;
     let python_runtime = select_phoreus_python_runtime(&parsed, python_recipe);
-    if let Err(err) = ensure_phoreus_python_bootstrap(build_config, specs_dir, python_runtime) {
-        let reason = format!("bootstrapping Phoreus Python runtime failed: {err}");
-        quarantine_note(bad_spec_dir, &software_slug, &reason);
-        return ReportEntry {
-            software: tool.software.clone(),
-            priority: tool.priority,
-            status: "quarantined".to_string(),
-            reason,
-            overlap_recipe: resolved.recipe_name,
-            overlap_reason: resolved.overlap_reason,
-            variant_dir: resolved.variant_dir.display().to_string(),
-            package_name: parsed.package_name,
-            version: parsed.version,
-            payload_spec_path: String::new(),
-            meta_spec_path: String::new(),
-            staged_build_sh: staged_build_sh.display().to_string(),
-        };
+    if python_recipe || recipe_requires_python_runtime(&parsed) {
+        if let Err(err) = ensure_phoreus_python_bootstrap(build_config, specs_dir, python_runtime) {
+            let reason = format!("bootstrapping Phoreus Python runtime failed: {err}");
+            quarantine_note(bad_spec_dir, &software_slug, &reason);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "quarantined".to_string(),
+                reason,
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: staged_build_sh.display().to_string(),
+            };
+        }
     }
     if recipe_requires_r_runtime(&parsed) || is_r_project_recipe(&parsed) || r_script_hint {
         if let Err(err) = ensure_phoreus_r_bootstrap(build_config, specs_dir) {
@@ -4047,6 +4115,16 @@ fn recipe_requires_nim_runtime(parsed: &ParsedMeta) -> bool {
         .chain(parsed.host_deps.iter())
         .chain(parsed.run_deps.iter())
         .any(|dep| is_nim_ecosystem_dependency_name(dep))
+}
+
+fn recipe_requires_python_runtime(parsed: &ParsedMeta) -> bool {
+    parsed
+        .build_deps
+        .iter()
+        .chain(parsed.host_deps.iter())
+        .chain(parsed.run_deps.iter())
+        .map(|dep| normalize_dependency_token(dep))
+        .any(|dep| dep == "python" || dep.starts_with("python-"))
 }
 
 fn is_r_project_recipe(parsed: &ParsedMeta) -> bool {
@@ -5480,16 +5558,178 @@ fn line_is_setup_command(line: &str) -> bool {
         || lower.starts_with("chmod ")
 }
 
-fn render_shell_lines(lines: &[String], fallback_message: &str) -> String {
-    if lines.is_empty() {
-        format!("echo \"{fallback_message}\"\n")
-    } else {
-        lines
-            .iter()
-            .map(|line| format!("{line} || true\n"))
-            .collect::<Vec<_>>()
-            .join("")
+fn command_mentions_any(commands: &[String], needles: &[&str]) -> bool {
+    commands.iter().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        needles.iter().any(|needle| lower.contains(needle))
+    })
+}
+
+fn command_mentions_conda_pkg_vars(commands: &[String]) -> bool {
+    commands.iter().any(|line| {
+        line.contains("$PKG_")
+            || line.contains("${PKG_")
+            || line.contains("$RECIPE_DIR")
+            || line.contains("${RECIPE_DIR}")
+    })
+}
+
+fn command_mentions_arch_env(commands: &[String]) -> bool {
+    commands.iter().any(|line| {
+        line.contains("target_platform")
+            || line.contains("$target_platform")
+            || line.contains("${target_platform}")
+            || line.contains("BIOCONDA_TARGET_ARCH")
+    })
+}
+
+fn command_mentions_parallel_env(commands: &[String]) -> bool {
+    command_mentions_any(
+        commands,
+        &[
+            "make",
+            "cmake",
+            "ninja",
+            "cargo ",
+            "go build",
+            "cpu_count",
+            "makeflags",
+            "cmake_build_parallel_level",
+        ],
+    )
+}
+
+fn command_mentions_compiler_env(commands: &[String]) -> bool {
+    command_mentions_any(
+        commands,
+        &[
+            "./configure",
+            "configure ",
+            "cmake ",
+            "make",
+            "ninja",
+            "meson ",
+            "$cc",
+            "$cxx",
+            " cc ",
+            " cxx ",
+        ],
+    )
+}
+
+fn command_mentions_symlink_install(commands: &[String]) -> bool {
+    command_mentions_any(commands, &["ln -s", "ln -sn", "ln -sf"])
+}
+
+fn command_mentions_buildroot_text_risk(commands: &[String]) -> bool {
+    commands.iter().any(|line| {
+        (line.contains("$PREFIX")
+            || line.contains("${PREFIX}")
+            || line.contains("%{buildroot}")
+            || line.contains("%{phoreus_prefix}"))
+            && command_mentions_any(
+                std::slice::from_ref(line),
+                &[
+                    "sed ", "printf ", "echo ", "cat ", "tee ", "install ", "cp ",
+                ],
+            )
+    })
+}
+
+fn recipe_dep_mentions_any(parsed: &ParsedMeta, dep_names: &[&str]) -> bool {
+    parsed
+        .build_deps
+        .iter()
+        .chain(parsed.host_deps.iter())
+        .chain(parsed.run_deps.iter())
+        .map(|dep| normalize_dependency_token(dep))
+        .any(|dep| dep_names.iter().any(|name| dep == *name))
+}
+
+fn compute_minimal_build_scope(
+    parsed: &ParsedMeta,
+    interpreted_build_plan: &InterpretedBuildPlan,
+    python_script_hint: bool,
+    r_script_hint: bool,
+    rust_script_hint: bool,
+) -> MinimalBuildScope {
+    let all_commands = interpreted_build_plan
+        .build_commands
+        .iter()
+        .chain(interpreted_build_plan.install_commands.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    let python_recipe = is_python_recipe(parsed) || python_script_hint;
+    let python_runtime_required = python_recipe || recipe_requires_python_runtime(parsed);
+    let r_runtime_required =
+        recipe_requires_r_runtime(parsed) || is_r_project_recipe(parsed) || r_script_hint;
+    let rust_runtime_required = recipe_requires_rust_runtime(parsed) || rust_script_hint;
+    let nim_runtime_required = recipe_requires_nim_runtime(parsed);
+    let perl_runtime_required = normalize_name(&parsed.package_name).starts_with("perl-");
+    let compiler_dep_required = recipe_dep_mentions_any(
+        parsed,
+        &[
+            "c-compiler",
+            "cxx-compiler",
+            "fortran-compiler",
+            "gcc",
+            "gxx",
+            "gfortran",
+        ],
+    );
+    let compiler_env_required =
+        compiler_dep_required || command_mentions_compiler_env(&all_commands);
+    let parallel_env_required = command_mentions_parallel_env(&all_commands);
+    let sparsehash_configure_fallback_required = recipe_dep_mentions_any(parsed, &["sparsehash"])
+        && command_mentions_any(&all_commands, &["--with-sparsehash"]);
+    let buildroot_text_scrub_required =
+        command_mentions_buildroot_text_risk(&interpreted_build_plan.install_commands);
+
+    MinimalBuildScope {
+        python_runtime_required,
+        r_runtime_required,
+        rust_runtime_required,
+        nim_runtime_required,
+        perl_runtime_required,
+        compiler_env_required,
+        conda_pkg_vars_required: command_mentions_conda_pkg_vars(&all_commands),
+        arch_env_required: command_mentions_arch_env(&all_commands),
+        parallel_env_required,
+        symlink_normalization_required: command_mentions_symlink_install(
+            &interpreted_build_plan.install_commands,
+        ),
+        buildroot_text_scrub_required,
+        sparsehash_configure_fallback_required,
     }
+}
+
+fn render_scoped_shell_lines(
+    lines: &[String],
+    fallback_message: &str,
+    scope: &MinimalBuildScope,
+) -> String {
+    if lines.is_empty() {
+        return format!("echo \"{fallback_message}\"\n");
+    }
+    lines
+        .iter()
+        .map(|line| {
+            let scoped = if scope.sparsehash_configure_fallback_required {
+                line.replace(
+                    "--with-sparsehash=$PREFIX",
+                    "${BIOCONDA2RPM_SPARSEHASH_CONFIGURE_FLAG}",
+                )
+                .replace(
+                    "--with-sparsehash=${PREFIX}",
+                    "${BIOCONDA2RPM_SPARSEHASH_CONFIGURE_FLAG}",
+                )
+            } else {
+                line.clone()
+            };
+            format!("{scoped} || true\n")
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn render_patch_apply_lines_minimal(staged_patch_sources: &[String], source_dir: &str) -> String {
@@ -5513,12 +5753,13 @@ fn render_minimal_runtime_env_block(
     conda_pkg_name: &str,
     conda_pkg_version: &str,
     conda_pkg_build_number: &str,
-    r_runtime_required: bool,
-    rust_runtime_required: bool,
-    nim_runtime_required: bool,
+    scope: &MinimalBuildScope,
 ) -> String {
-    let mut out = format!(
-        "export PHOREUS_PYTHON_PREFIX=/usr/local/phoreus/python/{python_minor}\n\
+    let mut out = String::new();
+
+    if scope.python_runtime_required {
+        out.push_str(&format!(
+            "export PHOREUS_PYTHON_PREFIX=/usr/local/phoreus/python/{python_minor}\n\
 if [[ -x \"$PHOREUS_PYTHON_PREFIX/bin/python{python_minor}\" ]]; then\n\
   export PATH=\"$PHOREUS_PYTHON_PREFIX/bin:$PATH\"\n\
   export LD_LIBRARY_PATH=\"$PHOREUS_PYTHON_PREFIX/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n\
@@ -5528,22 +5769,32 @@ else\n\
 fi\n\
 export PYTHON3=\"$PYTHON\"\n\
 export PIP=\"${{PIP:-$PYTHON -m pip}}\"\n\
-export CC=\"${{CC:-gcc}}\"\n\
-export CXX=\"${{CXX:-g++}}\"\n",
-        python_minor = python_runtime.minor_str
-    );
-    out.push_str(&format!(
-        "export RECIPE_DIR=/work/SOURCES\n\
+",
+            python_minor = python_runtime.minor_str
+        ));
+    }
+
+    if scope.compiler_env_required {
+        out.push_str(
+            "export CC=\"${CC:-gcc}\"\n\
+export CXX=\"${CXX:-g++}\"\n",
+        );
+    }
+
+    if scope.conda_pkg_vars_required {
+        out.push_str(&format!(
+            "export RECIPE_DIR=/work/SOURCES\n\
 export PKG_NAME=\"${{PKG_NAME:-{conda_pkg_name}}}\"\n\
 export PKG_VERSION=\"${{PKG_VERSION:-{conda_pkg_version}}}\"\n\
 export PKG_BUILDNUM=\"${{PKG_BUILDNUM:-{conda_pkg_build_number}}}\"\n\
 export PKG_BUILD_STRING=\"${{PKG_BUILD_STRING:-${{PKG_BUILDNUM}}}}\"\n",
-        conda_pkg_name = spec_escape(conda_pkg_name),
-        conda_pkg_version = spec_escape(conda_pkg_version),
-        conda_pkg_build_number = spec_escape(conda_pkg_build_number),
-    ));
+            conda_pkg_name = spec_escape(conda_pkg_name),
+            conda_pkg_version = spec_escape(conda_pkg_version),
+            conda_pkg_build_number = spec_escape(conda_pkg_build_number),
+        ));
+    }
 
-    if r_runtime_required {
+    if scope.r_runtime_required {
         out.push_str(&format!(
             "export PHOREUS_R_PREFIX=/usr/local/phoreus/r/{phoreus_r_version}\n\
 if [[ -x \"$PHOREUS_R_PREFIX/bin/Rscript\" ]]; then\n\
@@ -5555,7 +5806,7 @@ export RSCRIPT=\"${{RSCRIPT:-Rscript}}\"\n",
         ));
     }
 
-    if rust_runtime_required {
+    if scope.rust_runtime_required {
         out.push_str(&format!(
             "export PHOREUS_RUST_PREFIX=/usr/local/phoreus/rust/{phoreus_rust_minor}\n\
 if [[ -d \"$PHOREUS_RUST_PREFIX/bin\" ]]; then\n\
@@ -5569,7 +5820,7 @@ fi\n",
         ));
     }
 
-    if nim_runtime_required {
+    if scope.nim_runtime_required {
         out.push_str(&format!(
             "export PHOREUS_NIM_PREFIX=/usr/local/phoreus/nim/{phoreus_nim_series}\n\
 if [[ -d \"$PHOREUS_NIM_PREFIX/bin\" ]]; then\n\
@@ -5577,6 +5828,24 @@ if [[ -d \"$PHOREUS_NIM_PREFIX/bin\" ]]; then\n\
 fi\n",
             phoreus_nim_series = PHOREUS_NIM_SERIES
         ));
+    }
+
+    if scope.sparsehash_configure_fallback_required {
+        out.push_str(
+            "sparsehash_header=\"\"\n\
+for cand in \"$PREFIX/include/google/sparse_hash_map\" /usr/include/google/sparse_hash_map /usr/local/include/google/sparse_hash_map; do\n\
+  if [[ -f \"$cand\" ]]; then\n\
+    sparsehash_header=\"$cand\"\n\
+    break\n\
+  fi\n\
+done\n\
+if [[ -n \"$sparsehash_header\" ]]; then\n\
+  export BIOCONDA2RPM_SPARSEHASH_CONFIGURE_FLAG=\"--with-sparsehash=$PREFIX\"\n\
+else\n\
+  export BIOCONDA2RPM_SPARSEHASH_CONFIGURE_FLAG=\"--without-sparsehash\"\n\
+  echo \"bioconda2rpm: sparsehash headers not found; using --without-sparsehash\" >&2\n\
+fi\n",
+        );
     }
 
     out
@@ -5610,10 +5879,16 @@ fn render_payload_spec_minimal(
     let source_relsubdir = ".".to_string();
     let python_recipe = is_python_recipe(parsed) || python_script_hint;
     let python_runtime = select_phoreus_python_runtime(parsed, python_recipe);
-    let r_runtime_required =
-        recipe_requires_r_runtime(parsed) || is_r_project_recipe(parsed) || r_script_hint;
-    let rust_runtime_required = recipe_requires_rust_runtime(parsed) || rust_script_hint;
-    let nim_runtime_required = recipe_requires_nim_runtime(parsed);
+    let scope = compute_minimal_build_scope(
+        parsed,
+        interpreted_build_plan,
+        python_script_hint,
+        r_script_hint,
+        rust_script_hint,
+    );
+    let r_runtime_required = scope.r_runtime_required;
+    let rust_runtime_required = scope.rust_runtime_required;
+    let nim_runtime_required = scope.nim_runtime_required;
     let perl_recipe = normalize_name(&parsed.package_name).starts_with("perl-");
     let runtime_only_metapackage = is_runtime_only_metapackage(parsed);
 
@@ -5641,7 +5916,7 @@ mkdir -p %{bioconda_source_subdir}\n"
     if source_kind == SourceArchiveKind::Git {
         build_requires.insert("git".to_string());
     }
-    if python_recipe {
+    if scope.python_runtime_required {
         build_requires.insert(python_runtime.package.to_string());
     }
     if r_runtime_required {
@@ -5679,7 +5954,7 @@ mkdir -p %{bioconda_source_subdir}\n"
 
     let mut runtime_requires = BTreeSet::new();
     runtime_requires.insert("phoreus".to_string());
-    if python_recipe {
+    if scope.python_runtime_required {
         runtime_requires.insert(python_runtime.package.to_string());
     }
     if perl_recipe {
@@ -5754,18 +6029,94 @@ mkdir -p %{bioconda_source_subdir}\n"
         &parsed.package_name,
         &parsed.version,
         &parsed.build_number,
-        r_runtime_required,
-        rust_runtime_required,
-        nim_runtime_required,
+        &scope,
     );
-    let build_commands = render_shell_lines(
+    let build_commands = render_scoped_shell_lines(
         &interpreted_build_plan.build_commands,
         "bioconda2rpm minimal mode: no explicit build commands extracted",
+        &scope,
     );
-    let install_commands = render_shell_lines(
+    let install_commands = render_scoped_shell_lines(
         &interpreted_build_plan.install_commands,
         "bioconda2rpm minimal mode: no explicit install commands extracted",
+        &scope,
     );
+    let arch_env_block = if scope.arch_env_required {
+        "%ifarch aarch64\n\
+export BIOCONDA_TARGET_ARCH=aarch64\n\
+export target_platform=linux-aarch64\n\
+%else\n\
+export BIOCONDA_TARGET_ARCH=x86_64\n\
+export target_platform=linux-64\n\
+%endif\n"
+            .to_string()
+    } else {
+        String::new()
+    };
+    let parallel_env_block = if scope.parallel_env_required {
+        "export CPU_COUNT=\"${BIOCONDA2RPM_CPU_COUNT:-1}\"\n\
+if [[ -z \"$CPU_COUNT\" || \"$CPU_COUNT\" == \"0\" ]]; then\n\
+  export CPU_COUNT=1\n\
+fi\n\
+export MAKEFLAGS=\"-j${CPU_COUNT}\"\n\
+export CMAKE_BUILD_PARALLEL_LEVEL=\"$CPU_COUNT\"\n"
+            .to_string()
+    } else {
+        String::new()
+    };
+    let symlink_normalization_block = if scope.symlink_normalization_required {
+        "    while IFS= read -r -d '' link_path; do\n\
+    link_target=$(readlink \"$link_path\" || true)\n\
+    [[ -n \"$link_target\" ]] || continue\n\
+    link_dir=$(dirname \"$link_path\")\n\
+    case \"$link_target\" in\n\
+      %{buildroot}/*) target_fs=\"$link_target\" ;;\n\
+      /*) target_fs=\"$link_target\" ;;\n\
+      *) target_fs=\"$link_dir/$link_target\" ;;\n\
+    esac\n\
+    fixed_target=\"\"\n\
+    if command -v realpath >/dev/null 2>&1; then\n\
+      fixed_target=$(realpath -m --relative-to \"$link_dir\" \"$target_fs\" 2>/dev/null || true)\n\
+    elif [[ \"$target_fs\" == %{buildroot}/* ]]; then\n\
+      fixed_target=\"${target_fs#%{buildroot}}\"\n\
+    fi\n\
+    if [[ -n \"$fixed_target\" ]]; then\n\
+      ln -snf \"$fixed_target\" \"$link_path\"\n\
+    fi\n\
+    done < <(find %{buildroot}%{phoreus_prefix} -type l -print0 2>/dev/null)\n"
+            .to_string()
+    } else {
+        String::new()
+    };
+    let buildroot_text_scrub_block = if scope.buildroot_text_scrub_required {
+        "    buildroot_prefix=\"%{buildroot}%{phoreus_prefix}\"\n\
+    final_prefix=\"%{phoreus_prefix}\"\n\
+    while IFS= read -r -d '' text_path; do\n\
+    case \"$text_path\" in\n\
+      *.pc|*.la|*.prl|*.pm|*.pl|*.py|*.sh|*.bash|*.zsh|*/bin/*|*/libexec/*)\n\
+        sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true\n\
+        ;;\n\
+    esac\n\
+    done < <(find %{buildroot}%{phoreus_prefix} -type f -print0 2>/dev/null)\n\
+    while IFS= read -r -d '' text_path; do\n\
+    sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true\n\
+    done < <(grep -RIlZ -- \"$buildroot_prefix\" %{buildroot}%{phoreus_prefix} 2>/dev/null || true)\n\
+    buildroot_root=\"%{buildroot}\"\n\
+    while IFS= read -r -d '' text_path; do\n\
+    case \"$text_path\" in\n\
+      *.pc|*.la|*.prl|*.pm|*.pl|*.py|*.sh|*.bash|*.zsh|*/bin/*|*/libexec/*)\n\
+        sed -i \"s|$buildroot_root||g\" \"$text_path\" || true\n\
+        ;;\n\
+    esac\n\
+    done < <(find %{buildroot}%{phoreus_prefix} -type f -print0 2>/dev/null)\n\
+    while IFS= read -r -d '' text_path; do\n\
+    sed -i \"s|$buildroot_root||g\" \"$text_path\" || true\n\
+    done < <(grep -RIlZ -- \"$buildroot_root\" %{buildroot}%{phoreus_prefix} 2>/dev/null || true)\n"
+            .to_string()
+    } else {
+        String::new()
+    };
+    let build_scope = scope.label_string();
     let perl_module_provides = if perl_recipe {
         perl_module_name_from_conda(&parsed.package_name)
             .map(|module| format!("Provides:       perl({module}) = %{{version}}-%{{release}}\n"))
@@ -5780,6 +6131,7 @@ mkdir -p %{bioconda_source_subdir}\n"
 \n\
 %global tool {tool}\n\
 %global upstream_version {version}\n\
+%global bioconda2rpm_build_scope {build_scope}\n\
 %global bioconda_source_subdir {source_subdir}\n\
 %global bioconda_source_relsubdir {source_relsubdir}\n\
 {source_git_macros}\
@@ -5804,6 +6156,7 @@ URL:            {homepage}\n\
 Auto-generated from Bioconda metadata only.\n\
 Recipe metadata source: {meta_path}\n\
 Variant selected: {variant_dir}\n\
+Minimal build scope: %{{bioconda2rpm_build_scope}}\n\
 \n\
 %prep\n\
 {source_unpack_prep}\
@@ -5811,21 +6164,10 @@ Variant selected: {variant_dir}\n\
 \n\
 %build\n\
 cd buildsrc\n\
-%ifarch aarch64\n\
-export BIOCONDA_TARGET_ARCH=aarch64\n\
-export target_platform=linux-aarch64\n\
-%else\n\
-export BIOCONDA_TARGET_ARCH=x86_64\n\
-export target_platform=linux-64\n\
-%endif\n\
+{arch_env_block}\
 export SRC_DIR=$(pwd)/%{{bioconda_source_relsubdir}}\n\
 export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
-export CPU_COUNT=\"${{BIOCONDA2RPM_CPU_COUNT:-1}}\"\n\
-if [[ -z \"$CPU_COUNT\" || \"$CPU_COUNT\" == \"0\" ]]; then\n\
-  export CPU_COUNT=1\n\
-fi\n\
-export MAKEFLAGS=\"-j${{CPU_COUNT}}\"\n\
-export CMAKE_BUILD_PARALLEL_LEVEL=\"$CPU_COUNT\"\n\
+{parallel_env_block}\
 {runtime_env_block}\
 {build_commands}\
 \n\
@@ -5833,65 +6175,14 @@ export CMAKE_BUILD_PARALLEL_LEVEL=\"$CPU_COUNT\"\n\
 rm -rf %{{buildroot}}\n\
 mkdir -p %{{buildroot}}%{{phoreus_prefix}}\n\
 cd buildsrc\n\
-%ifarch aarch64\n\
-export BIOCONDA_TARGET_ARCH=aarch64\n\
-export target_platform=linux-aarch64\n\
-%else\n\
-export BIOCONDA_TARGET_ARCH=x86_64\n\
-export target_platform=linux-64\n\
-%endif\n\
+{arch_env_block}\
 export SRC_DIR=$(pwd)/%{{bioconda_source_relsubdir}}\n\
 export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
-export CPU_COUNT=\"${{BIOCONDA2RPM_CPU_COUNT:-1}}\"\n\
-if [[ -z \"$CPU_COUNT\" || \"$CPU_COUNT\" == \"0\" ]]; then\n\
-  export CPU_COUNT=1\n\
-fi\n\
-export MAKEFLAGS=\"-j${{CPU_COUNT}}\"\n\
-export CMAKE_BUILD_PARALLEL_LEVEL=\"$CPU_COUNT\"\n\
+{parallel_env_block}\
 {runtime_env_block}\
 {install_commands}\
-    while IFS= read -r -d '' link_path; do\n\
-    link_target=$(readlink \"$link_path\" || true)\n\
-    [[ -n \"$link_target\" ]] || continue\n\
-    link_dir=$(dirname \"$link_path\")\n\
-    case \"$link_target\" in\n\
-      %{{buildroot}}/*) target_fs=\"$link_target\" ;;\n\
-      /*) target_fs=\"$link_target\" ;;\n\
-      *) target_fs=\"$link_dir/$link_target\" ;;\n\
-    esac\n\
-    fixed_target=\"\"\n\
-    if command -v realpath >/dev/null 2>&1; then\n\
-      fixed_target=$(realpath -m --relative-to \"$link_dir\" \"$target_fs\" 2>/dev/null || true)\n\
-    elif [[ \"$target_fs\" == %{{buildroot}}/* ]]; then\n\
-      fixed_target=\"${{target_fs#%{{buildroot}}}}\"\n\
-    fi\n\
-    if [[ -n \"$fixed_target\" ]]; then\n\
-      ln -snf \"$fixed_target\" \"$link_path\"\n\
-    fi\n\
-    done < <(find %{{buildroot}}%{{phoreus_prefix}} -type l -print0 2>/dev/null)\n\
-    buildroot_prefix=\"%{{buildroot}}%{{phoreus_prefix}}\"\n\
-    final_prefix=\"%{{phoreus_prefix}}\"\n\
-    while IFS= read -r -d '' text_path; do\n\
-    case \"$text_path\" in\n\
-      *.pc|*.la|*.prl|*.pm|*.pl|*.py|*.sh|*.bash|*.zsh|*/bin/*|*/libexec/*)\n\
-        sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true\n\
-        ;;\n\
-    esac\n\
-    done < <(find %{{buildroot}}%{{phoreus_prefix}} -type f -print0 2>/dev/null)\n\
-    while IFS= read -r -d '' text_path; do\n\
-    sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true\n\
-    done < <(grep -RIlZ -- \"$buildroot_prefix\" %{{buildroot}}%{{phoreus_prefix}} 2>/dev/null || true)\n\
-    buildroot_root=\"%{{buildroot}}\"\n\
-    while IFS= read -r -d '' text_path; do\n\
-    case \"$text_path\" in\n\
-      *.pc|*.la|*.prl|*.pm|*.pl|*.py|*.sh|*.bash|*.zsh|*/bin/*|*/libexec/*)\n\
-        sed -i \"s|$buildroot_root||g\" \"$text_path\" || true\n\
-        ;;\n\
-    esac\n\
-    done < <(find %{{buildroot}}%{{phoreus_prefix}} -type f -print0 2>/dev/null)\n\
-    while IFS= read -r -d '' text_path; do\n\
-    sed -i \"s|$buildroot_root||g\" \"$text_path\" || true\n\
-    done < <(grep -RIlZ -- \"$buildroot_root\" %{{buildroot}}%{{phoreus_prefix}} 2>/dev/null || true)\n\
+{symlink_normalization_block}\
+{buildroot_text_scrub_block}\
 mkdir -p %{{buildroot}}%{{phoreus_moddir}}\n\
 cat > %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua <<'LUAEOF'\n\
 help([[ {summary} ]])\n\
@@ -5912,6 +6203,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
 - Auto-generated from Bioconda metadata (minimal canonical mode)\n",
         tool = software_slug,
         version = spec_escape(&parsed.version),
+        build_scope = build_scope,
         source_subdir = spec_escape(&source_subdir),
         source_relsubdir = spec_escape(&source_relsubdir),
         source_git_macros = source_git_macros,
@@ -5928,9 +6220,13 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         variant_dir = spec_escape(&variant_dir.display().to_string()),
         source_unpack_prep = source_unpack_prep,
         patch_apply = patch_apply_lines,
+        arch_env_block = arch_env_block,
+        parallel_env_block = parallel_env_block,
         runtime_env_block = runtime_env_block,
         build_commands = build_commands,
         install_commands = install_commands,
+        symlink_normalization_block = symlink_normalization_block,
+        buildroot_text_scrub_block = buildroot_text_scrub_block,
         module_prefix_path = module_prefix_path,
         module_lua_env = module_lua_env,
         changelog_date = changelog_date,
@@ -13285,11 +13581,9 @@ requirements:
                 "patch --binary --forward --batch -p\"$patch_strip\" -i \"$patch_input\""
             )
         );
-        assert!(
-            spec.contains(
-                "patch -l --binary --forward --batch -p\"$patch_strip\" -i \"$patch_input\""
-            )
-        );
+        assert!(spec.contains(
+            "patch -l --binary --forward --batch -p\"$patch_strip\" -i \"$patch_input\""
+        ));
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(spec.contains("retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\""));
         assert!(spec.contains("export CPU_COUNT=\"${BIOCONDA2RPM_CPU_COUNT:-1}\""));
@@ -15830,10 +16124,18 @@ requirements:
         );
 
         assert!(spec.contains("case \"$text_path\" in"));
-        assert!(spec.contains("*.pc|*.la|*.prl|*.pm|*.pl|*.py|*.sh|*.bash|*.zsh|*/bin/*|*/libexec/*)"));
-        assert!(spec.contains("sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true"));
+        assert!(
+            spec.contains("*.pc|*.la|*.prl|*.pm|*.pl|*.py|*.sh|*.bash|*.zsh|*/bin/*|*/libexec/*)")
+        );
+        assert!(
+            spec.contains("sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true")
+        );
         assert!(spec.contains("sed -i \"s|$buildroot_root||g\" \"$text_path\" || true"));
-        assert!(spec.contains("done < <(find %{buildroot}%{phoreus_prefix} -type f -print0 2>/dev/null)"));
+        assert!(
+            spec.contains(
+                "done < <(find %{buildroot}%{phoreus_prefix} -type f -print0 2>/dev/null)"
+            )
+        );
     }
 
     #[test]
@@ -15871,8 +16173,12 @@ requirements:
             false,
         );
 
-        assert!(spec.contains("grep -RIlZ -- \"$buildroot_prefix\" %{buildroot}%{phoreus_prefix} 2>/dev/null || true"));
-        assert!(spec.contains("grep -RIlZ -- \"$buildroot_root\" %{buildroot}%{phoreus_prefix} 2>/dev/null || true"));
+        assert!(spec.contains(
+            "grep -RIlZ -- \"$buildroot_prefix\" %{buildroot}%{phoreus_prefix} 2>/dev/null || true"
+        ));
+        assert!(spec.contains(
+            "grep -RIlZ -- \"$buildroot_root\" %{buildroot}%{phoreus_prefix} 2>/dev/null || true"
+        ));
     }
 
     #[test]
@@ -18000,7 +18306,9 @@ cmake -S . -B build
                 .build_commands
                 .iter()
                 .chain(plan.install_commands.iter())
-                .any(|line| line.starts_with("--- ") || line.starts_with("+++ ") || line.starts_with("@@"))
+                .any(|line| line.starts_with("--- ")
+                    || line.starts_with("+++ ")
+                    || line.starts_with("@@"))
         );
     }
 
@@ -18106,14 +18414,26 @@ $R CMD INSTALL --build .
 
     #[test]
     fn minimal_runtime_env_exports_python_linker_and_rust_homes() {
+        let scope = MinimalBuildScope {
+            python_runtime_required: true,
+            r_runtime_required: false,
+            rust_runtime_required: true,
+            nim_runtime_required: false,
+            perl_runtime_required: false,
+            compiler_env_required: false,
+            conda_pkg_vars_required: false,
+            arch_env_required: false,
+            parallel_env_required: false,
+            symlink_normalization_required: false,
+            buildroot_text_scrub_required: false,
+            sparsehash_configure_fallback_required: false,
+        };
         let block = render_minimal_runtime_env_block(
             PHOREUS_PYTHON_RUNTIME_311,
             "example-tool",
             "1.2.3",
             "0",
-            false,
-            true,
-            false,
+            &scope,
         );
         assert!(block.contains("export LD_LIBRARY_PATH=\"$PHOREUS_PYTHON_PREFIX/lib"));
         assert!(block.contains("export CARGO_HOME=\"$PHOREUS_RUST_PREFIX\""));
@@ -18122,14 +18442,26 @@ $R CMD INSTALL --build .
 
     #[test]
     fn minimal_runtime_env_exports_recipe_dir_and_conda_pkg_variables() {
+        let scope = MinimalBuildScope {
+            python_runtime_required: false,
+            r_runtime_required: false,
+            rust_runtime_required: false,
+            nim_runtime_required: false,
+            perl_runtime_required: false,
+            compiler_env_required: false,
+            conda_pkg_vars_required: true,
+            arch_env_required: false,
+            parallel_env_required: false,
+            symlink_normalization_required: false,
+            buildroot_text_scrub_required: false,
+            sparsehash_configure_fallback_required: false,
+        };
         let block = render_minimal_runtime_env_block(
             PHOREUS_PYTHON_RUNTIME_311,
             "fastqc",
             "0.12.1",
             "0",
-            false,
-            false,
-            false,
+            &scope,
         );
         assert!(block.contains("export RECIPE_DIR=/work/SOURCES"));
         assert!(block.contains("export PKG_NAME=\"${PKG_NAME:-fastqc}\""));
@@ -18225,6 +18557,65 @@ $R CMD INSTALL --build .
     }
 
     #[test]
+    fn minimal_payload_spec_abyss_selects_only_direct_build_scope() {
+        let parsed = ParsedMeta {
+            package_name: "abyss".to_string(),
+            version: "2.3.10".to_string(),
+            build_number: "2".to_string(),
+            source_url: "https://example.invalid/abyss-2.3.10.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/abyss".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "abyss".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "./configure --with-sparsehash=$PREFIX\nmake\nmake install\n".to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["sparsehash".to_string()],
+            host_dep_specs_raw: vec!["sparsehash".to_string()],
+            run_dep_specs_raw: vec!["sparsehash".to_string()],
+            build_deps: BTreeSet::from(["sparsehash".to_string()]),
+            host_deps: BTreeSet::from(["sparsehash".to_string()]),
+            run_deps: BTreeSet::from(["sparsehash".to_string()]),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "abyss",
+            &parsed,
+            &plan,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains(
+            "%global bioconda2rpm_build_scope compiler-env,parallel-env,sparsehash-configure-fallback"
+        ));
+        assert!(spec.contains("BuildRequires:  sparsehash-devel"));
+        assert!(spec.contains("export BIOCONDA2RPM_SPARSEHASH_CONFIGURE_FLAG"));
+        assert!(spec.contains("./configure ${BIOCONDA2RPM_SPARSEHASH_CONFIGURE_FLAG} || true"));
+        assert!(!spec.contains("PHOREUS_PYTHON_PREFIX"));
+        assert!(!spec.contains("PHOREUS_R_PREFIX"));
+        assert!(!spec.contains("PHOREUS_RUST_PREFIX"));
+        assert!(!spec.contains("PHOREUS_NIM_PREFIX"));
+        assert!(!spec.contains("PHOREUS_PERL_PREFIX"));
+        assert!(!spec.contains("export RECIPE_DIR=/work/SOURCES"));
+        assert!(!spec.contains("if [[ \"%{tool}\" =="));
+        assert!(!spec.contains("bootstrapping capnproto into $PREFIX"));
+        assert!(!spec.contains("cmake_bootstrap_ver="));
+        assert!(!spec.contains("perl-xml-libxml"));
+        assert!(!spec.contains("bwa-mem2"));
+        assert!(!spec.contains("buildroot_prefix=\"%{buildroot}%{phoreus_prefix}\""));
+        assert!(!spec.contains("find %{buildroot}%{phoreus_prefix} -type l"));
+    }
+
+    #[test]
     fn minimal_payload_spec_normalizes_install_symlinks_after_interpreted_commands() {
         let parsed = ParsedMeta {
             package_name: "fastqc".to_string(),
@@ -18264,7 +18655,11 @@ $R CMD INSTALL --build .
         );
         assert!(spec.contains("export PKG_NAME=\"${PKG_NAME:-fastqc}\""));
         assert!(spec.contains("ln -s $fastqc/fastqc $PREFIX/bin/fastqc || true"));
-        assert!(spec.contains("done < <(find %{buildroot}%{phoreus_prefix} -type l -print0 2>/dev/null)"));
+        assert!(
+            spec.contains(
+                "done < <(find %{buildroot}%{phoreus_prefix} -type l -print0 2>/dev/null)"
+            )
+        );
         assert!(spec.contains(
             "fixed_target=$(realpath -m --relative-to \"$link_dir\" \"$target_fs\" 2>/dev/null || true)"
         ));
@@ -18310,9 +18705,9 @@ $R CMD INSTALL --build .
         );
         assert!(spec.contains("buildroot_prefix=\"%{buildroot}%{phoreus_prefix}\""));
         assert!(spec.contains("final_prefix=\"%{phoreus_prefix}\""));
-        assert!(spec.contains(
-            "sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true"
-        ));
+        assert!(
+            spec.contains("sed -i \"s|$buildroot_prefix|$final_prefix|g\" \"$text_path\" || true")
+        );
         assert!(spec.contains(
             "done < <(grep -RIlZ -- \"$buildroot_prefix\" %{buildroot}%{phoreus_prefix} 2>/dev/null || true)"
         ));
