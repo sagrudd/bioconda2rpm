@@ -6213,19 +6213,7 @@ fn render_scoped_shell_lines(
 }
 
 fn render_patch_apply_lines_minimal(staged_patch_sources: &[String], source_dir: &str) -> String {
-    if staged_patch_sources.is_empty() {
-        return String::new();
-    }
-    let mut out = format!("cd {source_dir}\n");
-    for (idx, _) in staged_patch_sources.iter().enumerate() {
-        let source_num = idx + 2;
-        out.push_str(&format!(
-            "if ! patch --forward --batch -p1 -i %{{SOURCE{source_num}}}; then\n\
-  patch --forward --batch -p0 -i %{{SOURCE{source_num}}}\n\
-fi\n"
-        ));
-    }
-    out
+    render_patch_apply_lines(staged_patch_sources, source_dir)
 }
 
 fn render_minimal_runtime_env_block(
@@ -10388,20 +10376,6 @@ while IFS= read -r patch_rel; do\n\
     done < <(find . -type f -name \"$patch_base\" -print 2>/dev/null || true)\n\
   fi\n\
 done < <(awk '/^diff --git /{{old=$3; new=$4; sub(/^[ab]\\//, \"\", old); sub(/^[ab]\\//, \"\", new); if (old != \"/dev/null\") print old; if (new != \"/dev/null\") print new; next}} /^\\+\\+\\+ / || /^--- / || /^\\*\\*\\* /{{p=$2; if (p ~ /^[0-9,]+$/) next; sub(/^[ab]\\//, \"\", p); sub(/\\r$/, \"\", p); if (p != \"/dev/null\") print p;}}' \"$patch_input\" | sed '/^$/d' | sort -u)\n\
-for maybe_dir in userApps Source_code_including_submodules source src; do\n\
-  if [[ -d \"$maybe_dir\" ]]; then\n\
-    already=0\n\
-    for seen in \"${{patch_dirs[@]}}\"; do\n\
-      if [[ \"$seen\" == \"$maybe_dir\" ]]; then\n\
-        already=1\n\
-        break\n\
-      fi\n\
-    done\n\
-    if [[ \"$already\" -eq 0 ]]; then\n\
-      patch_dirs+=(\"$maybe_dir\")\n\
-    fi\n\
-  fi\n\
-done\n\
 while IFS= read -r top_dir; do\n\
   top_dir=\"${{top_dir#./}}\"\n\
   [[ -z \"$top_dir\" ]] && continue\n\
@@ -14320,11 +14294,7 @@ requirements:
         assert!(spec.contains("sed -E 's#^(\\*\\*\\*|---)[[:space:]]+([^[:space:]]+)\\.orig([[:space:]].*)?$#\\1 \\2\\3#'"));
         assert!(spec.contains("patch_rel=\"${patch_rel#b/}\""));
         assert!(spec.contains("/^\\+\\+\\+ / || /^--- / || /^\\*\\*\\* /"));
-        assert!(
-            spec.contains(
-                "for maybe_dir in userApps Source_code_including_submodules source src; do"
-            )
-        );
+        assert!(!spec.contains("for maybe_dir in userApps"));
         assert!(spec.contains("find . -mindepth 1 -maxdepth 1 -type d -print"));
         assert!(
             spec.contains(
@@ -19408,6 +19378,67 @@ $R CMD INSTALL --build .
         assert!(!spec.contains("bash -eo pipefail ./build.sh"));
         assert!(spec.contains("cmake -S . -B build"));
         assert!(spec.contains("cmake --install build --prefix \"$PREFIX\""));
+    }
+
+    #[test]
+    fn minimal_payload_spec_ucsc_blat_discovers_nested_patch_root() {
+        let parsed = ParsedMeta {
+            package_name: "ucsc-blat".to_string(),
+            version: "482".to_string(),
+            build_number: "0".to_string(),
+            source_url:
+                "https://hgdownload.cse.ucsc.edu/admin/exe/userApps.archive/userApps.v482.src.tgz"
+                    .to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/ucsc-blat".to_string(),
+            license: "custom".to_string(),
+            summary: "ucsc-blat".to_string(),
+            source_patches: vec![
+                "include.patch".to_string(),
+                "include.linux.patch".to_string(),
+            ],
+            build_script: Some(
+                "(cd kent/src/lib && make)\n(cd kent/src/blat && make)\n".to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "ucsc-blat",
+            &parsed,
+            &plan,
+            Some("bioconda-ucsc-blat-build.sh"),
+            &[
+                "bioconda-ucsc-blat-patch-1-include.patch".to_string(),
+                "bioconda-ucsc-blat-patch-2-include.linux.patch".to_string(),
+            ],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("Source2:"));
+        assert!(spec.contains("Source3:"));
+        assert!(spec.contains("patch_dirs=(.)"));
+        assert!(spec.contains(r#"candidate="${hit%/$patch_rel}""#));
+        assert!(spec.contains(r#"find . -type f -path "*/$patch_rel" -print"#));
+        assert!(spec.contains("find . -mindepth 1 -maxdepth 1 -type d -print"));
+        assert!(spec.contains("for patch_strip in 1 0 2 3 4 5; do"));
+        assert!(spec.contains(
+            r#"patch --binary --forward --batch -p"$patch_strip" -i "$patch_input""#
+        ));
+        assert!(!spec.contains("for maybe_dir in userApps"));
+        assert!(!spec.contains("if ! patch --forward --batch -p1 -i %{SOURCE2}; then"));
     }
 
     #[test]
