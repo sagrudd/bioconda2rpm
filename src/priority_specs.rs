@@ -12367,7 +12367,7 @@ else\n\
     for attempt in 1 2 3; do\n\
       spectool_cmd=(spectool -g -R --define \"_topdir $build_root\" --define \"_sourcedir $build_sourcedir\" '{spec}')\n\
       if command -v timeout >/dev/null 2>&1; then\n\
-        spectool_cmd=(timeout --kill-after=30s 1800s \"${{spectool_cmd[@]}}\")\n\
+        spectool_cmd=(timeout --kill-after=30s 300s \"${{spectool_cmd[@]}}\")\n\
       fi\n\
       if \"${{spectool_cmd[@]}}\"; then\n\
         if [[ -n \"$candidate_file\" && -s \"$build_sourcedir/$candidate_file\" ]]; then\n\
@@ -12382,7 +12382,7 @@ else\n\
       else\n\
         spectool_status=$?\n\
         if [[ \"$spectool_status\" -eq 124 || \"$spectool_status\" -eq 137 ]]; then\n\
-          echo \"spectool source download timed out after 1800s for $candidate\" >&2\n\
+          echo \"spectool source download timed out after 300s for $candidate\" >&2\n\
         fi\n\
       fi\n\
       sleep $((attempt * 2))\n\
@@ -14421,8 +14421,8 @@ requirements:
     fn payload_spec_source_downloads_are_bounded() {
         let source = include_str!("priority_specs.rs");
 
-        assert!(source.contains("timeout --kill-after=30s 1800s"));
-        assert!(source.contains("spectool source download timed out after 1800s"));
+        assert!(source.contains("timeout --kill-after=30s 300s"));
+        assert!(source.contains("spectool source download timed out after 300s"));
         assert!(source.contains("--speed-time 120 --speed-limit 1024 --max-time 1800"));
         assert!(source.contains("--read-timeout=120"));
     }
