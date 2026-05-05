@@ -6227,6 +6227,19 @@ fn render_patch_apply_lines_minimal(staged_patch_sources: &[String], source_dir:
     render_patch_apply_lines(staged_patch_sources, source_dir)
 }
 
+fn render_tbl2asn_libfaketime_source_prep_block() -> &'static str {
+    // HEURISTIC-TEMP(issue=bioconda2rpm#tbl2asn-libfaketime-bootstrap-retirement):
+    // Bioconda tbl2asn-forever expects libfaketime source to exist in-tree.
+    "if [[ ! -d \"%{bioconda_source_subdir}/libfaketime\" ]]; then\n\
+  tbl2asn_libfaketime_url=\"https://github.com/wolfcw/libfaketime/archive/v0.9.10.tar.gz\"\n\
+  tbl2asn_libfaketime_archive=\"$(mktemp)\"\n\
+  curl -L --fail --retry 5 --retry-delay 2 -o \"$tbl2asn_libfaketime_archive\" \"$tbl2asn_libfaketime_url\"\n\
+  mkdir -p \"%{bioconda_source_subdir}/libfaketime\"\n\
+  tar -xf \"$tbl2asn_libfaketime_archive\" -C \"%{bioconda_source_subdir}/libfaketime\" --strip-components=1\n\
+  rm -f \"$tbl2asn_libfaketime_archive\"\n\
+fi\n"
+}
+
 fn render_minimal_runtime_env_block(
     python_runtime: PhoreusPythonRuntime,
     conda_pkg_name: &str,
@@ -6428,7 +6441,7 @@ fn render_payload_spec_minimal(
         runtime_only_metapackage && parsed.source_url.trim().is_empty();
     let include_source0 =
         !suppress_source0_for_metapackage && source_kind != SourceArchiveKind::Git;
-    let source_unpack_prep = if include_source0 {
+    let mut source_unpack_prep = if include_source0 {
         render_source_unpack_prep_block(source_kind)
     } else if source_kind == SourceArchiveKind::Git {
         render_source_unpack_prep_block(source_kind)
@@ -6437,11 +6450,21 @@ fn render_payload_spec_minimal(
 mkdir -p %{bioconda_source_subdir}\n"
             .to_string()
     };
+    // HEURISTIC-TEMP(issue=bioconda2rpm#tbl2asn-libfaketime-bootstrap-retirement):
+    // Hydrate the recipe's secondary libfaketime source before patching.
+    if software_slug == "tbl2asn-forever" {
+        source_unpack_prep.push_str(render_tbl2asn_libfaketime_source_prep_block());
+    }
 
     let mut build_requires = BTreeSet::new();
     build_requires.insert("bash".to_string());
     if include_source0 && source_kind == SourceArchiveKind::Zip {
         build_requires.insert("unzip".to_string());
+    }
+    // HEURISTIC-TEMP(issue=bioconda2rpm#tbl2asn-libfaketime-bootstrap-retirement):
+    // The secondary libfaketime source hydration uses curl during %prep.
+    if software_slug == "tbl2asn-forever" {
+        build_requires.insert("curl".to_string());
     }
     if source_kind == SourceArchiveKind::Git {
         build_requires.insert("git".to_string());
@@ -6995,18 +7018,9 @@ mkdir -p %{bioconda_source_subdir}\n"
         }
     };
     // HEURISTIC-TEMP(issue=bioconda2rpm#tbl2asn-libfaketime-bootstrap-retirement):
-    // Bioconda tbl2asn-forever expects libfaketime source to exist in-tree.
+    // Hydrate the recipe's secondary libfaketime source before patching.
     if software_slug == "tbl2asn-forever" {
-        source_unpack_prep.push_str(
-            "if [[ ! -d \"%{bioconda_source_subdir}/libfaketime\" ]]; then\n\
-  tbl2asn_libfaketime_url=\"https://github.com/wolfcw/libfaketime/archive/v0.9.10.tar.gz\"\n\
-  tbl2asn_libfaketime_archive=\"$(mktemp)\"\n\
-  curl -L --fail --retry 5 --retry-delay 2 -o \"$tbl2asn_libfaketime_archive\" \"$tbl2asn_libfaketime_url\"\n\
-  mkdir -p \"%{bioconda_source_subdir}/libfaketime\"\n\
-  tar -xf \"$tbl2asn_libfaketime_archive\" -C \"%{bioconda_source_subdir}/libfaketime\" --strip-components=1\n\
-  rm -f \"$tbl2asn_libfaketime_archive\"\n\
-fi\n",
-        );
+        source_unpack_prep.push_str(render_tbl2asn_libfaketime_source_prep_block());
     }
     let mut build_requires = BTreeSet::new();
     build_requires.insert("bash".to_string());
@@ -7015,6 +7029,11 @@ fi\n",
     build_requires.insert(python_runtime.package.to_string());
     if include_source0 && source_kind == SourceArchiveKind::Zip {
         build_requires.insert("unzip".to_string());
+    }
+    // HEURISTIC-TEMP(issue=bioconda2rpm#tbl2asn-libfaketime-bootstrap-retirement):
+    // The secondary libfaketime source hydration uses curl during %prep.
+    if software_slug == "tbl2asn-forever" {
+        build_requires.insert("curl".to_string());
     }
     if source_kind == SourceArchiveKind::Git {
         build_requires.insert("git".to_string());
@@ -17048,6 +17067,32 @@ requirements:
         assert!(spec.contains(
             "perl -0pi -e 's@(^\\s*make\\s+test\\b[^\\n]*)$@$1 || true@mg' ./build.sh || true"
         ));
+
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let minimal_spec = render_payload_spec_minimal(
+            "tbl2asn-forever",
+            &parsed,
+            &plan,
+            None,
+            &[
+                "bioconda-tbl2asn-forever-patch-1-test_makefile.patch".to_string(),
+                "bioconda-tbl2asn-forever-patch-2-gettimeofday_proto.patch".to_string(),
+            ],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(minimal_spec.contains(
+            "tbl2asn_libfaketime_url=\"https://github.com/wolfcw/libfaketime/archive/v0.9.10.tar.gz\""
+        ));
+        assert!(minimal_spec.contains("BuildRequires:  curl"));
+        assert!(minimal_spec.contains("patch_dirs=(.)"));
+        assert!(minimal_spec.contains(r#"candidate="${hit%/$patch_rel}""#));
+        assert!(minimal_spec.contains("find . -mindepth 1 -maxdepth 1 -type d -print"));
     }
 
     #[test]
