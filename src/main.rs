@@ -1,5 +1,6 @@
 mod build_lock;
 mod cli;
+mod list;
 mod priority_specs;
 mod recipe_repo;
 mod ui;
@@ -391,6 +392,16 @@ fn main() -> ExitCode {
                 }
                 Err(err) => {
                     eprintln!("lookup failed: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        cli::Command::List(args) => {
+            let topdir = args.effective_topdir();
+            match list::run_list(&topdir, &args) {
+                Ok(_) => {}
+                Err(err) => {
+                    eprintln!("list failed: {err:#}");
                     return ExitCode::FAILURE;
                 }
             }

@@ -26,6 +26,8 @@ pub enum Command {
     Recipes(RecipesArgs),
     /// Lookup live build runtime state (lock owner, forwarded queue, active containers).
     Lookup(LookupArgs),
+    /// List successfully built methods from the internal catalogue.
+    List(ListArgs),
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
@@ -473,6 +475,33 @@ pub struct LookupArgs {
     pub compact: bool,
 }
 
+#[derive(Debug, clap::Args)]
+pub struct ListArgs {
+    /// Workspace topdir. Defaults to ~/bioconda2rpm.
+    #[arg(long)]
+    pub topdir: Option<PathBuf>,
+
+    /// Filter by software name (glob pattern).
+    #[arg(long)]
+    pub name: Option<String>,
+
+    /// Filter by version (glob pattern).
+    #[arg(long)]
+    pub version: Option<String>,
+
+    /// Filter by target architecture (exact match).
+    #[arg(long)]
+    pub arch: Option<String>,
+
+    /// Refresh internal catalogue by rescanning build reports.
+    #[arg(long)]
+    pub refresh: bool,
+
+    /// Emit JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
 pub fn default_topdir() -> PathBuf {
     match env::var_os("HOME") {
         Some(home) => PathBuf::from(home).join("bioconda2rpm"),
@@ -880,6 +909,12 @@ impl RecipesArgs {
 }
 
 impl LookupArgs {
+    pub fn effective_topdir(&self) -> PathBuf {
+        self.topdir.clone().unwrap_or_else(default_topdir)
+    }
+}
+
+impl ListArgs {
     pub fn effective_topdir(&self) -> PathBuf {
         self.topdir.clone().unwrap_or_else(default_topdir)
     }

@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
-FROM almalinux:10.1
+FROM --platform=$TARGETPLATFORM almalinux:10.1
 
+ARG TARGETPLATFORM
 ARG TARGETARCH
 
 LABEL org.opencontainers.image.title="bioconda2rpm build image (AlmaLinux 10.1)" \
