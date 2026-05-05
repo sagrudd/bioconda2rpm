@@ -10459,6 +10459,10 @@ fn source_validation_shell_function() -> &'static str {
       if command -v gzip >/dev/null 2>&1 && gzip -t \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
       if command -v bzip2 >/dev/null 2>&1 && bzip2 -t \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
       if command -v xz >/dev/null 2>&1 && xz -t \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
+      if [[ \"$(od -An -tx1 -N4 \"$source_path\" 2>/dev/null | tr -d ' \\n')\" == \"7f454c46\" ]]; then return 0; fi\n\
+      if head -n 1 \"$source_path\" 2>/dev/null | grep -q '^#!'; then return 0; fi\n\
+      if head -c 512 \"$source_path\" 2>/dev/null | tr '[:upper:]' '[:lower:]' | grep -Eq '<!doctype html|<html|<head|<body|not found|access denied|rate limit'; then return 1; fi\n\
+      if command -v file >/dev/null 2>&1 && file -b \"$source_path\" | grep -Eqi 'ELF|script|executable'; then return 0; fi\n\
       return 1\n\
       ;;\n\
   esac\n\
@@ -14386,6 +14390,10 @@ requirements:
         assert!(shell.contains("if command -v tar >/dev/null 2>&1 && tar -tzf \"$source_path\" >/dev/null 2>&1; then return 0; fi"));
         assert!(shell.contains("if command -v tar >/dev/null 2>&1 && tar -tf \"$source_path\" >/dev/null 2>&1; then return 0; fi"));
         assert!(shell.contains("if command -v unzip >/dev/null 2>&1 && unzip -tqq \"$source_path\" >/dev/null 2>&1; then return 0; fi"));
+        assert!(shell.contains("od -An -tx1 -N4 \"$source_path\""));
+        assert!(shell.contains("grep -q '^#!'"));
+        assert!(shell.contains("<!doctype html|<html|<head|<body|not found|access denied|rate limit"));
+        assert!(shell.contains("file -b \"$source_path\" | grep -Eqi 'ELF|script|executable'"));
         assert!(shell.contains("return 1"));
     }
 
