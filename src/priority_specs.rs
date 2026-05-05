@@ -6110,9 +6110,16 @@ fn package_requires_original_build_script(
     _parsed: &ParsedMeta,
     _interpreted_build_plan: &InterpretedBuildPlan,
 ) -> bool {
-    // HEURISTIC-TEMP(issue=bioconda2rpm#blast-minimal-build-script-scope):
-    // BLAST's Bioconda build.sh is stateful; splitting it loses configure state.
-    software_slug == "blast"
+    match software_slug {
+        // HEURISTIC-TEMP(issue=bioconda2rpm#blast-minimal-build-script-scope):
+        // BLAST's Bioconda build.sh is stateful; splitting it loses configure state.
+        "blast" => true,
+        // HEURISTIC-TEMP(issue=bioconda2rpm#odgi-arch-conditional-build-script):
+        // ODGI's build.sh carries architecture-conditioned source rewrites for
+        // upstream CPU target attributes before CMake configuration.
+        "odgi" => true,
+        _ => false,
+    }
 }
 
 fn package_requires_blast_compat(software_slug: &str) -> bool {
@@ -6396,6 +6403,24 @@ fn render_payload_spec_minimal(
     let nim_runtime_required = scope.nim_runtime_required;
     let perl_recipe = normalize_name(&parsed.package_name).starts_with("perl-");
     let runtime_only_metapackage = is_runtime_only_metapackage(parsed);
+    let needs_libdeflate = recipe_dep_mentions(parsed, "libdeflate")
+        || recipe_dep_mentions(parsed, "libdeflate-devel");
+    let needs_cereal = recipe_dep_mentions(parsed, "cereal");
+    let needs_jemalloc = recipe_dep_mentions(parsed, "jemalloc");
+    let needs_libhwy = recipe_dep_mentions(parsed, "libhwy");
+    let needs_jsoncpp =
+        recipe_dep_mentions(parsed, "jsoncpp") || recipe_dep_mentions(parsed, "jsoncpp-devel");
+    let needs_capnproto =
+        recipe_dep_mentions(parsed, "capnproto") || recipe_dep_mentions(parsed, "capnp");
+    let core_c_dep_bootstrap = render_core_c_dep_bootstrap_block(
+        false,
+        needs_libdeflate,
+        needs_cereal,
+        needs_jemalloc,
+        needs_libhwy,
+        needs_jsoncpp,
+        needs_capnproto,
+    );
 
     let source_kind = source_archive_kind(&parsed.source_url);
     let git_source = parse_git_source_descriptor(&parsed.source_url);
@@ -6467,6 +6492,25 @@ mkdir -p %{bioconda_source_subdir}\n"
         &parsed.host_dep_specs_raw,
         RpmDependencyKind::Build,
     ));
+    // Core C dependencies may be provisioned in-prefix by the deterministic
+    // bootstrap block before build.sh executes; keep resolver churn out of
+    // BuildRequires for these tokens when bootstrap is active.
+    if needs_libdeflate {
+        build_requires.remove("libdeflate");
+        build_requires.remove("libdeflate-devel");
+    }
+    if needs_cereal {
+        build_requires.remove("cereal");
+        build_requires.remove("cereal-devel");
+    }
+    if needs_jemalloc {
+        build_requires.remove("jemalloc");
+        build_requires.remove("jemalloc-devel");
+    }
+    if needs_capnproto {
+        build_requires.remove("capnproto");
+        build_requires.remove("capnproto-devel");
+    }
 
     let mut runtime_requires = BTreeSet::new();
     runtime_requires.insert("phoreus".to_string());
@@ -6722,6 +6766,7 @@ export SRC_DIR=$(pwd)/%{{bioconda_source_relsubdir}}\n\
 export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
 {parallel_env_block}\
 {runtime_env_block}\
+{core_c_dep_bootstrap}\
 {build_commands}\
 \n\
 %install\n\
@@ -6734,6 +6779,7 @@ export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
 {parallel_env_block}\
 {runtime_env_block}\
 {blast_compat_block}\
+{core_c_dep_bootstrap}\
 {install_commands}\
 {symlink_normalization_block}\
 {buildroot_text_scrub_block}\
@@ -6779,6 +6825,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         arch_env_block = arch_env_block,
         parallel_env_block = parallel_env_block,
         runtime_env_block = runtime_env_block,
+        core_c_dep_bootstrap = core_c_dep_bootstrap,
         blast_compat_block = blast_compat_block,
         build_commands = build_commands,
         install_commands = install_commands,
@@ -10724,6 +10771,7 @@ fn map_build_dependency(dep: &str) -> String {
         // into the Phoreus prefix expected by fastp-style build scripts.
         "isa-l" => "isa-l".to_string(),
         "jansson" => "jansson-devel".to_string(),
+        "jemalloc" => "jemalloc-devel".to_string(),
         "jsoncpp" => "jsoncpp".to_string(),
         "jsoncpp-devel" => "jsoncpp".to_string(),
         "libcurl" => "libcurl-devel".to_string(),
@@ -13548,6 +13596,10 @@ mod tests {
         assert_eq!(map_build_dependency("hdf5-devel"), "hdf5".to_string());
         assert_eq!(map_build_dependency("capnproto"), "capnproto".to_string());
         assert_eq!(map_build_dependency("cffi"), "python3-cffi".to_string());
+        assert_eq!(
+            map_build_dependency("jemalloc"),
+            "jemalloc-devel".to_string()
+        );
         assert_eq!(
             map_build_dependency("pybind11-global"),
             "pybind11-devel".to_string()
@@ -19549,12 +19601,17 @@ $R CMD INSTALL --build .
             ),
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
-            host_dep_specs_raw: vec!["python >=3".to_string(), "pybind11-global".to_string()],
+            host_dep_specs_raw: vec![
+                "python >=3".to_string(),
+                "pybind11-global".to_string(),
+                "jemalloc".to_string(),
+            ],
             run_dep_specs_raw: Vec::new(),
             build_deps: BTreeSet::new(),
             host_deps: BTreeSet::from([
                 PHOREUS_PYTHON_PACKAGE.to_string(),
                 "pybind11-global".to_string(),
+                "jemalloc".to_string(),
             ]),
             run_deps: BTreeSet::new(),
         };
@@ -19564,7 +19621,7 @@ $R CMD INSTALL --build .
             "odgi",
             &parsed,
             &plan,
-            None,
+            Some("bioconda-odgi-build.sh"),
             &[],
             Path::new("/tmp/meta.yaml"),
             Path::new("/tmp"),
@@ -19575,8 +19632,17 @@ $R CMD INSTALL --build .
         );
 
         assert!(spec.contains("%global bioconda2rpm_build_scope python-runtime"));
+        assert!(spec.contains("recipe-build-sh"));
+        assert!(
+            spec.contains("Source1:        bioconda-odgi-build.sh"),
+            "{spec}"
+        );
+        assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(spec.contains(&format!("BuildRequires:  {PHOREUS_PYTHON_PACKAGE}")));
         assert!(spec.contains("BuildRequires:  pybind11-devel"));
+        assert!(!spec.contains("BuildRequires:  jemalloc"));
+        assert!(!spec.contains("BuildRequires:  jemalloc-devel"));
+        assert!(spec.contains("bootstrapping jemalloc into $PREFIX"));
         assert!(spec.contains("export PHOREUS_PYTHON_PREFIX="));
         assert!(spec.contains("export PYTHON=\"$PHOREUS_PYTHON_PREFIX/bin/python"));
         assert!(!spec.contains("BuildRequires:  pybind11-global"));
