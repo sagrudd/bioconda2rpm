@@ -81,6 +81,7 @@ The product is structured as layered components:
 6. Build Execution Layer
 - Runs stage-selected build steps (`spec`/`srpm`/`rpm`) in containers.
 - Default container mode: ephemeral per build.
+- Normal payload/default package pairs are built in one container execution: the payload spec is built first, then the generated `-default` spec is built in a companion build root before the container exits.
 - Production `build <tool>` path executes dependency-first:
   - discover Bioconda dependency closure
   - build dependency packages first

@@ -3881,50 +3881,14 @@ fn process_tool(
         }
     }
 
-    if let Err(err) =
-        build_spec_chain_in_container(build_config, &payload_spec_path, &software_slug)
-    {
-        let reason = format!("payload spec build failed in container: {err}");
-        if is_cancellation_failure(&reason) {
-            clear_quarantine_note(bad_spec_dir, &software_slug);
-            return ReportEntry {
-                software: tool.software.clone(),
-                priority: tool.priority,
-                status: "skipped".to_string(),
-                reason: "cancelled by user".to_string(),
-                overlap_recipe: resolved.recipe_name,
-                overlap_reason: resolved.overlap_reason,
-                variant_dir: resolved.variant_dir.display().to_string(),
-                package_name: parsed.package_name,
-                version: parsed.version,
-                payload_spec_path: payload_spec_path.display().to_string(),
-                meta_spec_path: meta_spec_path.display().to_string(),
-                staged_build_sh: staged_build_sh.display().to_string(),
-            };
-        }
-        quarantine_note(bad_spec_dir, &software_slug, &reason);
-        return ReportEntry {
-            software: tool.software.clone(),
-            priority: tool.priority,
-            status: "quarantined".to_string(),
-            reason,
-            overlap_recipe: resolved.recipe_name,
-            overlap_reason: resolved.overlap_reason,
-            variant_dir: resolved.variant_dir.display().to_string(),
-            package_name: parsed.package_name,
-            version: parsed.version,
-            payload_spec_path: payload_spec_path.display().to_string(),
-            meta_spec_path: meta_spec_path.display().to_string(),
-            staged_build_sh: staged_build_sh.display().to_string(),
-        };
-    }
-
-    if let Err(err) = build_spec_chain_in_container(
+    if let Err(err) = build_spec_pair_chain_in_container(
         build_config,
+        &payload_spec_path,
         &meta_spec_path,
+        &software_slug,
         &format!("{software_slug}-default"),
     ) {
-        let reason = format!("meta spec build failed in container: {err}");
+        let reason = format!("payload/default spec build failed in container: {err}");
         if is_cancellation_failure(&reason) {
             clear_quarantine_note(bad_spec_dir, &software_slug);
             return ReportEntry {
@@ -13165,11 +13129,49 @@ fn build_spec_chain_in_container(
     spec_path: &Path,
     label: &str,
 ) -> Result<()> {
+    build_spec_chain_in_container_inner(build_config, spec_path, label, None, None)
+}
+
+fn build_spec_pair_chain_in_container(
+    build_config: &BuildConfig,
+    payload_spec_path: &Path,
+    default_spec_path: &Path,
+    payload_label: &str,
+    default_label: &str,
+) -> Result<()> {
+    build_spec_chain_in_container_inner(
+        build_config,
+        payload_spec_path,
+        payload_label,
+        Some(default_spec_path),
+        Some(default_label),
+    )
+}
+
+fn build_spec_chain_in_container_inner(
+    build_config: &BuildConfig,
+    spec_path: &Path,
+    label: &str,
+    companion_spec_path: Option<&Path>,
+    companion_label: Option<&str>,
+) -> Result<()> {
     let spec_name = spec_path
         .file_name()
         .and_then(|v| v.to_str())
         .context("spec filename missing")?;
     let spec_in_container = format!("/work/SPECS/{spec_name}");
+    let companion_spec_name = companion_spec_path
+        .map(|path| {
+            path.file_name()
+                .and_then(|v| v.to_str())
+                .context("companion spec filename missing")
+                .map(|v| v.to_string())
+        })
+        .transpose()?;
+    let companion_spec_in_container = companion_spec_name
+        .as_ref()
+        .map(|name| format!("/work/SPECS/{name}"));
+    let companion_label = companion_label.unwrap_or("companion").replace('\'', "_");
     let target_rpms_in_container = format!("/work/targets/{}/RPMS", build_config.target_id);
     let target_srpms_in_container = format!("/work/targets/{}/SRPMS", build_config.target_id);
     let legacy_rpms_in_container = "/work/RPMS";
@@ -13212,6 +13214,58 @@ fn build_spec_chain_in_container(
         adaptive_retry_enabled,
         cached_parallel_unstable
     ));
+
+    let companion_build = companion_spec_in_container
+        .as_ref()
+        .map(|companion_spec| {
+            format!(
+                "\n\
+companion_spec='{companion_spec}'\n\
+companion_build_root=\"$build_root-default\"\n\
+companion_sourcedir=\"$companion_build_root/SOURCES\"\n\
+rm -rf \"$companion_build_root\"\n\
+mkdir -p \"$companion_build_root\"/BUILD \"$companion_build_root\"/BUILDROOT \"$companion_build_root\"/RPMS \"$companion_build_root\"/SOURCES \"$companion_build_root\"/SPECS \"$companion_build_root\"/SRPMS\n\
+echo \"BIOCONDA2RPM_COMPANION_SPEC_START label={companion_label} spec={companion_name}\"\n\
+rpmbuild -bs --define \"_topdir $companion_build_root\" --define \"_sourcedir $companion_sourcedir\" \"${{rpm_smp_flags[@]}}\" \"$companion_spec\"\n\
+companion_srpm_path=$(find \"$companion_build_root/SRPMS\" -type f -name '*.src.rpm' | sort | tail -n 1)\n\
+if [[ -z \"${{companion_srpm_path}}\" ]]; then\n\
+  echo 'no SRPM produced from companion spec build step' >&2\n\
+  exit 4\n\
+fi\n\
+mapfile -t companion_build_requires < <(rpmspec -q --buildrequires --define \"_topdir $companion_build_root\" --define \"_sourcedir $companion_sourcedir\" --define \"_smp_build_ncpus ${{BIOCONDA2RPM_CPU_COUNT}}\" \"$companion_spec\" 2>/dev/null | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
+for dep in \"${{companion_build_requires[@]:-}}\"; do\n\
+  if rpm -q --whatprovides \"$dep\" >/dev/null 2>&1; then\n\
+    emit_depgraph \"$dep\" 'resolved' 'installed' \"$(rpm -q --whatprovides \"$dep\" | head -n 1 || true)\" 'companion_already_installed'\n\
+  elif pm_install \"$dep\" >>\"$dep_log\" 2>&1; then\n\
+    emit_depgraph \"$dep\" 'resolved' 'repo' \"$(rpm -q --whatprovides \"$dep\" | head -n 1 || true)\" 'companion_installed_from_repo'\n\
+  else\n\
+    detail=$(tail -n 3 \"$dep_log\" | tr '\\n' ';' | sed 's/;/; /g')\n\
+    emit_depgraph \"$dep\" 'unresolved' 'unresolved' '-' \"companion: $detail\"\n\
+  fi\n\
+done\n\
+rpmbuild --rebuild --nodeps --define \"_topdir $companion_build_root\" --define \"_sourcedir $companion_sourcedir\" \"${{rpm_smp_flags[@]}}\" \"${{companion_srpm_path}}\"\n\
+find \"$companion_build_root/SRPMS\" -type f -name '*.src.rpm' -exec cp -f {{}} '{target_srpms_dir}'/ \\;\n\
+while IFS= read -r rpmf; do\n\
+  rel=\"${{rpmf#$companion_build_root/RPMS/}}\"\n\
+  rpm_subarch=$(printf '%s' \"$rel\" | cut -d'/' -f1)\n\
+  rpm_subarch=$(normalize_arch \"$rpm_subarch\")\n\
+  if [[ \"$rpm_subarch\" != \"noarch\" && \"$rpm_subarch\" != \"$expected_arch\" ]]; then\n\
+    echo \"bioconda2rpm companion rpm arch path mismatch: rpm=$rpmf subarch=$rpm_subarch expected=$expected_arch\" >&2\n\
+    exit 98\n\
+  fi\n\
+  dst=\"{target_rpms_dir}/$(dirname \"$rel\")\"\n\
+  mkdir -p \"$dst\"\n\
+  cp -f \"$rpmf\" \"$dst/\"\n\
+done < <(find \"$companion_build_root/RPMS\" -type f -name '*.rpm')\n\
+echo \"BIOCONDA2RPM_COMPANION_SPEC_DONE label={companion_label} spec={companion_name}\"\n",
+                companion_spec = sh_single_quote(companion_spec),
+                companion_label = companion_label,
+                companion_name = companion_spec_name.as_deref().unwrap_or("companion"),
+                target_rpms_dir = target_rpms_in_container,
+                target_srpms_dir = target_srpms_in_container,
+            )
+        })
+        .unwrap_or_default();
 
     let script = format!(
         "set -euo pipefail\n\
@@ -13825,7 +13879,9 @@ while IFS= read -r rpmf; do\n\
   dst=\"{target_rpms_dir}/$(dirname \"$rel\")\"\n\
   mkdir -p \"$dst\"\n\
   cp -f \"$rpmf\" \"$dst/\"\n\
-done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
+done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n\
+{companion_build}",
+        companion_build = companion_build,
         label = build_label,
         spec = sh_single_quote(&spec_in_container),
         target_rpms_dir = target_rpms_in_container,
@@ -18412,6 +18468,15 @@ requirements:
 
         let spec = render_default_spec("python-edlib", &parsed, 42);
         assert!(spec.contains("%global __python /usr/bin/python3"));
+    }
+
+    #[test]
+    fn payload_and_default_specs_share_one_container_build() {
+        const SOURCE: &str = include_str!("priority_specs.rs");
+        assert!(SOURCE.contains("build_spec_pair_chain_in_container("));
+        assert!(SOURCE.contains("BIOCONDA2RPM_COMPANION_SPEC_START"));
+        assert!(SOURCE.contains("companion_build_root=\\\"$build_root-default\\\""));
+        assert!(SOURCE.contains("payload/default spec build failed in container"));
     }
 
     #[test]

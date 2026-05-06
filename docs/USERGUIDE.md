@@ -212,6 +212,7 @@ Up-to-date behavior:
 
 - If the requested Bioconda version is already present as a built payload artifact in `<topdir>`, the command exits without rebuilding and reports `up-to-date`.
 - If Bioconda has a newer version than the latest local payload artifact, the payload is rebuilt and the default/meta package version is incremented.
+- A successful package build produces both the versioned payload RPM and its companion default/meta RPM in the same container execution. This avoids repeating container startup and package-manager setup for the lightweight default package.
 
 ## 6. Build Sequence Details
 

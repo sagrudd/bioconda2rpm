@@ -109,6 +109,7 @@ FR-012 Naming profile
 - Default naming profile shall follow Phoreus:
   - Payload: `phoreus-<tool>-<version>`
   - Meta/default: `phoreus-<tool>`
+- For normal Bioconda payload builds, the system shall build the versioned payload RPM and accompanying meta/default RPM in a single container execution to avoid repeating container startup and package-manager preparation work.
 
 FR-013 Compliance policy
 - The workflow shall normalize licenses to SPDX identifiers and run policy checks.
