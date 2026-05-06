@@ -33,6 +33,7 @@ struct UiState {
     started: Instant,
     last_phase: String,
     last_status_line: String,
+    index_line: String,
     queue_line: String,
     logs: VecDeque<String>,
     packages: BTreeMap<String, PackageState>,
@@ -47,6 +48,7 @@ impl UiState {
             started: Instant::now(),
             last_phase: "starting".to_string(),
             last_status_line: "status=starting".to_string(),
+            index_line: String::new(),
             queue_line: String::new(),
             logs: VecDeque::new(),
             packages: BTreeMap::new(),
@@ -72,6 +74,21 @@ impl UiState {
         let kv = parse_progress_kv(&cleaned);
         if let Some(phase) = kv.get("phase") {
             self.last_phase = phase.clone();
+        }
+        if kv.get("phase").map(|v| v.as_str()) == Some("dependency-index") {
+            let status = kv.get("status").cloned().unwrap_or_default();
+            let roots_done = kv
+                .get("roots_done")
+                .or_else(|| kv.get("roots"))
+                .cloned()
+                .unwrap_or_default();
+            let unique_nodes = kv.get("unique_nodes").cloned().unwrap_or_default();
+            let parsed_recipes = kv.get("parsed_recipes").cloned().unwrap_or_default();
+            let cache_hits = kv.get("parse_hits").cloned().unwrap_or_default();
+            self.index_line = format!(
+                "index status={} roots={} nodes={} parsed={} parse_hits={}",
+                status, roots_done, unique_nodes, parsed_recipes, cache_hits
+            );
         }
         if kv.get("phase").map(|v| v.as_str()) == Some("batch-queue") {
             let status = kv.get("status").cloned().unwrap_or_default();
@@ -396,16 +413,22 @@ fn draw_ui(frame: &mut ratatui::Frame<'_>, state: &UiState) {
     .block(Block::default().borders(Borders::ALL).title("Build"));
     frame.render_widget(header, chunks[0]);
 
+    let prefix = if state.index_line.is_empty() {
+        String::new()
+    } else {
+        format!("{} | ", state.index_line)
+    };
     let status_body = if state.queue_line.is_empty() {
         let (ready, running, completed, blocked) = state.scheduler_counters();
         format!(
-            "phase={} | counters ready={} running={} completed={} blocked={} | {}",
-            state.last_phase, ready, running, completed, blocked, state.last_status_line
+            "{}phase={} | counters ready={} running={} completed={} blocked={} | {}",
+            prefix, state.last_phase, ready, running, completed, blocked, state.last_status_line
         )
     } else {
         let (ready, running, completed, blocked) = state.scheduler_counters();
         format!(
-            "phase={} | counters ready={} running={} completed={} blocked={} | {} | {}",
+            "{}phase={} | counters ready={} running={} completed={} blocked={} | {} | {}",
+            prefix,
             state.last_phase,
             ready,
             running,

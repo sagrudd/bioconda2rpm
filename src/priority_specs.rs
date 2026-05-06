@@ -685,7 +685,7 @@ struct BuildPlanNode {
     direct_bioconda_deps: BTreeSet<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum VersionRequirementOp {
     Eq,
     Ne,
@@ -695,7 +695,7 @@ enum VersionRequirementOp {
     Le,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct VersionRequirement {
     op: VersionRequirementOp,
     version: String,
@@ -705,6 +705,195 @@ struct VersionRequirement {
 struct ParsedDependencySpec {
     name: String,
     constraints: Vec<VersionRequirement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RecipeResolutionCacheKey {
+    query: String,
+    constraints: Vec<VersionRequirement>,
+    allow_identifier_lookup: bool,
+}
+
+#[derive(Debug, Default)]
+struct BuildPlanCacheStats {
+    resolution_hits: usize,
+    resolution_misses: usize,
+    parse_hits: usize,
+    parse_misses: usize,
+}
+
+#[derive(Debug)]
+struct BuildPlanContext<'a> {
+    recipe_root: &'a Path,
+    recipe_dirs: &'a [RecipeDir],
+    metadata_adapter: &'a MetadataAdapter,
+    target_arch: &'a str,
+    exact_name_index: HashMap<String, usize>,
+    normalized_index: HashMap<String, usize>,
+    resolution_cache: HashMap<RecipeResolutionCacheKey, Option<ResolvedRecipe>>,
+    parse_cache: HashMap<PathBuf, ParsedRecipeResult>,
+    stats: BuildPlanCacheStats,
+}
+
+impl<'a> BuildPlanContext<'a> {
+    fn new(
+        recipe_root: &'a Path,
+        recipe_dirs: &'a [RecipeDir],
+        metadata_adapter: &'a MetadataAdapter,
+        target_arch: &'a str,
+    ) -> Self {
+        let mut exact_name_index = HashMap::new();
+        let mut normalized_index = HashMap::new();
+        for (idx, recipe) in recipe_dirs.iter().enumerate() {
+            exact_name_index
+                .entry(recipe.name.to_lowercase())
+                .or_insert(idx);
+            normalized_index
+                .entry(recipe.normalized.clone())
+                .or_insert(idx);
+        }
+        Self {
+            recipe_root,
+            recipe_dirs,
+            metadata_adapter,
+            target_arch,
+            exact_name_index,
+            normalized_index,
+            resolution_cache: HashMap::new(),
+            parse_cache: HashMap::new(),
+            stats: BuildPlanCacheStats::default(),
+        }
+    }
+
+    fn resolve_and_parse_recipe_with_constraints(
+        &mut self,
+        tool_name: &str,
+        version_constraints: &[VersionRequirement],
+        allow_identifier_lookup: bool,
+    ) -> Result<Option<ResolvedParsedRecipe>> {
+        let key = RecipeResolutionCacheKey {
+            query: tool_name.trim().to_lowercase(),
+            constraints: version_constraints.to_vec(),
+            allow_identifier_lookup,
+        };
+        let resolved = if let Some(cached) = self.resolution_cache.get(&key) {
+            self.stats.resolution_hits += 1;
+            cached.clone()
+        } else {
+            self.stats.resolution_misses += 1;
+            let resolved = self.resolve_recipe_with_constraints(
+                tool_name,
+                version_constraints,
+                allow_identifier_lookup,
+            )?;
+            self.resolution_cache.insert(key, resolved.clone());
+            resolved
+        };
+
+        let Some(resolved) = resolved else {
+            return Ok(None);
+        };
+        let parse_key = resolved.variant_dir.clone();
+        let parsed_result = if let Some(cached) = self.parse_cache.get(&parse_key) {
+            self.stats.parse_hits += 1;
+            cached.clone()
+        } else {
+            self.stats.parse_misses += 1;
+            let parsed =
+                parse_meta_for_dependency_plan(&resolved, self.metadata_adapter, self.target_arch)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse rendered metadata for {}",
+                            resolved.meta_path.display()
+                        )
+                    })?;
+            self.parse_cache.insert(parse_key, parsed.clone());
+            parsed
+        };
+
+        Ok(Some(ResolvedParsedRecipe {
+            resolved,
+            parsed: parsed_result.parsed,
+            build_skip: parsed_result.build_skip,
+        }))
+    }
+
+    fn cached_recipe_count(&self) -> usize {
+        self.parse_cache.len()
+    }
+
+    fn stats(&self) -> &BuildPlanCacheStats {
+        &self.stats
+    }
+
+    fn resolve_recipe_with_constraints(
+        &self,
+        tool_name: &str,
+        version_constraints: &[VersionRequirement],
+        allow_identifier_lookup: bool,
+    ) -> Result<Option<ResolvedRecipe>> {
+        let lower = tool_name.trim().to_lowercase();
+        let normalized = normalize_name(tool_name);
+
+        if let Some(recipe) = self
+            .exact_name_index
+            .get(&lower)
+            .and_then(|idx| self.recipe_dirs.get(*idx))
+        {
+            return build_resolved_with_constraints(
+                recipe,
+                "exact-directory-match",
+                version_constraints,
+            );
+        }
+        if let Some(recipe) = self
+            .normalized_index
+            .get(&normalized)
+            .and_then(|idx| self.recipe_dirs.get(*idx))
+        {
+            return build_resolved_with_constraints(
+                recipe,
+                "normalized-directory-match",
+                version_constraints,
+            );
+        }
+
+        let plus_stripped = normalized.replace("-plus", "").replace("-plus-", "-");
+        if let Some(recipe) = self
+            .normalized_index
+            .get(&plus_stripped)
+            .and_then(|idx| self.recipe_dirs.get(*idx))
+        {
+            return build_resolved_with_constraints(
+                recipe,
+                "plus-normalization-match",
+                version_constraints,
+            );
+        }
+
+        if allow_identifier_lookup
+            && let Some(recipe) = select_fallback_recipe(&lower, self.recipe_dirs)
+        {
+            return build_resolved_with_constraints(
+                recipe,
+                "fallback-directory-match",
+                version_constraints,
+            );
+        }
+
+        if allow_identifier_lookup {
+            let key = normalize_identifier_key(&lower);
+            if let Some(recipe) = find_recipe_by_identifier(self.recipe_root, &key)? {
+                return build_resolved_with_constraints(
+                    &recipe,
+                    "identifier-match",
+                    version_constraints,
+                );
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1392,15 +1581,25 @@ fn run_build_batch_queue(
         .filter(|pkg| !pkg.is_empty())
         .collect();
 
-    for root in requested_packages {
-        match collect_build_plan(
+    let mut planning_context = BuildPlanContext::new(
+        &recipe_root,
+        recipe_dirs,
+        metadata_adapter,
+        &build_config.target_arch,
+    );
+    log_progress(format!(
+        "phase=dependency-index status=started roots={} deps_enabled={} policy={:?}",
+        requested_packages.len(),
+        args.with_deps(),
+        args.dependency_policy
+    ));
+
+    for (idx, root) in requested_packages.iter().enumerate() {
+        match collect_build_plan_with_context(
             root,
             args.with_deps(),
             &args.dependency_policy,
-            &recipe_root,
-            recipe_dirs,
-            metadata_adapter,
-            &build_config.target_arch,
+            &mut planning_context,
         ) {
             Ok((order, nodes)) => {
                 let root_order = order
@@ -1459,7 +1658,34 @@ fn run_build_batch_queue(
                 }
             }
         }
+        let processed = idx + 1;
+        if processed == requested_packages.len() || processed <= 10 || processed % 100 == 0 {
+            let stats = planning_context.stats();
+            log_progress(format!(
+                "phase=dependency-index status=running roots_done={}/{} unique_nodes={} parsed_recipes={} parse_hits={} parse_misses={} resolution_hits={} resolution_misses={}",
+                processed,
+                requested_packages.len(),
+                global_nodes.len(),
+                planning_context.cached_recipe_count(),
+                stats.parse_hits,
+                stats.parse_misses,
+                stats.resolution_hits,
+                stats.resolution_misses
+            ));
+        }
     }
+    let stats = planning_context.stats();
+    log_progress(format!(
+        "phase=dependency-index status=completed roots={} unique_nodes={} parsed_recipes={} parse_hits={} parse_misses={} resolution_hits={} resolution_misses={} elapsed={}",
+        requested_packages.len(),
+        global_nodes.len(),
+        planning_context.cached_recipe_count(),
+        stats.parse_hits,
+        stats.parse_misses,
+        stats.resolution_hits,
+        stats.resolution_misses,
+        format_elapsed(build_started.elapsed())
+    ));
 
     let mut pending_deps: HashMap<String, usize> = HashMap::new();
     let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
@@ -1477,7 +1703,7 @@ fn run_build_batch_queue(
     ready.sort();
     let mut ready = VecDeque::from(ready);
 
-    let recipe_root = Arc::new(recipe_root);
+    let recipe_root = Arc::new(recipe_root.clone());
     let recipe_dirs = Arc::new(recipe_dirs.to_vec());
     let specs_dir = Arc::new(specs_dir.to_path_buf());
     let sources_dir = Arc::new(sources_dir.to_path_buf());
@@ -1581,14 +1807,11 @@ fn run_build_batch_queue(
                             forwarded.submitted_pid,
                             forwarded.submitted_at_utc
                         ));
-                        match collect_build_plan(
+                        match collect_build_plan_with_context(
                             &root,
                             args.with_deps(),
                             &args.dependency_policy,
-                            recipe_root.as_path(),
-                            recipe_dirs.as_slice(),
-                            metadata_adapter.as_ref(),
-                            &build_config.target_arch,
+                            &mut planning_context,
                         ) {
                             Ok((order, nodes)) => {
                                 let root_order = order
@@ -1609,10 +1832,11 @@ fn run_build_batch_queue(
                                     &mut pending_fail_queue,
                                 );
                                 log_progress(format!(
-                                    "phase=dependency-plan status=completed package={} planned_nodes={} added_nodes={} order={}",
+                                    "phase=dependency-plan status=completed package={} planned_nodes={} added_nodes={} parsed_recipes={} order={}",
                                     root,
                                     root_order.len(),
                                     added,
+                                    planning_context.cached_recipe_count(),
                                     root_order.join("->")
                                 ));
                             }
@@ -2204,6 +2428,7 @@ pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
     })
 }
 
+#[allow(dead_code)]
 fn collect_build_plan(
     root: &str,
     with_deps: bool,
@@ -2212,6 +2437,17 @@ fn collect_build_plan(
     recipe_dirs: &[RecipeDir],
     metadata_adapter: &MetadataAdapter,
     target_arch: &str,
+) -> Result<(Vec<String>, BTreeMap<String, BuildPlanNode>)> {
+    let mut context =
+        BuildPlanContext::new(recipe_root, recipe_dirs, metadata_adapter, target_arch);
+    collect_build_plan_with_context(root, with_deps, policy, &mut context)
+}
+
+fn collect_build_plan_with_context(
+    root: &str,
+    with_deps: bool,
+    policy: &DependencyPolicy,
+    context: &mut BuildPlanContext<'_>,
 ) -> Result<(Vec<String>, BTreeMap<String, BuildPlanNode>)> {
     let mut visiting = HashSet::new();
     let mut visited = HashSet::new();
@@ -2224,10 +2460,7 @@ fn collect_build_plan(
         true,
         with_deps,
         policy,
-        recipe_root,
-        recipe_dirs,
-        metadata_adapter,
-        target_arch,
+        context,
         &mut visiting,
         &mut visited,
         &mut nodes,
@@ -2250,23 +2483,16 @@ fn visit_build_plan_node(
     is_root: bool,
     with_deps: bool,
     policy: &DependencyPolicy,
-    recipe_root: &Path,
-    recipe_dirs: &[RecipeDir],
-    metadata_adapter: &MetadataAdapter,
-    target_arch: &str,
+    context: &mut BuildPlanContext<'_>,
     visiting: &mut HashSet<String>,
     visited: &mut HashSet<String>,
     nodes: &mut BTreeMap<String, BuildPlanNode>,
     order: &mut Vec<String>,
 ) -> Result<Option<String>> {
-    let resolved_and_parsed = match resolve_and_parse_recipe_with_constraints(
+    let resolved_and_parsed = match context.resolve_and_parse_recipe_with_constraints(
         query,
         version_constraints,
-        recipe_root,
-        recipe_dirs,
         is_root,
-        metadata_adapter,
-        target_arch,
     ) {
         Ok(v) => v,
         Err(err) => {
@@ -2396,10 +2622,7 @@ fn visit_build_plan_node(
                 false,
                 with_deps,
                 policy,
-                recipe_root,
-                recipe_dirs,
-                metadata_adapter,
-                target_arch,
+                context,
                 visiting,
                 visited,
                 nodes,
@@ -2721,6 +2944,27 @@ fn parse_meta_for_resolved(
                 parse_meta_for_resolved_native(resolved, target_arch)
             }
         },
+    }
+}
+
+fn parse_meta_for_dependency_plan(
+    resolved: &ResolvedRecipe,
+    metadata_adapter: &MetadataAdapter,
+    target_arch: &str,
+) -> Result<ParsedRecipeResult> {
+    match metadata_adapter {
+        MetadataAdapter::Auto => match parse_meta_for_resolved_native(resolved, target_arch) {
+            Ok(parsed) => Ok(parsed),
+            Err(native_err) => {
+                log_progress(format!(
+                    "phase=metadata-adapter status=using-conda recipe={} from=native-plan to=conda note={}",
+                    resolved.recipe_name,
+                    compact_reason(&native_err.to_string(), 240)
+                ));
+                parse_meta_for_resolved_conda(resolved, target_arch)
+            }
+        },
+        _ => parse_meta_for_resolved(resolved, metadata_adapter, target_arch),
     }
 }
 
@@ -19153,6 +19397,51 @@ about:
             action_ready,
             DuplicateForwardedRequestAction::Ignore("already-queued")
         );
+    }
+
+    #[test]
+    fn build_plan_context_reuses_shared_dependency_metadata() {
+        let tmp = TempDir::new().expect("create temp dir");
+        for name in ["root-a", "root-b", "shared-tool"] {
+            let recipe = tmp.path().join(name);
+            fs::create_dir_all(&recipe).expect("create recipe dir");
+            let requirements = if name == "shared-tool" {
+                String::new()
+            } else {
+                "requirements:\n  run:\n    - shared-tool\n".to_string()
+            };
+            fs::write(
+                recipe.join("meta.yaml"),
+                format!(
+                    "package:\n  name: {name}\n  version: 1.0\nsource:\n  url: https://example.invalid/{name}-1.0.tar.gz\nbuild:\n  script: echo build\n{requirements}"
+                ),
+            )
+            .expect("write meta");
+        }
+        let recipe_dirs = discover_recipe_dirs(tmp.path()).expect("discover recipes");
+        let mut context =
+            BuildPlanContext::new(tmp.path(), &recipe_dirs, &MetadataAdapter::Native, "x86_64");
+
+        let (_, first_nodes) = collect_build_plan_with_context(
+            "root-a",
+            true,
+            &DependencyPolicy::BuildHostRun,
+            &mut context,
+        )
+        .expect("first plan");
+        let (_, second_nodes) = collect_build_plan_with_context(
+            "root-b",
+            true,
+            &DependencyPolicy::BuildHostRun,
+            &mut context,
+        )
+        .expect("second plan");
+
+        assert!(first_nodes.contains_key("shared-tool"));
+        assert!(second_nodes.contains_key("shared-tool"));
+        assert_eq!(context.cached_recipe_count(), 3);
+        assert!(context.stats().parse_hits >= 1);
+        assert!(context.stats().resolution_hits >= 1);
     }
 
     #[test]
