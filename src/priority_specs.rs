@@ -11186,7 +11186,7 @@ while IFS= read -r top_dir; do\n\
   fi\n\
 done < <(find . -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null || true)\n\
 for patch_dir in \"${{patch_dirs[@]}}\"; do\n\
-  for patch_strip in 1 0 2 3 4 5; do\n\
+  for patch_strip in 1 0 2 3 4 5 6 7 8; do\n\
     if (cd \"$patch_dir\" && patch --binary --forward --batch -p\"$patch_strip\" -i \"$patch_input\"); then\n\
       patch_applied=1\n\
       break 2\n\
@@ -11204,7 +11204,7 @@ if [[ -n \"$patch_origfix_tmp\" ]]; then\n\
   rm -f \"$patch_origfix_tmp\"\n\
 fi\n\
 if [[ \"$patch_applied\" -ne 1 ]]; then\n\
-  echo \"failed to apply patch %{{SOURCE{}}} with supported strip levels (1,0,2,3,4,5) and candidate dirs: ${{patch_dirs[*]}}\" >&2\n\
+  echo \"failed to apply patch %{{SOURCE{}}} with supported strip levels (1,0,2,3,4,5,6,7,8) and candidate dirs: ${{patch_dirs[*]}}\" >&2\n\
   exit 1\n\
 fi\n",
                 idx + 2,
@@ -15263,7 +15263,7 @@ requirements:
         );
         assert!(spec.contains("Source2:"));
         assert!(spec.contains("patch_dirs=(.)"));
-        assert!(spec.contains("for patch_strip in 1 0 2 3 4 5; do"));
+        assert!(spec.contains("for patch_strip in 1 0 2 3 4 5 6 7 8; do"));
         assert!(spec.contains("patch_input=\"$patch_source\""));
         assert!(!spec.contains("tr -d '\\r' < \"$patch_source\" > \"$patch_tmp\""));
         assert!(spec.contains("patch_trim_tmp=\"\""));
@@ -20655,10 +20655,10 @@ $R CMD INSTALL --build .
         assert!(spec.contains(r#"candidate="${hit%/$patch_rel}""#));
         assert!(spec.contains(r#"find . -type f -path "*/$patch_rel" -print"#));
         assert!(spec.contains("find . -mindepth 1 -maxdepth 1 -type d -print"));
-        assert!(spec.contains("for patch_strip in 1 0 2 3 4 5; do"));
-        assert!(spec.contains(
-            r#"patch --binary --forward --batch -p"$patch_strip" -i "$patch_input""#
-        ));
+        assert!(spec.contains("for patch_strip in 1 0 2 3 4 5 6 7 8; do"));
+        assert!(
+            spec.contains(r#"patch --binary --forward --batch -p"$patch_strip" -i "$patch_input""#)
+        );
         assert!(!spec.contains("for maybe_dir in userApps"));
         assert!(!spec.contains("if ! patch --forward --batch -p1 -i %{SOURCE2}; then"));
     }
