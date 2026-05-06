@@ -3594,6 +3594,47 @@ fn process_tool(
             staged_build_sh: staged_build_sh.display().to_string(),
         };
     }
+    if parsed.source_url.trim().is_empty() {
+        match extract_source_path_for_resolved(&resolved, &build_config.target_arch) {
+            Ok(Some(source_path)) => {
+                let staged_source_name = format!("bioconda-{software_slug}-local-source.tar.gz");
+                if let Err(err) = stage_local_source_path(
+                    &resolved,
+                    &source_path,
+                    sources_dir,
+                    &staged_source_name,
+                ) {
+                    let reason =
+                        format!("failed to stage local source path '{source_path}': {err}");
+                    quarantine_note(bad_spec_dir, &software_slug, &reason);
+                    return ReportEntry {
+                        software: tool.software.clone(),
+                        priority: tool.priority,
+                        status: "quarantined".to_string(),
+                        reason,
+                        overlap_recipe: resolved.recipe_name,
+                        overlap_reason: resolved.overlap_reason,
+                        variant_dir: resolved.variant_dir.display().to_string(),
+                        package_name: parsed.package_name,
+                        version: parsed.version,
+                        payload_spec_path: String::new(),
+                        meta_spec_path: String::new(),
+                        staged_build_sh: staged_build_sh.display().to_string(),
+                    };
+                }
+                parsed.source_url = staged_source_name;
+                parsed.source_folder.clear();
+            }
+            Ok(None) => {}
+            Err(err) => {
+                log_progress(format!(
+                    "phase=local-source status=skipped package={} reason={}",
+                    software_slug,
+                    compact_reason(&err.to_string(), 240)
+                ));
+            }
+        }
+    }
     if package_requires_original_build_script(&software_slug, &parsed, &interpreted_build_plan) {
         let build_sh_source_name = format!("bioconda-{software_slug}-build.sh");
         let build_sh_source_path = sources_dir.join(&build_sh_source_name);
@@ -5861,6 +5902,45 @@ fn extract_source_url(source: Option<&Value>) -> Option<String> {
     }
 }
 
+fn extract_source_path(source: Option<&Value>) -> Option<String> {
+    match source {
+        Some(Value::Mapping(map)) => map
+            .get(Value::String("path".to_string()))
+            .and_then(value_to_string)
+            .filter(|path| !path.trim().is_empty()),
+        Some(Value::Sequence(seq)) => seq.iter().find_map(|item| {
+            let map = item.as_mapping()?;
+            map.get(Value::String("path".to_string()))
+                .and_then(value_to_string)
+                .filter(|path| !path.trim().is_empty())
+        }),
+        _ => None,
+    }
+}
+
+fn extract_source_path_for_resolved(
+    resolved: &ResolvedRecipe,
+    target_arch: &str,
+) -> Result<Option<String>> {
+    let meta_text = fs::read_to_string(&resolved.meta_path)
+        .with_context(|| format!("failed to read metadata {}", resolved.meta_path.display()))?;
+    let selector_ctx = SelectorContext::for_rpm_build(target_arch);
+    let selected_meta = apply_selectors(&meta_text, &selector_ctx);
+    let rendered = render_meta_yaml(&selected_meta).with_context(|| {
+        format!(
+            "failed to render Jinja for {}",
+            resolved.meta_path.display()
+        )
+    })?;
+    let root: Value = serde_yaml::from_str(&rendered).with_context(|| {
+        format!(
+            "deserializing rendered meta.yaml {}",
+            resolved.meta_path.display()
+        )
+    })?;
+    Ok(extract_source_path(root.get("source")))
+}
+
 fn synthesize_git_source_descriptor(git_url: &str, git_rev: Option<&str>) -> Option<String> {
     let rev = git_rev?.trim();
     if rev.is_empty() {
@@ -6936,8 +7016,7 @@ fn render_payload_spec_minimal(
     let license = spec_escape(&parsed.license);
     let summary = spec_escape_or_default(&parsed.summary, &parsed.package_name);
     let homepage = spec_escape_or_default(&parsed.homepage, "https://bioconda.github.io");
-    let source_url =
-        spec_escape_or_default(&parsed.source_url, "https://example.invalid/source.tar.gz");
+    let source_url = spec_escape(&parsed.source_url);
     let source_subdir = {
         let folder = parsed.source_folder.trim().trim_matches('/');
         if folder.is_empty() {
@@ -6983,10 +7062,12 @@ fn render_payload_spec_minimal(
 
     let source_kind = source_archive_kind(&parsed.source_url);
     let git_source = parse_git_source_descriptor(&parsed.source_url);
+    let has_source_payload = !parsed.source_url.trim().is_empty();
     let suppress_source0_for_metapackage =
         runtime_only_metapackage && parsed.source_url.trim().is_empty();
-    let include_source0 =
-        !suppress_source0_for_metapackage && source_kind != SourceArchiveKind::Git;
+    let include_source0 = has_source_payload
+        && !suppress_source0_for_metapackage
+        && source_kind != SourceArchiveKind::Git;
     let mut source_unpack_prep = if include_source0 {
         render_source_unpack_prep_block(source_kind)
     } else if source_kind == SourceArchiveKind::Git {
@@ -7435,8 +7516,7 @@ fn render_payload_spec(
     let license = spec_escape(&parsed.license);
     let summary = spec_escape_or_default(&parsed.summary, &parsed.package_name);
     let homepage = spec_escape_or_default(&parsed.homepage, "https://bioconda.github.io");
-    let source_url =
-        spec_escape_or_default(&parsed.source_url, "https://example.invalid/source.tar.gz");
+    let source_url = spec_escape(&parsed.source_url);
     let source_subdir = {
         let folder = parsed.source_folder.trim().trim_matches('/');
         if folder.is_empty() {
@@ -7558,13 +7638,15 @@ export PERL_MB_OPT=\"${PERL_MB_OPT:+$PERL_MB_OPT }--install_base $PREFIX\"\n"
 
     let source_kind = source_archive_kind(&parsed.source_url);
     let git_source = parse_git_source_descriptor(&parsed.source_url);
+    let has_source_payload = !parsed.source_url.trim().is_empty();
     // Runtime-only metapackages without source payload should not emit Source0.
     // Recipes that still provide source URLs (for example run-only deps plus
     // an explicit build.sh) must keep source unpack enabled.
     let suppress_source0_for_metapackage =
         runtime_only_metapackage && parsed.source_url.trim().is_empty();
-    let include_source0 =
-        !suppress_source0_for_metapackage && source_kind != SourceArchiveKind::Git;
+    let include_source0 = has_source_payload
+        && !suppress_source0_for_metapackage
+        && source_kind != SourceArchiveKind::Git;
     let mut source_unpack_prep = if include_source0 {
         render_source_unpack_prep_block(source_kind)
     } else {
@@ -11129,7 +11211,7 @@ fn source_validation_shell_function() -> &'static str {
     *.tar)\n\
       if command -v tar >/dev/null 2>&1; then tar -tf \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
       ;;\n\
-    *.zip)\n\
+    *.zip|*.jar)\n\
       if command -v unzip >/dev/null 2>&1; then unzip -tqq \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
       ;;\n\
     *.gz)\n\
@@ -11289,6 +11371,75 @@ fn stage_recipe_support_files_from_dir(dir: &Path, sources_dir: &Path) -> Result
         fs::set_permissions(&destination, fs::Permissions::from_mode(0o644))
             .with_context(|| format!("setting permissions on {}", destination.display()))?;
     }
+    Ok(())
+}
+
+fn stage_local_source_path(
+    resolved: &ResolvedRecipe,
+    source_path: &str,
+    sources_dir: &Path,
+    staged_name: &str,
+) -> Result<()> {
+    let source_path = source_path.trim();
+    if source_path.is_empty() {
+        anyhow::bail!("empty source path");
+    }
+    let raw_path = Path::new(source_path);
+    let candidates = if raw_path.is_absolute() {
+        vec![raw_path.to_path_buf()]
+    } else {
+        vec![
+            resolved.variant_dir.join(raw_path),
+            resolved.recipe_dir.join(raw_path),
+            resolved
+                .meta_path
+                .parent()
+                .unwrap_or(&resolved.variant_dir)
+                .join(raw_path),
+        ]
+    };
+    let Some(source_root) = candidates.into_iter().find(|path| path.exists()) else {
+        anyhow::bail!("source path '{}' not found", source_path);
+    };
+
+    fs::create_dir_all(sources_dir)
+        .with_context(|| format!("creating sources dir {}", sources_dir.display()))?;
+    let staged_path = sources_dir.join(staged_name);
+    let status = if source_root.is_dir() {
+        Command::new("tar")
+            .arg("-czf")
+            .arg(&staged_path)
+            .arg("-C")
+            .arg(&source_root)
+            .arg(".")
+            .status()
+            .with_context(|| format!("running tar for {}", source_root.display()))?
+    } else {
+        let parent = source_root.parent().unwrap_or(&resolved.variant_dir);
+        let file_name = source_root
+            .file_name()
+            .ok_or_else(|| {
+                anyhow::anyhow!("source path '{}' has no file name", source_root.display())
+            })?;
+        Command::new("tar")
+            .arg("-czf")
+            .arg(&staged_path)
+            .arg("-C")
+            .arg(parent)
+            .arg(file_name)
+            .status()
+            .with_context(|| format!("running tar for {}", source_root.display()))?
+    };
+    if !status.success() {
+        anyhow::bail!(
+            "tar failed for local source path {} with status {}",
+            source_root.display(),
+            status
+        );
+    }
+    #[cfg(unix)]
+    fs::set_permissions(&staged_path, fs::Permissions::from_mode(0o644))
+        .with_context(|| format!("setting permissions on {}", staged_path.display()))?;
     Ok(())
 }
 
@@ -15192,7 +15343,10 @@ requirements:
 
         assert!(shell.contains("if command -v tar >/dev/null 2>&1 && tar -tzf \"$source_path\" >/dev/null 2>&1; then return 0; fi"));
         assert!(shell.contains("if command -v tar >/dev/null 2>&1 && tar -tf \"$source_path\" >/dev/null 2>&1; then return 0; fi"));
-        assert!(shell.contains("if command -v unzip >/dev/null 2>&1 && unzip -tqq \"$source_path\" >/dev/null 2>&1; then return 0; fi"));
+        assert!(shell.contains("*.zip|*.jar)"));
+        assert!(shell.contains(
+            "if command -v unzip >/dev/null 2>&1 && unzip -tqq \"$source_path\" >/dev/null 2>&1; then return 0; fi"
+        ));
         assert!(shell.contains("od -An -tx1 -N4 \"$source_path\""));
         assert!(shell.contains("grep -q '^#!'"));
         assert!(shell.contains("<!doctype html|<html|<head|<body|not found|access denied|rate limit"));
@@ -15371,6 +15525,26 @@ source:
         assert_eq!(
             parsed.source_url,
             "https://bioconductor.org/packages/3.20/bioc/src/contrib/edgeR_4.4.0.tar.gz"
+        );
+    }
+
+    #[test]
+    fn parse_meta_reads_local_source_path_without_fake_url() {
+        let rendered = r#"
+package:
+  name: bioconda-repodata-patches
+  version: "20260421"
+source:
+  path: .
+build:
+  script: ./gen_patch_json.py
+"#;
+        let parsed = parse_rendered_meta(rendered).expect("parse rendered meta");
+        let root: Value = serde_yaml::from_str(rendered).expect("parse yaml");
+        assert_eq!(parsed.source_url, "");
+        assert_eq!(
+            extract_source_path(root.get("source")).as_deref(),
+            Some(".")
         );
     }
 
