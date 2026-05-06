@@ -11249,7 +11249,7 @@ fn source_validation_shell_function() -> &'static str {
       if command -v tar >/dev/null 2>&1; then tar -tf \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
       ;;\n\
     *.zip|*.jar)\n\
-      if command -v unzip >/dev/null 2>&1; then unzip -tqq \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
+      if command -v unzip >/dev/null 2>&1; then UNZIP_DISABLE_ZIPBOMB_DETECTION=TRUE unzip -tqq \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
       ;;\n\
     *.gz)\n\
       if command -v gzip >/dev/null 2>&1; then gzip -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
@@ -11263,7 +11263,7 @@ fn source_validation_shell_function() -> &'static str {
     *)\n\
       if command -v tar >/dev/null 2>&1 && tar -tzf \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
       if command -v tar >/dev/null 2>&1 && tar -tf \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
-      if command -v unzip >/dev/null 2>&1 && unzip -tqq \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
+      if command -v unzip >/dev/null 2>&1 && UNZIP_DISABLE_ZIPBOMB_DETECTION=TRUE unzip -tqq \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
       if command -v gzip >/dev/null 2>&1 && gzip -t \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
       if command -v bzip2 >/dev/null 2>&1 && bzip2 -t \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
       if command -v xz >/dev/null 2>&1 && xz -t \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
@@ -15401,7 +15401,7 @@ requirements:
         assert!(shell.contains("if command -v tar >/dev/null 2>&1 && tar -tf \"$source_path\" >/dev/null 2>&1; then return 0; fi"));
         assert!(shell.contains("*.zip|*.jar)"));
         assert!(shell.contains(
-            "if command -v unzip >/dev/null 2>&1 && unzip -tqq \"$source_path\" >/dev/null 2>&1; then return 0; fi"
+            "if command -v unzip >/dev/null 2>&1 && UNZIP_DISABLE_ZIPBOMB_DETECTION=TRUE unzip -tqq \"$source_path\" >/dev/null 2>&1; then return 0; fi"
         ));
         assert!(shell.contains("od -An -tx1 -N4 \"$source_path\""));
         assert!(shell.contains("grep -q '^#!'"));
