@@ -202,6 +202,7 @@ fn is_direct_build_failure(status: &str, reason: &str) -> bool {
     }
     let lower = reason.to_ascii_lowercase();
     !lower.contains("blocked by failed dependencies")
+        && !lower.contains("no overlapping recipe found")
         && !lower.contains("arch_policy=amd64_only")
         && !lower.contains("arch_policy=aarch64_only")
         && !lower.contains("build cancelled")
@@ -841,6 +842,10 @@ mod tests {
         assert!(!is_direct_build_failure(
             "quarantined",
             "blocked by failed dependencies: aragorn"
+        ));
+        assert!(!is_direct_build_failure(
+            "quarantined",
+            "no overlapping recipe found in bioconda metadata"
         ));
         assert!(is_direct_build_failure(
             "quarantined",
