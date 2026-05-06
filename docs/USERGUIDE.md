@@ -286,6 +286,7 @@ Precompiled binary policy:
 - `bioconda2rpm` supports package-specific precompiled-binary overrides when upstream guidance recommends binary consumption over source builds.
 - For `k8`, the build path is forced to use upstream precompiled release archives instead of compiling Node/V8 from source.
 - If a requested architecture has no upstream precompiled binary, the package is quarantined with explicit architecture policy classification.
+- Deleted or unreachable upstream source archives are not replaced with Bioconda or conda binary artifacts. Those packages remain quarantined as `source_unavailable` until a source-equivalent fallback or recipe update exists.
 
 ## 7. Output Layout
 
@@ -359,6 +360,8 @@ If failure is dependency-related, the reason includes dependency graph paths and
 ### Wrong or missing sources
 
 Ensure network access is available for `spectool -g -R` to fetch `Source0`.
+
+If the source URL is gone, returns 404/503, no longer resolves, or downloads an invalid archive, the package is a `source_unavailable` failure. This is an intentional provenance boundary: `bioconda2rpm` does not turn missing source builds into binary repacks from existing conda artifacts.
 
 ## 10. Recommended Enterprise Run Pattern
 

@@ -170,6 +170,13 @@ FR-021 Precompiled binary preference policy
 - The system shall support package-specific policy overrides that force consumption of upstream precompiled binary artefacts when upstream documentation recommends this path.
 - For packages under this policy, source-based de novo builds shall be bypassed.
 - If upstream precompiled binaries do not exist for the active target architecture, the package shall be quarantined with architecture-policy metadata.
+- Precompiled binary policy shall not be used as a fallback for vanished or unreachable upstream source archives unless the upstream project itself defines the precompiled binary as the canonical distributable for that package.
+
+FR-021b Source unavailability policy
+- If a Bioconda recipe's declared upstream source cannot be fetched or validated, the system shall classify the package failure as `source_unavailable` and quarantine it.
+- The system shall not substitute a Bioconda, conda-forge, or previously built binary package artifact for a missing upstream source archive, because that changes provenance from source build to binary repack.
+- Source-equivalent fallbacks are permitted only when they are deterministic upstream or archival source artifacts that preserve the package source tree required by the recipe.
+- Source-unavailability failures shall remain visible in JSON reports, catalogue failure state, and `bioconda2rpm failures` output until a source-equivalent fallback or recipe update is added.
 
 FR-021a Legacy build-helper bootstrap and transitive-source compatibility policy
 - The system shall support package-specific, policy-governed bootstrap of legacy build-helper tooling when controlled build repositories do not provide required helpers (for example, `opam` for `pplacer`).

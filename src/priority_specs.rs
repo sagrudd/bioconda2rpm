@@ -13870,13 +13870,15 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
     if !status.success() {
         let arch_policy =
             classify_arch_policy(&combined, &build_config.target_arch).unwrap_or("unknown");
+        let failure_class = classify_build_failure(&combined);
         let tail = tail_lines(&combined, 20);
         log_progress(format!(
-            "phase=container-build status=failed label={} spec={} elapsed={} arch_policy={} failure_hint={}",
+            "phase=container-build status=failed label={} spec={} elapsed={} arch_policy={} failure_class={} failure_hint={}",
             build_label,
             spec_name,
             format_elapsed(stage_started.elapsed()),
             arch_policy,
+            failure_class,
             compact_reason(&tail, 280)
         ));
         let dep_hint = dep_summary
@@ -13895,11 +13897,12 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n",
             })
             .unwrap_or_default();
         anyhow::bail!(
-            "container build chain failed for {} (exit status: {}) elapsed={} arch_policy={} log={} tail={}{}",
+            "container build chain failed for {} (exit status: {}) elapsed={} arch_policy={} failure_class={} log={} tail={}{}",
             spec_name,
             status,
             format_elapsed(stage_started.elapsed()),
             arch_policy,
+            failure_class,
             final_log_path.display(),
             tail,
             dep_hint
@@ -14050,6 +14053,29 @@ fn classify_arch_policy(build_log: &str, host_arch: &str) -> Option<&'static str
     }
 
     None
+}
+
+fn classify_build_failure(build_log: &str) -> &'static str {
+    let lower = build_log.to_lowercase();
+    if lower.contains("source download failed after retries") {
+        return "source_unavailable";
+    }
+    if lower.contains("source archive validation failed")
+        || lower.contains("source download did not produce")
+    {
+        return "source_unavailable";
+    }
+    if lower.contains("could not resolve host")
+        || lower.contains("name or service not known")
+        || lower.contains("the requested url returned error: 404")
+        || lower.contains("the requested url returned error: 503")
+    {
+        return "source_unavailable";
+    }
+    if lower.contains("exit status: 137") || lower.contains("killed") {
+        return "resource_exhaustion";
+    }
+    "build_failure"
 }
 
 fn is_source_permission_denied(build_log: &str) -> bool {
@@ -19657,6 +19683,19 @@ error: build stopped\n";
     fn classify_arch_policy_detects_k8_precompiled_gap_on_aarch64() {
         let log = "no upstream precompiled k8 binary for Linux/aarch64; available entries: k8-x86_64-Linux,k8-arm64-Darwin";
         assert_eq!(classify_arch_policy(log, "aarch64"), Some("amd64_only"));
+    }
+
+    #[test]
+    fn classify_build_failure_detects_source_unavailable() {
+        let log = "Downloading: https://example.invalid/pkg.tar.gz\ncurl: (22) The requested URL returned error: 404\nsource download failed after retries";
+        assert_eq!(classify_build_failure(log), "source_unavailable");
+    }
+
+    #[test]
+    fn classify_build_failure_detects_resource_exhaustion() {
+        let log =
+            "container build chain failed for phoreus-alcor.spec (exit status: exit status: 137)";
+        assert_eq!(classify_build_failure(log), "resource_exhaustion");
     }
 
     #[test]
