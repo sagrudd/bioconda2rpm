@@ -229,6 +229,7 @@ NFR-002 Determinism
 NFR-003 Traceability
 - Quarantine, resolution, and build decisions shall be recorded in structured reports, including dependency resolution graphs with source attribution (`installed`, `local_rpm`, `repo`, `unresolved`).
 - Build-script rewrites and transitive-source compatibility patches executed by package policy shall be report-visible and reproducibly attributable to generated spec logic.
+- Long-running batch builds shall maintain an incrementally refreshed JSON report and catalogue state as each package reaches a terminal state, so interrupted campaigns still expose current successes and direct failures.
 
 NFR-004 Maintainability
 - CLI behavior shall be covered by unit tests for parsing defaults and overrides.

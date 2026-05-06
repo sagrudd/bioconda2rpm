@@ -1580,6 +1580,19 @@ fn run_build_batch_queue(
         .map(|pkg| normalize_name(pkg))
         .filter(|pkg| !pkg.is_empty())
         .collect();
+    let report_stem = if requested_roots.len() == 1 {
+        normalize_name(&requested_roots[0])
+    } else {
+        format!(
+            "batch_{}_{}",
+            requested_roots.len(),
+            Utc::now().format("%Y%m%d%H%M%S")
+        )
+    };
+    let report_json = reports_dir.join(format!("build_{report_stem}.json"));
+    let report_csv = reports_dir.join(format!("build_{report_stem}.csv"));
+    let report_md = reports_dir.join(format!("build_{report_stem}.md"));
+    let mut last_persisted_results_len = 0usize;
 
     let mut planning_context = BuildPlanContext::new(
         &recipe_root,
@@ -1652,6 +1665,14 @@ fn run_build_batch_queue(
                     meta_spec_path: String::new(),
                     staged_build_sh: String::new(),
                 });
+                persist_incremental_build_report(
+                    &build_config.topdir,
+                    &results,
+                    &build_config.target_arch,
+                    &build_config.target_id,
+                    &report_json,
+                );
+                last_persisted_results_len = results.len();
                 if args.missing_dependency == MissingDependencyPolicy::Fail && fail_reason.is_none()
                 {
                     fail_reason = Some(reason);
@@ -1869,6 +1890,14 @@ fn run_build_batch_queue(
                                     meta_spec_path: String::new(),
                                     staged_build_sh: String::new(),
                                 });
+                                persist_incremental_build_report(
+                                    &build_config.topdir,
+                                    &results,
+                                    &build_config.target_arch,
+                                    &build_config.target_id,
+                                    &report_json,
+                                );
+                                last_persisted_results_len = results.len();
                                 if args.missing_dependency == MissingDependencyPolicy::Fail
                                     && fail_reason.is_none()
                                 {
@@ -1900,6 +1929,16 @@ fn run_build_batch_queue(
             &args.missing_dependency,
             &mut fail_reason,
         );
+        if results.len() != last_persisted_results_len {
+            persist_incremental_build_report(
+                &build_config.topdir,
+                &results,
+                &build_config.target_arch,
+                &build_config.target_id,
+                &report_json,
+            );
+            last_persisted_results_len = results.len();
+        }
 
         let cancelled = cancellation_requested();
         while !cancelled && running < queue_workers && !ready.is_empty() {
@@ -2002,6 +2041,14 @@ fn run_build_batch_queue(
             fail_reason = Some(entry.reason.clone());
         }
         results.push(entry.clone());
+        persist_incremental_build_report(
+            &build_config.topdir,
+            &results,
+            &build_config.target_arch,
+            &build_config.target_id,
+            &report_json,
+        );
+        last_persisted_results_len = results.len();
 
         let mut fail_queue: VecDeque<String> = VecDeque::new();
         if !success {
@@ -2046,6 +2093,16 @@ fn run_build_batch_queue(
             &args.missing_dependency,
             &mut fail_reason,
         );
+        if results.len() != last_persisted_results_len {
+            persist_incremental_build_report(
+                &build_config.topdir,
+                &results,
+                &build_config.target_arch,
+                &build_config.target_id,
+                &report_json,
+            );
+            last_persisted_results_len = results.len();
+        }
     }
 
     if finalized.len() < global_nodes.len() {
@@ -2078,6 +2135,13 @@ fn run_build_batch_queue(
                 meta_spec_path: String::new(),
                 staged_build_sh: String::new(),
             });
+            persist_incremental_build_report(
+                &build_config.topdir,
+                &results,
+                &build_config.target_arch,
+                &build_config.target_id,
+                &report_json,
+            );
             if !cancellation_requested()
                 && args.missing_dependency == MissingDependencyPolicy::Fail
                 && fail_reason.is_none()
@@ -2087,18 +2151,6 @@ fn run_build_batch_queue(
         }
     }
 
-    let report_stem = if requested_roots.len() == 1 {
-        normalize_name(&requested_roots[0])
-    } else {
-        format!(
-            "batch_{}_{}",
-            requested_roots.len(),
-            Utc::now().format("%Y%m%d%H%M%S")
-        )
-    };
-    let report_json = reports_dir.join(format!("build_{report_stem}.json"));
-    let report_csv = reports_dir.join(format!("build_{report_stem}.csv"));
-    let report_md = reports_dir.join(format!("build_{report_stem}.md"));
     write_reports(&results, &report_json, &report_csv, &report_md)?;
 
     if cancellation_requested() {
@@ -4602,7 +4654,7 @@ fn parse_version_requirements(raw: &str) -> Vec<VersionRequirement> {
 
 fn parse_single_version_requirement(raw: &str) -> Option<VersionRequirement> {
     let cleaned = raw.trim().trim_matches(',');
-    if cleaned.is_empty() || cleaned.starts_with('*') {
+    if cleaned.is_empty() || cleaned.starts_with('*') || cleaned.contains('|') {
         return None;
     }
     for (prefix, op) in [
@@ -5529,8 +5581,33 @@ fn harden_staged_build_script(path: &Path) -> Result<()> {
 fn harden_build_script_text(script: &str) -> String {
     let mut rewritten_lines = Vec::new();
     let mut rewrite_counter = 0usize;
+    let mut array_export: Option<(String, String, Vec<String>)> = None;
 
     for line in script.lines() {
+        if let Some((indent, name, values)) = array_export.as_mut() {
+            let trimmed = line.trim();
+            if trimmed == ")" {
+                let joined = values.join(" ");
+                rewritten_lines.push(format!("{indent}export {name}=\"{joined}\""));
+                array_export = None;
+            } else {
+                let value = trimmed
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .trim_end_matches(',')
+                    .to_string();
+                if !value.is_empty() {
+                    values.push(value);
+                }
+            }
+            continue;
+        }
+
+        if let Some((indent, name)) = detect_multiline_export_array_start(line) {
+            array_export = Some((indent, name, Vec::new()));
+            continue;
+        }
+
         if let Some(expanded) = rewrite_streamed_wget_tar_line(line, rewrite_counter) {
             rewritten_lines.extend(expanded);
             rewrite_counter += 1;
@@ -5557,6 +5634,29 @@ fn harden_build_script_text(script: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+fn detect_multiline_export_array_start(line: &str) -> Option<(String, String)> {
+    let trimmed = line.trim_start();
+    let indent = line[..line.len() - trimmed.len()].to_string();
+    let rest = trimmed
+        .strip_prefix("export ")
+        .unwrap_or(trimmed)
+        .trim_start();
+    let (name, value) = rest.split_once('=')?;
+    let name = name.trim();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return None;
+    }
+    if value.trim() == "(" {
+        Some((indent, name.to_string()))
+    } else {
+        None
+    }
 }
 
 fn rewrite_cargo_bundle_licenses_line(line: &str) -> Option<String> {
@@ -6412,11 +6512,25 @@ fn compute_minimal_build_scope(
     let parallel_env_required = command_mentions_parallel_env(&all_commands);
     let sparsehash_configure_fallback_required = recipe_dep_mentions_any(parsed, &["sparsehash"])
         && command_mentions_any(&all_commands, &["--with-sparsehash"]);
+    let native_vendored_prefix_required = rust_runtime_required
+        && recipe_dep_mentions_any(
+            parsed,
+            &[
+                "cereal",
+                "jemalloc",
+                "libdeflate",
+                "libhwy",
+                "jsoncpp",
+                "capnproto",
+                "capnp",
+            ],
+        );
     let buildroot_text_scrub_required =
         command_mentions_buildroot_text_risk(&interpreted_build_plan.install_commands)
             || (command_configures_install_prefix_from_prefix(
                 &interpreted_build_plan.build_commands,
-            ) && command_installs_configured_prefix(&interpreted_build_plan.install_commands));
+            ) && command_installs_configured_prefix(&interpreted_build_plan.install_commands))
+            || native_vendored_prefix_required;
     let recipe_build_sh_required =
         package_requires_original_build_script(software_slug, parsed, interpreted_build_plan);
     let blast_compat_required = package_requires_blast_compat(software_slug);
@@ -10265,7 +10379,8 @@ fn source_archive_kind(source_url: &str) -> SourceArchiveKind {
     if source_url.trim().starts_with("git+") {
         return SourceArchiveKind::Git;
     }
-    let lowered = source_url.trim().to_ascii_lowercase();
+    let effective = source_url_effective_path(source_url);
+    let lowered = effective.trim().to_ascii_lowercase();
     let trimmed = lowered
         .split_once('?')
         .map(|(base, _)| base)
@@ -10291,6 +10406,29 @@ fn source_archive_kind(source_url: &str) -> SourceArchiveKind {
         return SourceArchiveKind::Tar;
     }
     SourceArchiveKind::File
+}
+
+fn source_url_effective_path(source_url: &str) -> String {
+    let raw = source_url.trim();
+    if let Some((_, query)) = raw.split_once('?') {
+        let query = query.split('#').next().unwrap_or(query);
+        for part in query.split('&') {
+            let Some((key, value)) = part.split_once('=') else {
+                continue;
+            };
+            if matches!(key, "filepath" | "filename" | "file" | "path") {
+                let decoded = value
+                    .replace("%2F", "/")
+                    .replace("%2f", "/")
+                    .replace("%2E", ".")
+                    .replace("%2e", ".");
+                if !decoded.trim().is_empty() {
+                    return decoded;
+                }
+            }
+        }
+    }
+    raw.to_string()
 }
 
 fn render_source_unpack_prep_block(source_kind: SourceArchiveKind) -> String {
@@ -12785,6 +12923,34 @@ build_sourcedir=\"$build_root/SOURCES\"\n\
 is_remote_source() {{\n\
   [[ \"$1\" =~ ^https?:// || \"$1\" =~ ^ftp:// ]]\n\
 }}\n\
+source_url_filename() {{\n\
+  local url=\"$1\"\n\
+  local no_fragment=\"${{url%%\\#*}}\"\n\
+  local query=\"\"\n\
+  if [[ \"$no_fragment\" == *\\?* ]]; then\n\
+    query=\"${{no_fragment#*\\?}}\"\n\
+  fi\n\
+  local kv key value decoded\n\
+  IFS='&' read -ra query_parts <<< \"$query\"\n\
+  for kv in \"${{query_parts[@]:-}}\"; do\n\
+    key=\"${{kv%%=*}}\"\n\
+    value=\"${{kv#*=}}\"\n\
+    case \"$key\" in\n\
+      filepath|filename|file|path)\n\
+        decoded=\"${{value//%2F/\\/}}\"\n\
+        decoded=\"${{decoded//%2f/\\/}}\"\n\
+        decoded=\"${{decoded##*/}}\"\n\
+        if [[ -n \"$decoded\" ]]; then\n\
+          printf '%s\\n' \"$decoded\"\n\
+          return 0\n\
+        fi\n\
+        ;;\n\
+    esac\n\
+  done\n\
+  no_fragment=\"${{no_fragment%%\\?*}}\"\n\
+  no_fragment=\"${{no_fragment##*/}}\"\n\
+  printf '%s\\n' \"$no_fragment\"\n\
+}}\n\
 mapfile -t declared_sources < <(rpmspec -P --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}' 2>/dev/null | awk '/^Source[0-9]+:[[:space:]]+/ {{print $2}}')\n\
 for declared in \"${{declared_sources[@]:-}}\"; do\n\
   declared=\"${{declared%%$'\\r'}}\"\n\
@@ -12821,6 +12987,20 @@ if [[ \"$source0_url\" =~ ^http:// ]]; then\n\
 fi\n\
 if [[ \"$source0_url\" =~ ^ftp:// ]]; then\n\
   source_candidates+=(\"${{source0_url/#ftp:/https:}}\")\n\
+fi\n\
+if [[ \"$source0_url\" =~ ^https?://(www\\.)?genetics\\.ucla\\.edu/software/admixture/binaries/(admixture_[^/?#]+\\.tar\\.gz)$ ]]; then\n\
+  admixture_file=\"${{BASH_REMATCH[2]}}\"\n\
+  source_candidates+=(\"https://dalexander.github.io/admixture/binaries/${{admixture_file}}\")\n\
+fi\n\
+if [[ \"$source0_url\" =~ ^https?://pypi\\.io/packages/source/([^/]+)/([^/]+)/([^/?#]+)$ ]]; then\n\
+  pypi_initial=\"${{BASH_REMATCH[1]}}\"\n\
+  pypi_name=\"${{BASH_REMATCH[2]}}\"\n\
+  pypi_file=\"${{BASH_REMATCH[3]}}\"\n\
+  source_candidates+=(\"https://files.pythonhosted.org/packages/source/${{pypi_initial}}/${{pypi_name}}/${{pypi_file}}\")\n\
+fi\n\
+if [[ \"$source0_url\" =~ ^https?://github\\.com/Azure/azure-xplat-cli/releases/download/v([0-9][0-9A-Za-z\\._-]*)-[^/]+/azure-cli\\.([0-9][0-9A-Za-z\\._-]*)\\.tar\\.gz$ ]]; then\n\
+  azure_cli_version=\"${{BASH_REMATCH[2]}}\"\n\
+  source_candidates+=(\"https://registry.npmjs.org/azure-cli/-/azure-cli-${{azure_cli_version}}.tgz\")\n\
 fi\n\
 if [[ \"$source0_url\" =~ ^https?://github\\.com/([^/]+)/([^/]+)/archive/refs/tags/([^/?#]+)\\.tar\\.gz$ ]]; then\n\
   gh_owner=\"${{BASH_REMATCH[1]}}\"\n\
@@ -12903,10 +13083,7 @@ else\n\
   for candidate in \"${{source_candidates[@]}}\"; do\n\
     escaped_candidate=$(printf '%s' \"$candidate\" | sed 's/[\\/&]/\\\\&/g')\n\
     sed -i \"s/^Source0:[[:space:]].*$/Source0:        $escaped_candidate/\" '{spec}'\n\
-    candidate_file=\"$candidate\"\n\
-    candidate_file=\"${{candidate_file%%\\#*}}\"\n\
-    candidate_file=\"${{candidate_file%%\\?*}}\"\n\
-    candidate_file=\"${{candidate_file##*/}}\"\n\
+    candidate_file=$(source_url_filename \"$candidate\")\n\
     if [[ -n \"$candidate_file\" ]]; then\n\
       rm -f \"$build_sourcedir/$candidate_file\" || true\n\
     fi\n\
@@ -12967,10 +13144,7 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
     fi\n\
   done\n\
   for manual_url in \"${{dedup_manual_candidates[@]:-}}\"; do\n\
-    manual_file=\"$manual_url\"\n\
-    manual_file=\"${{manual_file%%\\#*}}\"\n\
-    manual_file=\"${{manual_file%%\\?*}}\"\n\
-    manual_file=\"${{manual_file##*/}}\"\n\
+    manual_file=$(source_url_filename \"$manual_url\")\n\
     [[ -n \"$manual_file\" ]] || continue\n\
     rm -f \"$build_sourcedir/$manual_file\" || true\n\
     echo \"Attempting manual prefetch fallback: $manual_url\"\n\
@@ -12997,10 +13171,7 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
     fi\n\
   done\n\
   if [[ \"$spectool_ok\" -ne 1 && \"$source0_url\" == ftp://* ]]; then\n\
-    ftp_file=\"$source0_url\"\n\
-    ftp_file=\"${{ftp_file%%\\#*}}\"\n\
-    ftp_file=\"${{ftp_file%%\\?*}}\"\n\
-    ftp_file=\"${{ftp_file##*/}}\"\n\
+    ftp_file=$(source_url_filename \"$source0_url\")\n\
     if [[ -n \"$ftp_file\" ]]; then\n\
       echo \"Attempting FTP prefetch fallback: $source0_url\"\n\
       if command -v wget >/dev/null 2>&1; then\n\
@@ -13789,9 +13960,7 @@ fn write_reports(
     csv_path: &Path,
     md_path: &Path,
 ) -> Result<()> {
-    let json = serde_json::to_string_pretty(entries).context("serializing json report")?;
-    fs::write(json_path, json)
-        .with_context(|| format!("writing json report {}", json_path.display()))?;
+    write_report_json(entries, json_path)?;
 
     let mut writer = Writer::from_path(csv_path)
         .with_context(|| format!("opening csv report {}", csv_path.display()))?;
@@ -13843,6 +14012,54 @@ fn write_reports(
 
     fs::write(md_path, md).with_context(|| format!("writing md report {}", md_path.display()))?;
     Ok(())
+}
+
+fn write_report_json(entries: &[ReportEntry], json_path: &Path) -> Result<()> {
+    if let Some(parent) = json_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating reports dir {}", parent.display()))?;
+    }
+    let json = serde_json::to_string_pretty(entries).context("serializing json report")?;
+    let file_name = json_path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("build_report.json");
+    let tmp_path = json_path.with_file_name(format!("{file_name}.tmp.{}", std::process::id()));
+    fs::write(&tmp_path, json)
+        .with_context(|| format!("writing json report tmp {}", tmp_path.display()))?;
+    fs::rename(&tmp_path, json_path)
+        .with_context(|| format!("committing json report {}", json_path.display()))?;
+    Ok(())
+}
+
+fn persist_incremental_build_report(
+    topdir: &Path,
+    entries: &[ReportEntry],
+    arch: &str,
+    target_id: &str,
+    report_json: &Path,
+) {
+    if let Err(err) = write_report_json(entries, report_json) {
+        log_progress(format!(
+            "phase=report-update status=failed report_json={} reason={}",
+            report_json.display(),
+            compact_reason(&err.to_string(), 240)
+        ));
+        return;
+    }
+    if let Err(err) = list::record_build_results(topdir, entries, arch, target_id, report_json) {
+        log_progress(format!(
+            "phase=catalog-update status=failed report_json={} reason={}",
+            report_json.display(),
+            compact_reason(&err.to_string(), 240)
+        ));
+        return;
+    }
+    log_progress(format!(
+        "phase=report-update status=written entries={} report_json={}",
+        entries.len(),
+        report_json.display()
+    ));
 }
 
 fn report_entry_is_arch_incompatible(entry: &ReportEntry) -> bool {
@@ -19698,6 +19915,78 @@ about:
             .expect("write stability cache");
         assert!(is_parallel_unstable_cached(&reports_dir, key));
         let _ = std::fs::remove_dir_all(&reports_dir);
+    }
+
+    #[test]
+    fn conda_or_version_constraints_do_not_emit_invalid_rpm_relations() {
+        let parsed = parse_dependency_spec("nodejs 20.*|22.*").expect("parse dependency");
+        assert_eq!(parsed.name, "nodejs");
+        assert!(parsed.constraints.is_empty());
+        let reqs = versioned_rpm_requirements_from_specs(
+            &["nodejs 20.*|22.*".to_string()],
+            RpmDependencyKind::Build,
+        );
+        assert!(reqs.is_empty());
+    }
+
+    #[test]
+    fn harden_build_script_collapses_multiline_export_arrays() {
+        let script = r#"export LDFLAGS=(
+    "-s"
+    "-w"
+    "-X main.version=${PKG_VERSION}"
+)
+go build -ldflags "$(echo -n ${LDFLAGS[@]})"
+        "#;
+        let hardened = harden_build_script_text(script);
+        assert!(hardened.contains(r#"export LDFLAGS="-s -w -X main.version=${PKG_VERSION}""#));
+        assert!(!hardened.contains("export LDFLAGS=("));
+    }
+
+    #[test]
+    fn container_source_download_uses_query_filename_parameters() {
+        const SOURCE: &str = include_str!("priority_specs.rs");
+        assert!(SOURCE.contains("source_url_filename()"));
+        assert!(SOURCE.contains("filepath|filename|file|path"));
+        assert!(SOURCE.contains(r#"candidate_file=$(source_url_filename \"$candidate\")"#));
+        assert!(
+            source_archive_kind(
+                "https://search.maven.org/remotecontent?filepath=x/y/tool-1.0.tar.gz"
+            ) == SourceArchiveKind::Tar
+        );
+    }
+
+    #[test]
+    fn incremental_build_report_updates_json_and_catalogue() {
+        let unique = format!(
+            "bioconda2rpm-incremental-report-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let topdir = std::env::temp_dir().join(unique);
+        let report_json = topdir.join("targets/test-target/reports/build_batch_test.json");
+        let entries = vec![ReportEntry {
+            software: "adam".to_string(),
+            priority: 0,
+            status: "quarantined".to_string(),
+            reason: "payload spec build failed in container".to_string(),
+            overlap_recipe: "adam".to_string(),
+            overlap_reason: "test".to_string(),
+            variant_dir: String::new(),
+            package_name: "adam".to_string(),
+            version: "1.0.1".to_string(),
+            payload_spec_path: String::new(),
+            meta_spec_path: String::new(),
+            staged_build_sh: String::new(),
+        }];
+        persist_incremental_build_report(&topdir, &entries, "x86_64", "test-target", &report_json);
+        let payload = std::fs::read_to_string(&report_json).expect("read incremental report");
+        let parsed: Vec<ReportEntry> = serde_json::from_str(&payload).expect("parse report");
+        assert_eq!(parsed.len(), 1);
+        let catalogue =
+            std::fs::read_to_string(topdir.join(".catalog.json")).expect("read catalogue");
+        assert!(catalogue.contains("adam"));
+        let _ = std::fs::remove_dir_all(&topdir);
     }
 
     #[test]

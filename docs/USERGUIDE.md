@@ -319,6 +319,7 @@ Each report entry includes:
 - reason/message
 
 Use the Markdown report for quick review and JSON/CSV for automation.
+For batch builds, `build_batch_*.json` is updated atomically as each package finishes, and the internal `.catalog.json` failure state is refreshed from those same terminal package results. The CSV and Markdown summaries are finalized at batch completion.
 For dependency analysis, inspect `targets/<target-id>/reports/dependency_graphs/`:
 - `status=resolved` entries include `source` (`installed`, `local_rpm`, `repo`).
 - `status=unresolved` entries include captured package-manager detail.
