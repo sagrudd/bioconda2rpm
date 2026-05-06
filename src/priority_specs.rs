@@ -6179,7 +6179,11 @@ fn compute_minimal_build_scope(
             && parsed
                 .build_script
                 .as_deref()
-                .is_some_and(build_script_mentions_arch_env));
+                .is_some_and(build_script_mentions_arch_env))
+        // HEURISTIC-TEMP(issue=bioconda2rpm#trf-platform-conditional-build-script):
+        // TRF's platform switch lives in an external recipe build.sh, not inline
+        // meta.yaml, so parsed.build_script does not carry the target_platform token.
+        || (recipe_build_sh_required && software_slug == "trf");
 
     MinimalBuildScope {
         python_runtime_required,
@@ -19895,7 +19899,7 @@ ln -s "${outdir}/libexec/krakenuniq" "$PREFIX/bin/krakenuniq"
             license: "GPL-3.0-only".to_string(),
             summary: "krakenuniq".to_string(),
             source_patches: Vec::new(),
-            build_script: Some(build_script.to_string()),
+            build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["make".to_string(), "cxx-compiler".to_string()],
             host_dep_specs_raw: vec!["perl".to_string(), "zlib".to_string(), "bzip2".to_string()],
@@ -19908,8 +19912,7 @@ ln -s "${outdir}/libexec/krakenuniq" "$PREFIX/bin/krakenuniq"
             ]),
             run_deps: BTreeSet::from(["perl".to_string()]),
         };
-        let plan =
-            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let plan = interpret_build_script_minimal(build_script);
         let spec = render_payload_spec_minimal(
             "krakenuniq",
             &parsed,
@@ -19959,7 +19962,7 @@ install -v -m 755 build/trf "${PREFIX}/bin"
             license: "AGPL-3.0-or-later".to_string(),
             summary: "trf".to_string(),
             source_patches: Vec::new(),
-            build_script: Some(build_script.to_string()),
+            build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["c-compiler".to_string()],
             host_dep_specs_raw: Vec::new(),
@@ -19968,8 +19971,7 @@ install -v -m 755 build/trf "${PREFIX}/bin"
             host_deps: BTreeSet::new(),
             run_deps: BTreeSet::new(),
         };
-        let plan =
-            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let plan = interpret_build_script_minimal(build_script);
         let spec = render_payload_spec_minimal(
             "trf",
             &parsed,
