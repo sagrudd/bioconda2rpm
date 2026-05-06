@@ -6035,14 +6035,34 @@ fn extract_package_scalar(rendered: &str, key: &str) -> Option<String> {
         if in_package {
             let needle = format!("{key}:");
             if let Some(rest) = trimmed.strip_prefix(&needle) {
-                let value = rest.trim().trim_matches('\"').trim_matches('\'');
+                let value = clean_rendered_package_scalar(rest);
                 if !value.is_empty() {
-                    return Some(value.to_string());
+                    return Some(value);
                 }
             }
         }
     }
     None
+}
+
+fn clean_rendered_package_scalar(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let quoted = (trimmed.starts_with('"') && trimmed.ends_with('"'))
+        || (trimmed.starts_with('\'') && trimmed.ends_with('\''));
+    let without_comment = if quoted {
+        trimmed
+    } else {
+        trimmed
+            .split_once('#')
+            .map(|(value, _)| value)
+            .unwrap_or(trimmed)
+    };
+    without_comment
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string()
 }
 
 fn extract_source_url(source: Option<&Value>) -> Option<String> {
@@ -6592,6 +6612,8 @@ fn line_is_install_command(line: &str) -> bool {
 fn line_is_build_command(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     lower.starts_with("./configure")
+        || lower.starts_with("./autogen.sh")
+        || lower.starts_with("autoreconf ")
         || lower.starts_with("configure ")
         || (lower.starts_with("cmake ") && !lower.starts_with("cmake --install"))
         || (lower.starts_with("make ") && !lower.starts_with("make install"))
@@ -6751,6 +6773,23 @@ fn command_installs_configured_prefix(commands: &[String]) -> bool {
     })
 }
 
+fn command_runs_make_install_with_prefix_env(commands: &[String]) -> bool {
+    commands.iter().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.starts_with("make install") || lower.contains(" make install")
+    })
+}
+
+fn package_requires_make_install_buildroot_scrub(software_slug: &str) -> bool {
+    match software_slug {
+        // HEURISTIC-TEMP(issue=bioconda2rpm#lz4-bin-unconfigured-make-install-pkgconfig):
+        // lz4 r131 has no configure prefix phase; `make install` still writes
+        // lib/pkgconfig/liblz4.pc with the buildroot-prefixed PREFIX.
+        "lz4-bin" => true,
+        _ => false,
+    }
+}
+
 fn recipe_dep_mentions_any(parsed: &ParsedMeta, dep_names: &[&str]) -> bool {
     parsed
         .build_deps
@@ -6880,6 +6919,10 @@ fn compute_minimal_build_scope(
                 &interpreted_build_plan.install_commands,
                 &interpreted_build_plan.prefix_install_vars,
             )
+                || (package_requires_make_install_buildroot_scrub(software_slug)
+                    && command_runs_make_install_with_prefix_env(
+                        &interpreted_build_plan.install_commands,
+                    ))
                 || (command_configures_install_prefix_from_prefix(
                     &interpreted_build_plan.build_commands,
                 ) && command_installs_configured_prefix(&interpreted_build_plan.install_commands))))
@@ -7300,8 +7343,8 @@ fn render_payload_spec_minimal(
 ) -> String {
     let license = spec_escape(&parsed.license);
     let summary = spec_escape_or_default(&parsed.summary, &parsed.package_name);
-    let homepage = spec_escape_or_default(&parsed.homepage, "https://bioconda.github.io");
-    let source_url = spec_escape(&parsed.source_url);
+    let homepage = spec_escape_url_or_default(&parsed.homepage, "https://bioconda.github.io");
+    let source_url = spec_escape_source_url(&parsed.source_url);
     let source_subdir = {
         let folder = parsed.source_folder.trim().trim_matches('/');
         if folder.is_empty() {
@@ -7804,8 +7847,8 @@ fn render_payload_spec(
 ) -> String {
     let license = spec_escape(&parsed.license);
     let summary = spec_escape_or_default(&parsed.summary, &parsed.package_name);
-    let homepage = spec_escape_or_default(&parsed.homepage, "https://bioconda.github.io");
-    let source_url = spec_escape(&parsed.source_url);
+    let homepage = spec_escape_url_or_default(&parsed.homepage, "https://bioconda.github.io");
+    let source_url = spec_escape_source_url(&parsed.source_url);
     let source_subdir = {
         let folder = parsed.source_folder.trim().trim_matches('/');
         if folder.is_empty() {
@@ -11752,6 +11795,27 @@ fn spec_escape_or_default(input: &str, fallback: &str) -> String {
     }
 }
 
+fn spec_escape_url_or_default(input: &str, fallback: &str) -> String {
+    let trimmed = input.trim();
+    if !(trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("ftp://"))
+        || trimmed.split_whitespace().count() != 1
+    {
+        fallback.to_string()
+    } else {
+        spec_escape(trimmed)
+    }
+}
+
+fn spec_escape_source_url(input: &str) -> String {
+    spec_escape(&encode_url_spaces(input.trim()))
+}
+
+fn encode_url_spaces(input: &str) -> String {
+    input.replace(' ', "%20")
+}
+
 fn normalize_name(name: &str) -> String {
     let mut input = name.trim().to_lowercase();
     input = input.replace('+', "-plus-");
@@ -11781,7 +11845,10 @@ fn normalize_dependency_token(dep: &str) -> String {
             .map(|(_, name)| name)
             .unwrap_or(trimmed)
     };
-    without_channel.replace('_', "-").to_lowercase()
+    without_channel
+        .replace('_', "-")
+        .trim_matches('-')
+        .to_lowercase()
 }
 
 fn normalize_identifier_key(name: &str) -> String {
@@ -12139,7 +12206,7 @@ fn is_conda_only_dependency(dep: &str) -> bool {
     let normalized = normalize_dependency_token(dep);
     matches!(
         normalized.as_str(),
-        "bioconductor-data-packages" | "go-licenses"
+        "bioconductor-data-packages" | "go-licenses" | "openmp-mutex"
     )
 }
 
@@ -13485,6 +13552,8 @@ source_url_filename() {{\n\
       filepath|filename|file|path)\n\
         decoded=\"${{value//%2F/\\/}}\"\n\
         decoded=\"${{decoded//%2f/\\/}}\"\n\
+        decoded=\"${{decoded//%20/ }}\"\n\
+        decoded=\"${{decoded//%2B/+}}\"\n\
         decoded=\"${{decoded##*/}}\"\n\
         if [[ -n \"$decoded\" ]]; then\n\
           printf '%s\\n' \"$decoded\"\n\
@@ -13495,6 +13564,7 @@ source_url_filename() {{\n\
   done\n\
   no_fragment=\"${{no_fragment%%\\?*}}\"\n\
   no_fragment=\"${{no_fragment##*/}}\"\n\
+  no_fragment=\"${{no_fragment//%20/ }}\"\n\
   printf '%s\\n' \"$no_fragment\"\n\
 }}\n\
 mapfile -t declared_sources < <(rpmspec -P --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}' 2>/dev/null | awk '/^Source[0-9]+:[[:space:]]+/ {{print $2}}')\n\
@@ -13559,6 +13629,12 @@ if [[ \"$source0_url\" =~ ^https?://github\\.com/([^/]+)/([^/]+)/archive/([^/?#]
   gh_repo=\"${{BASH_REMATCH[2]}}\"\n\
   gh_ref=\"${{BASH_REMATCH[3]}}\"\n\
   source_candidates+=(\"https://codeload.github.com/${{gh_owner}}/${{gh_repo}}/tar.gz/${{gh_ref}}\")\n\
+fi\n\
+if [[ \"$source0_url\" =~ ^https?://([^/]+\\.)?dl\\.sourceforge\\.net/project/([^/?#]+)/(.*)$ ]]; then\n\
+  sf_project=\"${{BASH_REMATCH[2]}}\"\n\
+  sf_path=\"${{BASH_REMATCH[3]}}\"\n\
+  source_candidates+=(\"https://downloads.sourceforge.net/project/${{sf_project}}/${{sf_path}}\")\n\
+  source_candidates+=(\"https://sourceforge.net/projects/${{sf_project}}/files/${{sf_path}}/download\")\n\
 fi\n\
 if [[ \"$source0_url\" =~ ^https://bioconductor.org/packages/.*/bioc/src/contrib/([^/]+)_[^/]+\\.tar\\.gz$ ]]; then\n\
   bioc_pkg=\"${{BASH_REMATCH[1]}}\"\n\
@@ -14868,6 +14944,8 @@ mod tests {
     #[test]
     fn conda_only_dependencies_include_go_licenses() {
         assert!(is_conda_only_dependency("go-licenses"));
+        assert!(is_conda_only_dependency("_openmp_mutex"));
+        assert_eq!(normalize_dependency_token("_openmp_mutex"), "openmp-mutex");
     }
 
     #[test]
@@ -14923,6 +15001,24 @@ mod tests {
                 op: VersionRequirementOp::Ge,
                 version: "2.1.0".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn rendered_package_scalar_strips_inline_yaml_comments() {
+        let rendered = "package:\n  name: malt\n  version: 0.62 # upstream version note\n";
+        assert_eq!(extract_package_scalar(rendered, "version").as_deref(), Some("0.62"));
+    }
+
+    #[test]
+    fn invalid_homepage_values_fall_back_to_bioconda_url() {
+        assert_eq!(
+            spec_escape_url_or_default("The package home page", "https://bioconda.github.io"),
+            "https://bioconda.github.io"
+        );
+        assert_eq!(
+            spec_escape_url_or_default("https://example.invalid/tool", "https://bioconda.github.io"),
+            "https://example.invalid/tool"
         );
     }
 
@@ -15460,6 +15556,7 @@ requirements:
         assert!(
             SOURCE.contains("codeload.github.com/${{gh_owner}}/${{gh_repo}}/tar.gz/${{gh_ref}}")
         );
+        assert!(SOURCE.contains("downloads.sourceforge.net/project/${{sf_project}}/${{sf_path}}"));
     }
 
     #[test]
@@ -15837,6 +15934,14 @@ requirements:
         assert_eq!(
             source_archive_kind("https://example.invalid/nextflow"),
             SourceArchiveKind::File
+        );
+    }
+
+    #[test]
+    fn source_urls_encode_spaces_for_rpm_source_lines() {
+        assert_eq!(
+            spec_escape_source_url("https://pypi.io/packages/source/M/MAGE-Tab-merger/MAGE-Tab merger-0.0.4.tar.gz"),
+            "https://pypi.io/packages/source/M/MAGE-Tab-merger/MAGE-Tab%%20merger-0.0.4.tar.gz"
         );
     }
 
