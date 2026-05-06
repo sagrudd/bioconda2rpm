@@ -6280,7 +6280,11 @@ export PIP=\"${{PIP:-$PYTHON -m pip}}\"\n\
     if scope.compiler_env_required {
         out.push_str(
             "export CC=\"${CC:-gcc}\"\n\
-export CXX=\"${CXX:-g++}\"\n",
+export CXX=\"${CXX:-g++}\"\n\
+export CFLAGS=\"${CFLAGS:-}\"\n\
+export CXXFLAGS=\"${CXXFLAGS:-}\"\n\
+export CPPFLAGS=\"${CPPFLAGS:-}\"\n\
+export LDFLAGS=\"${LDFLAGS:-}\"\n",
         );
     }
 
@@ -19990,6 +19994,9 @@ install -v -m 755 build/trf "${PREFIX}/bin"
         assert!(spec.contains("arch-env"));
         assert!(spec.contains("Source1:        bioconda-trf-build.sh"));
         assert!(spec.contains("export target_platform=linux-aarch64"));
+        assert!(spec.contains("export CFLAGS=\"${CFLAGS:-}\""));
+        assert!(spec.contains("export CPPFLAGS=\"${CPPFLAGS:-}\""));
+        assert!(spec.contains("export LDFLAGS=\"${LDFLAGS:-}\""));
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(!spec.contains("${CC} ${CFLAGS} -O3 || true"));
     }
