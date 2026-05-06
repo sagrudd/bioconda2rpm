@@ -6835,6 +6835,21 @@ fn compute_minimal_build_scope(
                 "capnp",
             ],
         );
+    let core_c_bootstrap_prefix_required = recipe_dep_mentions_any(
+        parsed,
+        &[
+            "isa-l",
+            "libdeflate",
+            "libdeflate-devel",
+            "cereal",
+            "jemalloc",
+            "libhwy",
+            "jsoncpp",
+            "jsoncpp-devel",
+            "capnproto",
+            "capnp",
+        ],
+    ) || software_slug == "mash";
     let recipe_build_sh_required =
         package_requires_original_build_script(software_slug, parsed, interpreted_build_plan);
     let buildroot_text_scrub_required =
@@ -6843,7 +6858,8 @@ fn compute_minimal_build_scope(
                 || (command_configures_install_prefix_from_prefix(
                     &interpreted_build_plan.build_commands,
                 ) && command_installs_configured_prefix(&interpreted_build_plan.install_commands))))
-            || native_vendored_prefix_required;
+            || native_vendored_prefix_required
+            || core_c_bootstrap_prefix_required;
     let blast_compat_required = package_requires_blast_compat(software_slug);
     let arch_env_required = command_mentions_arch_env(&all_commands)
         || (recipe_build_sh_required
@@ -15450,6 +15466,10 @@ requirements:
         assert!(!spec.contains("BuildRequires:  capnproto-devel"));
         assert!(spec.contains("bootstrapping capnproto into $PREFIX"));
         assert!(spec.contains("BuildRequires:  zlib-devel"));
+
+        let plan = interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or(""));
+        let scope = compute_minimal_build_scope("salmon", &parsed, &plan, false, false, false);
+        assert!(scope.buildroot_text_scrub_required);
     }
 
     #[test]
