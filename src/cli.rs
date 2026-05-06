@@ -28,6 +28,8 @@ pub enum Command {
     Lookup(LookupArgs),
     /// List successfully built methods from the internal catalogue.
     List(ListArgs),
+    /// List packages currently in failed build state.
+    Failures(FailuresArgs),
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
@@ -502,6 +504,33 @@ pub struct ListArgs {
     pub json: bool,
 }
 
+#[derive(Debug, clap::Args)]
+pub struct FailuresArgs {
+    /// Workspace topdir. Defaults to ~/bioconda2rpm.
+    #[arg(long)]
+    pub topdir: Option<PathBuf>,
+
+    /// Filter by software name (glob pattern).
+    #[arg(long)]
+    pub name: Option<String>,
+
+    /// Filter by version (glob pattern).
+    #[arg(long)]
+    pub version: Option<String>,
+
+    /// Filter by target architecture (exact match).
+    #[arg(long)]
+    pub arch: Option<String>,
+
+    /// Refresh failure state by rescanning build reports.
+    #[arg(long)]
+    pub refresh: bool,
+
+    /// Emit JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
 pub fn default_topdir() -> PathBuf {
     match env::var_os("HOME") {
         Some(home) => PathBuf::from(home).join("bioconda2rpm"),
@@ -915,6 +944,12 @@ impl LookupArgs {
 }
 
 impl ListArgs {
+    pub fn effective_topdir(&self) -> PathBuf {
+        self.topdir.clone().unwrap_or_else(default_topdir)
+    }
+}
+
+impl FailuresArgs {
     pub fn effective_topdir(&self) -> PathBuf {
         self.topdir.clone().unwrap_or_else(default_topdir)
     }

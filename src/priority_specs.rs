@@ -827,21 +827,15 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
     let generated = results.iter().filter(|r| r.status == "generated").count();
     let quarantined = results.iter().filter(|r| r.status == "quarantined").count();
 
-    // Update the internal catalogue with generated entries.
-    let catalogue_entries: Vec<list::CatalogEntry> = results
-        .iter()
-        .filter(|r| r.status == "generated" || r.status == "up-to-date")
-        .map(|r| list::CatalogEntry {
-            software: r.software.clone(),
-            version: r.version.clone(),
-            arch: target_arch_for_cat.clone(),
-            target_id: target_id_for_cat.clone(),
-        })
-        .collect();
-    if !catalogue_entries.is_empty() {
-        if let Err(err) = list::add_entries_to_catalogue(&topdir_for_cat, &catalogue_entries) {
-            log_external_progress(format!("phase=catalog-update status=failed reason={}", err));
-        }
+    // Update the internal catalogue with generated entries and current failures.
+    if let Err(err) = list::record_build_results(
+        &topdir_for_cat,
+        &results,
+        &target_arch_for_cat,
+        &target_id_for_cat,
+        &report_json,
+    ) {
+        log_external_progress(format!("phase=catalog-update status=failed reason={}", err));
     }
 
     Ok(GenerationSummary {
@@ -1923,23 +1917,15 @@ fn run_build_batch_queue(
     let skipped = results.iter().filter(|r| r.status == "skipped").count();
     let quarantined = results.iter().filter(|r| r.status == "quarantined").count();
 
-    // Update the internal catalogue with generated entries.
-    let arch_for_cat = build_config.target_arch.clone();
-    let tid_for_cat = build_config.target_id.clone();
-    let catalogue_entries: Vec<list::CatalogEntry> = results
-        .iter()
-        .filter(|r| r.status == "generated" || r.status == "up-to-date")
-        .map(|r| list::CatalogEntry {
-            software: r.software.clone(),
-            version: r.version.clone(),
-            arch: arch_for_cat.clone(),
-            target_id: tid_for_cat.clone(),
-        })
-        .collect();
-    if !catalogue_entries.is_empty() {
-        if let Err(err) = list::add_entries_to_catalogue(&build_config.topdir, &catalogue_entries) {
-            log_progress(format!("phase=catalog-update status=failed reason={}", err));
-        }
+    // Update the internal catalogue with generated entries and current failures.
+    if let Err(err) = list::record_build_results(
+        &build_config.topdir,
+        &results,
+        &build_config.target_arch,
+        &build_config.target_id,
+        &report_json,
+    ) {
+        log_progress(format!("phase=catalog-update status=failed reason={}", err));
     }
 
     Ok(BuildSummary {

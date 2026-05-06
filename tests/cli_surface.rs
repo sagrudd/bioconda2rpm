@@ -20,12 +20,47 @@ fn help_lists_primary_commands() {
         "generate-priority-specs",
         "recipes",
         "lookup",
+        "list",
+        "failures",
     ] {
         assert!(
             stdout.contains(command),
             "expected --help to list `{command}`"
         );
     }
+}
+
+#[test]
+fn failures_json_emits_catalogue_failures() {
+    let topdir = tempdir().expect("tempdir");
+    let topdir_arg = topdir.path().to_string_lossy().to_string();
+    let catalog = serde_json::json!({
+        "entries": [],
+        "failures": [
+            {
+                "software": "tbl2asn-forever",
+                "version": "25.7.2f",
+                "arch": "aarch64",
+                "target_id": "target-aarch64",
+                "status": "quarantined",
+                "reason": "payload spec build failed in container",
+                "report_path": "/tmp/build_tbl2asn-forever.json",
+                "failed_at": "2026-05-06T10:00:00Z"
+            }
+        ]
+    });
+    std::fs::write(
+        topdir.path().join(".catalog.json"),
+        serde_json::to_string(&catalog).expect("catalog json"),
+    )
+    .expect("write catalog");
+
+    let output = run(&["failures", "--json", "--topdir", &topdir_arg]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Value = serde_json::from_str(stdout.trim()).expect("failures json");
+    assert_eq!(parsed.as_array().expect("array").len(), 1);
+    assert_eq!(parsed[0]["software"], "tbl2asn-forever");
 }
 
 #[test]

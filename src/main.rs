@@ -406,6 +406,16 @@ fn main() -> ExitCode {
                 }
             }
         }
+        cli::Command::Failures(args) => {
+            let topdir = args.effective_topdir();
+            match list::run_failures(&topdir, &args) {
+                Ok(_) => {}
+                Err(err) => {
+                    eprintln!("failures failed: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
     }
 
     ExitCode::SUCCESS
