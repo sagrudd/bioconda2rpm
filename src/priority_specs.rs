@@ -11271,7 +11271,7 @@ fn source_validation_shell_function() -> &'static str {
       if command -v xz >/dev/null 2>&1; then xz -t \"$source_path\" >/dev/null 2>&1 || return 1; fi\n\
       ;;\n\
     *)\n\
-      if command -v tar >/dev/null 2>&1 && tar -tzf \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
+      if command -v gzip >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 && gzip -t \"$source_path\" >/dev/null 2>&1 && tar -tzf \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
       if command -v tar >/dev/null 2>&1 && tar -tf \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
       if command -v unzip >/dev/null 2>&1 && UNZIP_DISABLE_ZIPBOMB_DETECTION=TRUE unzip -tqq \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
       if command -v gzip >/dev/null 2>&1 && gzip -t \"$source_path\" >/dev/null 2>&1; then return 0; fi\n\
@@ -15438,7 +15438,7 @@ requirements:
     fn source_validation_shell_function_probes_extensionless_archives() {
         let shell = source_validation_shell_function();
 
-        assert!(shell.contains("if command -v tar >/dev/null 2>&1 && tar -tzf \"$source_path\" >/dev/null 2>&1; then return 0; fi"));
+        assert!(shell.contains("gzip -t \"$source_path\" >/dev/null 2>&1 && tar -tzf \"$source_path\" >/dev/null 2>&1; then return 0; fi"));
         assert!(shell.contains("if command -v tar >/dev/null 2>&1 && tar -tf \"$source_path\" >/dev/null 2>&1; then return 0; fi"));
         assert!(shell.contains("*.zip|*.jar)"));
         assert!(shell.contains(
