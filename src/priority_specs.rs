@@ -5624,7 +5624,18 @@ fn harden_build_script_text(script: &str) -> String {
     let mut rewrite_counter = 0usize;
     let mut array_export: Option<(String, String, Vec<String>)> = None;
 
-    for line in script.lines() {
+    for raw_line in script.lines() {
+        let normalized_ruby_line;
+        let line = if raw_line.contains("PREFIX") && raw_line.contains("/bin/ruby") {
+            normalized_ruby_line = raw_line
+                .replace("\"$PREFIX/bin/ruby\"", "\"/usr/bin/env\" \"ruby\"")
+                .replace("'$PREFIX/bin/ruby'", "'/usr/bin/env' 'ruby'")
+                .replace("$PREFIX/bin/ruby", "/usr/bin/env ruby")
+                .replace("${PREFIX}/bin/ruby", "/usr/bin/env ruby");
+            normalized_ruby_line.as_str()
+        } else {
+            raw_line
+        };
         if let Some((indent, name, values)) = array_export.as_mut() {
             let trimmed = line.trim();
             if trimmed == ")" {
@@ -6413,7 +6424,9 @@ fn line_is_setup_command(line: &str) -> bool {
 fn command_mentions_any(commands: &[String], needles: &[&str]) -> bool {
     commands.iter().any(|line| {
         let lower = line.to_ascii_lowercase();
-        needles.iter().any(|needle| lower.contains(needle))
+        needles
+            .iter()
+            .any(|needle| lower.contains(&needle.to_ascii_lowercase()))
     })
 }
 
@@ -6526,9 +6539,20 @@ fn recipe_dep_mentions_any(parsed: &ParsedMeta, dep_names: &[&str]) -> bool {
 
 fn package_requires_original_build_script(
     software_slug: &str,
-    _parsed: &ParsedMeta,
-    _interpreted_build_plan: &InterpretedBuildPlan,
+    parsed: &ParsedMeta,
+    interpreted_build_plan: &InterpretedBuildPlan,
 ) -> bool {
+    let all_commands = interpreted_build_plan
+        .build_commands
+        .iter()
+        .chain(interpreted_build_plan.install_commands.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    if recipe_dep_mentions(parsed, "ruby")
+        || command_mentions_any(&all_commands, &["GEM_HOME", "gem build", "gem install"])
+    {
+        return true;
+    }
     match software_slug {
         // HEURISTIC-TEMP(issue=bioconda2rpm#blast-minimal-build-script-scope):
         // BLAST's Bioconda build.sh is stateful; splitting it loses configure state.
@@ -20115,6 +20139,47 @@ go build -ldflags "$(echo -n ${LDFLAGS[@]})"
         let hardened = harden_build_script_text(script);
         assert!(hardened.contains(r#"export LDFLAGS="-s -w -X main.version=${PKG_VERSION}""#));
         assert!(!hardened.contains("export LDFLAGS=("));
+    }
+
+    #[test]
+    fn harden_build_script_rewrites_prefix_ruby_wrappers_to_env_ruby() {
+        let script = r#"cat << EOF > header.txt
+exec "$PREFIX/bin/ruby" "-x" "$0" "$@"
+#!$PREFIX/bin/ruby
+EOF
+"#;
+        let hardened = harden_build_script_text(script);
+        assert!(hardened.contains(r#"exec "/usr/bin/env" "ruby" "-x" "$0" "$@""#));
+        assert!(hardened.contains("#!/usr/bin/env ruby"));
+        assert!(!hardened.contains("$PREFIX/bin/ruby"));
+    }
+
+    #[test]
+    fn ruby_gem_recipes_keep_original_build_script_scope() {
+        let parsed = parse_rendered_meta(
+            r#"
+package:
+  name: aspera-cli
+  version: 4.20.0
+source:
+  url: https://example.invalid/aspera-cli-4.20.0.tar.gz
+build:
+  script: |
+    export GEM_HOME=$PREFIX/share/rubygems
+    gem build aspera-cli.gemspec
+requirements:
+  host:
+    - ruby
+"#,
+        )
+        .expect("parse ruby recipe");
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        assert!(package_requires_original_build_script(
+            "aspera-cli",
+            &parsed,
+            &plan
+        ));
     }
 
     #[test]
