@@ -6451,6 +6451,177 @@ fn compute_minimal_build_scope(
     }
 }
 
+fn render_payload_build_arch_line(
+    parsed: &ParsedMeta,
+    build_requires: &BTreeSet<String>,
+    python_requirements: &[String],
+    python_recipe: bool,
+    r_runtime_required: bool,
+    rust_runtime_required: bool,
+    nim_runtime_required: bool,
+    perl_recipe: bool,
+    minimal_scope: Option<&MinimalBuildScope>,
+) -> String {
+    if !parsed.noarch_python {
+        return String::new();
+    }
+
+    match noarch_rejection_reason(
+        parsed,
+        build_requires,
+        python_requirements,
+        python_recipe,
+        r_runtime_required,
+        rust_runtime_required,
+        nim_runtime_required,
+        perl_recipe,
+        minimal_scope,
+    ) {
+        None => "BuildArch:      noarch\n".to_string(),
+        Some(reason) => format!(
+            "# bioconda2rpm: noarch suppressed despite noarch: python ({})\n",
+            spec_escape(&reason)
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn noarch_rejection_reason(
+    parsed: &ParsedMeta,
+    build_requires: &BTreeSet<String>,
+    python_requirements: &[String],
+    python_recipe: bool,
+    r_runtime_required: bool,
+    rust_runtime_required: bool,
+    nim_runtime_required: bool,
+    perl_recipe: bool,
+    minimal_scope: Option<&MinimalBuildScope>,
+) -> Option<String> {
+    if !python_recipe {
+        return Some("recipe is not classified as a Python payload".to_string());
+    }
+    if r_runtime_required || recipe_requires_r_runtime(parsed) {
+        return Some("R runtime or R dependencies are architecture-specific".to_string());
+    }
+    if rust_runtime_required || recipe_requires_rust_runtime(parsed) {
+        return Some("Rust runtime or Cargo dependencies are architecture-specific".to_string());
+    }
+    if nim_runtime_required || recipe_requires_nim_runtime(parsed) {
+        return Some("Nim runtime dependencies are architecture-specific".to_string());
+    }
+    if perl_recipe || normalize_name(&parsed.package_name).starts_with("perl-") {
+        return Some("Perl module payloads use architecture-specific install roots".to_string());
+    }
+    if let Some(scope) = minimal_scope {
+        if scope.compiler_env_required {
+            return Some("compiler environment is required".to_string());
+        }
+        if scope.arch_env_required {
+            return Some("recipe uses target architecture conditionals".to_string());
+        }
+        if scope.r_runtime_required
+            || scope.rust_runtime_required
+            || scope.nim_runtime_required
+            || scope.perl_runtime_required
+        {
+            return Some("non-Python runtime scope is required".to_string());
+        }
+    }
+
+    if let Some(dep) = parsed
+        .build_deps
+        .iter()
+        .chain(parsed.host_deps.iter())
+        .chain(parsed.run_deps.iter())
+        .find(|dep| dependency_is_native_noarch_risk(dep))
+    {
+        return Some(format!(
+            "dependency `{}` can introduce architecture-specific payload",
+            dep
+        ));
+    }
+
+    if let Some(req) = build_requires
+        .iter()
+        .find(|req| !buildrequire_is_safe_for_noarch_python(req))
+    {
+        return Some(format!(
+            "BuildRequires `{}` is not allowed for noarch payloads",
+            req
+        ));
+    }
+
+    if let Some(req) = python_requirements.first() {
+        return Some(format!(
+            "vendored Python requirement `{}` may resolve to platform-specific wheels",
+            req
+        ));
+    }
+
+    None
+}
+
+fn buildrequire_is_safe_for_noarch_python(req: &str) -> bool {
+    let dep = extract_dependency_name_from_token(req);
+    let normalized = normalize_dependency_token(dep);
+    matches!(
+        normalized.as_str(),
+        "bash"
+            | "curl"
+            | "git"
+            | "gzip"
+            | "patch"
+            | "sed"
+            | "tar"
+            | "unzip"
+            | "wget"
+            | "which"
+            | "xz"
+            | PHOREUS_PYTHON_PACKAGE
+            | PHOREUS_PYTHON_PACKAGE_312
+            | PHOREUS_PYTHON_PACKAGE_313
+    ) || is_phoreus_python_toolchain_dependency(&normalized)
+}
+
+fn dependency_is_native_noarch_risk(dep: &str) -> bool {
+    let normalized = normalize_dependency_token(dep);
+    if is_conda_only_dependency(&normalized) || is_phoreus_python_toolchain_dependency(&normalized)
+    {
+        return false;
+    }
+    if is_r_ecosystem_dependency_name(&normalized)
+        || is_rust_ecosystem_dependency_name(&normalized)
+        || is_nim_ecosystem_dependency_name(&normalized)
+        || normalized.starts_with("perl")
+    {
+        return true;
+    }
+    matches!(
+        normalized.as_str(),
+        "c-compiler"
+            | "cxx-compiler"
+            | "fortran-compiler"
+            | "go-compiler"
+            | "gcc"
+            | "gcc-c++"
+            | "gcc-gfortran"
+            | "golang"
+            | "make"
+            | "cmake"
+            | "meson"
+            | "ninja"
+            | "pkg-config"
+            | "swig"
+            | "openjdk"
+            | "java-11-openjdk"
+            | "java-17-openjdk"
+            | "java-21-openjdk"
+            | "rust"
+            | "cargo"
+    ) || normalized.ends_with("-compiler")
+        || normalized.ends_with("-devel")
+}
+
 fn render_scoped_shell_lines(
     lines: &[String],
     fallback_message: &str,
@@ -6643,7 +6814,7 @@ fn render_payload_spec_minimal(
     staged_patch_sources: &[String],
     meta_path: &Path,
     variant_dir: &Path,
-    noarch_python: bool,
+    _noarch_python: bool,
     python_script_hint: bool,
     r_script_hint: bool,
     rust_script_hint: bool,
@@ -6868,11 +7039,17 @@ chmod 0755 buildsrc/build.sh\n"
     } else {
         String::new()
     };
-    let build_arch_line = if noarch_python {
-        "BuildArch:      noarch\n".to_string()
-    } else {
-        String::new()
-    };
+    let build_arch_line = render_payload_build_arch_line(
+        parsed,
+        &build_requires,
+        &[],
+        python_recipe,
+        r_runtime_required,
+        rust_runtime_required,
+        nim_runtime_required,
+        perl_recipe,
+        Some(&scope),
+    );
     let changelog_date = rpm_changelog_date();
     let phoreus_prefix_macro = if perl_recipe {
         format!("/usr/local/phoreus/perl/{PHOREUS_PERL_VERSION}")
@@ -7136,7 +7313,7 @@ fn render_payload_spec(
     staged_patch_sources: &[String],
     meta_path: &Path,
     variant_dir: &Path,
-    noarch_python: bool,
+    _noarch_python: bool,
     python_script_hint: bool,
     r_script_hint: bool,
     rust_script_hint: bool,
@@ -7565,11 +7742,17 @@ mkdir -p %{bioconda_source_subdir}\n"
     let patch_apply_lines =
         render_patch_apply_lines(staged_patch_sources, "%{bioconda_source_subdir}");
     let changelog_date = rpm_changelog_date();
-    let build_arch_line = if noarch_python && !python_recipe {
-        "BuildArch:      noarch\n".to_string()
-    } else {
-        String::new()
-    };
+    let build_arch_line = render_payload_build_arch_line(
+        parsed,
+        &build_requires,
+        &python_requirements,
+        python_recipe,
+        r_runtime_required,
+        rust_runtime_required,
+        nim_runtime_required,
+        perl_recipe,
+        None,
+    );
     let perl_module_provides = if perl_recipe {
         perl_module_name_from_conda(&parsed.package_name)
             .map(|module| format!("Provides:       perl({module}) = %{{version}}-%{{release}}\n"))
@@ -11643,7 +11826,6 @@ Summary:        Phoreus Perl shared runtime prefix\n\
 License:        GPL-1.0-or-later OR Artistic-1.0-Perl\n\
 URL:            https://www.perl.org/\n\
 \n\
-BuildArch:      noarch\n\
 Requires:       phoreus\n\
 Requires:       perl\n\
 \n\
@@ -15365,6 +15547,7 @@ requirements:
         let spec = render_phoreus_perl_bootstrap_spec();
         assert!(spec.contains("Name:           phoreus-perl-5.32"));
         assert!(spec.contains("Version:        5.32"));
+        assert!(!spec.contains("BuildArch:      noarch"));
         assert!(spec.contains("Requires:       phoreus"));
         assert!(spec.contains("Requires:       perl"));
         assert!(spec.contains("%{phoreus_prefix}/lib/perl5"));
@@ -16977,6 +17160,8 @@ requirements:
         assert!(spec.contains("BuildRequires:  gcc"));
         assert!(spec.contains("BuildRequires:  gcc-c++"));
         assert!(spec.contains("BuildRequires:  make"));
+        assert!(!spec.contains("BuildArch:      noarch"));
+        assert!(spec.contains("noarch suppressed"));
     }
 
     #[test]
@@ -20073,6 +20258,82 @@ $R CMD INSTALL --build .
         assert!(spec.contains("export PHOREUS_PYTHON_PREFIX="));
         assert!(spec.contains("export PYTHON=\"$PHOREUS_PYTHON_PREFIX/bin/python"));
         assert!(!spec.contains("BuildRequires:  pybind11-global"));
+    }
+
+    #[test]
+    fn noarch_python_minimal_payload_requires_pure_python_surface() {
+        let pure = ParsedMeta {
+            package_name: "pure-python-tool".to_string(),
+            version: "1.0.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/pure-python-tool-1.0.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/pure-python-tool".to_string(),
+            license: "MIT".to_string(),
+            summary: "pure python tool".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            noarch_python: true,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["python".to_string(), "pip".to_string()],
+            run_dep_specs_raw: vec!["python".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::from(["python".to_string(), "pip".to_string()]),
+            run_deps: BTreeSet::from(["python".to_string()]),
+        };
+        let pure_plan =
+            interpret_build_script_minimal(pure.build_script.as_deref().unwrap_or_default());
+        let pure_spec = render_payload_spec_minimal(
+            "pure-python-tool",
+            &pure,
+            &pure_plan,
+            None,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            true,
+            true,
+            false,
+            false,
+        );
+        assert!(pure_spec.contains("BuildArch:      noarch"));
+
+        let native = ParsedMeta {
+            package_name: "native-python-tool".to_string(),
+            version: "1.0.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/native-python-tool-1.0.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/native-python-tool".to_string(),
+            license: "MIT".to_string(),
+            summary: "native python tool".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            noarch_python: true,
+            build_dep_specs_raw: vec!["c-compiler".to_string()],
+            host_dep_specs_raw: vec!["python".to_string(), "pip".to_string()],
+            run_dep_specs_raw: vec!["python".to_string()],
+            build_deps: BTreeSet::from(["c-compiler".to_string()]),
+            host_deps: BTreeSet::from(["python".to_string(), "pip".to_string()]),
+            run_deps: BTreeSet::from(["python".to_string()]),
+        };
+        let native_plan =
+            interpret_build_script_minimal(native.build_script.as_deref().unwrap_or_default());
+        let native_spec = render_payload_spec_minimal(
+            "native-python-tool",
+            &native,
+            &native_plan,
+            None,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            true,
+            true,
+            false,
+            false,
+        );
+        assert!(!native_spec.contains("BuildArch:      noarch"));
+        assert!(native_spec.contains("noarch suppressed"));
     }
 
     #[test]

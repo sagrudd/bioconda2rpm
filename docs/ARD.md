@@ -109,6 +109,7 @@ The product is structured as layered components:
 - SPDX normalization and policy evaluation.
 - Quarantines unresolved dependencies and non-compliant packages.
 - Applies architecture-compatibility classification from build logs (for example, `amd64_only`) and records this in failure reporting.
+- Applies conservative `BuildArch: noarch` gating: only pure Python `noarch: python` payloads may be noarch; compiled/runtime/bootstrap packages remain target-architecture-specific.
 
 8. Reporting Layer
 - Emits JSON, CSV, Markdown summaries plus console logs.

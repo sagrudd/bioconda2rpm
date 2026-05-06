@@ -133,6 +133,11 @@ FR-016 Architecture restriction capture policy
 - The classification shall be recorded in run reports and quarantine notes/reasons.
 - Architecture restrictions shall not block processing of other packages in the same run.
 
+FR-016a Noarch selection safety policy
+- Generated payload SPECs shall emit `BuildArch: noarch` only when the package is explicitly declared `noarch: python` and the rendered build surface is pure Python.
+- Any compiler, native build toolchain, non-Python runtime, target-architecture conditional, or vendored dependency that may resolve to platform-specific artifacts shall suppress `BuildArch: noarch`.
+- Bootstrap/runtime packages that install compiled or architecture-coupled runtime content, including `phoreus-perl-5.32`, shall not be marked `noarch`.
+
 FR-017 Build dependency tolerance and sourcing policy
 - During containerized SRPM->RPM rebuild, the system shall preflight `BuildRequires` and attempt resolution in this order:
   1. Already installed packages in the build container.
