@@ -5669,6 +5669,12 @@ fn harden_build_script_text(script: &str) -> String {
             rewritten_lines.push(rewritten);
         } else if let Some(rewritten) = rewrite_plain_rm_line_to_force(line) {
             rewritten_lines.push(rewritten);
+        } else if line.trim() == r#"WORK_DIR="$BASEDIR/$BUILD_DIR""# {
+            rewritten_lines.push(line.to_string());
+            rewritten_lines.push(
+                r#"if [[ ! -d "$BASEDIR/src" && -d "$BASEDIR/assembler/src" ]]; then BASEDIR="$BASEDIR/assembler"; fi"#
+                    .to_string(),
+            );
         } else {
             let rewritten = if pip_install_targets_local_source(line) {
                 ensure_local_pip_install_no_build_isolation(line.to_string())
@@ -6582,6 +6588,10 @@ fn package_requires_original_build_script(
         // TRF uses target_platform-conditioned linker flags and a multiline compile
         // command; the minimal line splitter must keep the recipe script intact.
         "trf" => true,
+        // HEURISTIC-TEMP(issue=bioconda2rpm#binspreader-spades-archive-layout):
+        // BinSPreader's recipe uses stateful shell variables and upstream's
+        // surviving SPAdes tag archive nests the CMake source under assembler/.
+        "binspreader" => true,
         _ => false,
     }
 }
@@ -13242,6 +13252,11 @@ if [[ \"$source0_url\" =~ ^https?://(www\\.)?clustal\\.org/omega/(clustal-omega-
   source_candidates+=(\"https://github.com/GSLBiotech/clustal-omega/archive/refs/tags/${{clustalo_version}}.tar.gz\")\n\
   source_candidates+=(\"https://github.com/GSLBiotech/clustal-omega/archive/${{BASH_REMATCH[2]}}.tar.gz\")\n\
 fi\n\
+# BinSPreader's old cab.spbu.ru host no longer resolves; the matching source\n\
+# remains available as the SPAdes binspreader-recombseq tag archive.\n\
+if [[ \"$source0_url\" =~ ^https?://cab\\.spbu\\.ru/files/binspreader/BinSPreader-([0-9][0-9A-Za-z\\._-]*)-dev\\.tar\\.gz$ ]]; then\n\
+  source_candidates+=(\"https://github.com/ablab/spades/archive/refs/tags/binspreader-recombseq.tar.gz\")\n\
+fi\n\
 {source_validation}\
 spectool_ok=0\n\
 if [[ -z \"$source0_url\" ]]; then\n\
@@ -19541,6 +19556,16 @@ requirements:
     }
 
     #[test]
+    fn harden_build_script_supports_nested_spades_source_layouts() {
+        let hardened = harden_build_script_text(
+            "BASEDIR=\"$(pwd)\"\nBUILD_DIR=build_spades\nWORK_DIR=\"$BASEDIR/$BUILD_DIR\"\n",
+        );
+        assert!(hardened.contains(
+            r#"if [[ ! -d "$BASEDIR/src" && -d "$BASEDIR/assembler/src" ]]; then BASEDIR="$BASEDIR/assembler"; fi"#
+        ));
+    }
+
+    #[test]
     fn harden_build_script_adds_no_build_isolation_for_local_pip_install() {
         let raw = "$PYTHON -m pip install . --no-deps --ignore-installed -vv\n";
         let hardened = harden_build_script_text(raw);
@@ -20229,6 +20254,7 @@ requirements:
         assert!(SOURCE.contains("filepath|filename|file|path"));
         assert!(SOURCE.contains(r#"candidate_file=$(source_url_filename \"$candidate\")"#));
         assert!(SOURCE.contains("if ! is_remote_source \\\"$candidate\\\"; then"));
+        assert!(SOURCE.contains("binspreader-recombseq.tar.gz"));
         assert!(
             source_archive_kind(
                 "https://search.maven.org/remotecontent?filepath=x/y/tool-1.0.tar.gz"
