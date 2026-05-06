@@ -177,7 +177,7 @@ FR-021b Source unavailability policy
 - If a Bioconda recipe's declared upstream source cannot be fetched or validated, the system shall classify the package failure as `source_unavailable` and quarantine it.
 - The system shall not substitute a Bioconda, conda-forge, or previously built binary package artifact for a missing upstream source archive, because that changes provenance from source build to binary repack.
 - Source-equivalent fallbacks are permitted only when they are deterministic upstream or archival source artifacts that preserve the package source tree required by the recipe.
-- The system shall maintain a repository-root `blacklist.txt` CSV for known unavailable upstream sources. Each entry shall include package name, problem URL, and justification, and matching packages shall be quarantined before source fetch/build work begins.
+- The system shall maintain a repository-root `blacklist.txt` CSV for known unavailable upstream sources and recipe-declared build skips. Each entry shall include package name, problem URL or recipe URI, and justification, and matching packages shall be quarantined before source fetch/build work begins.
 - Source-unavailability failures shall remain visible in JSON reports, catalogue failure state, and `bioconda2rpm failures` output until a source-equivalent fallback or recipe update is added.
 
 FR-021a Legacy build-helper bootstrap and transitive-source compatibility policy

@@ -3235,10 +3235,22 @@ fn build_blacklist_entry(package_name: &str) -> Option<&'static BuildBlacklistEn
 }
 
 fn build_blacklist_reason(entry: &BuildBlacklistEntry) -> String {
+    let kind = build_blacklist_kind(entry);
     format!(
-        "blacklisted source_unavailable: package={} problem_url={} justification={}",
+        "blacklisted {kind}: package={} problem_url={} justification={}",
         entry.package, entry.problem_url, entry.justification
     )
+}
+
+fn build_blacklist_kind(entry: &BuildBlacklistEntry) -> &'static str {
+    if entry.problem_url.starts_with("recipe://")
+        || entry.justification.contains("build.skip=true")
+        || entry.justification.contains("build.skip")
+    {
+        "build_skip"
+    } else {
+        "source_unavailable"
+    }
 }
 
 const MAX_SOFTWARE_LIST_ENTRIES: usize = 100_000;
@@ -3373,27 +3385,6 @@ fn process_tool(
                 };
             }
         };
-    if parsed_result.build_skip {
-        clear_quarantine_note(bad_spec_dir, &software_slug);
-        log_progress(format!(
-            "phase=package status=skipped package={} version={} reason=build-skip-selector",
-            tool.software, parsed_result.parsed.version
-        ));
-        return ReportEntry {
-            software: tool.software.clone(),
-            priority: tool.priority,
-            status: "skipped".to_string(),
-            reason: "recipe declares build.skip=true for this render context".to_string(),
-            overlap_recipe: resolved.recipe_name,
-            overlap_reason: resolved.overlap_reason,
-            variant_dir: resolved.variant_dir.display().to_string(),
-            package_name: parsed_result.parsed.package_name,
-            version: parsed_result.parsed.version,
-            payload_spec_path: String::new(),
-            meta_spec_path: String::new(),
-            staged_build_sh: String::new(),
-        };
-    }
     let mut parsed = parsed_result.parsed;
 
     if let Some(blacklist_entry) = build_blacklist_entry(&software_slug)
@@ -3402,14 +3393,39 @@ fn process_tool(
         let reason = build_blacklist_reason(blacklist_entry);
         quarantine_note(bad_spec_dir, &software_slug, &reason);
         log_progress(format!(
-            "phase=package status=quarantined package={} version={} reason=blacklisted-source-unavailable url={}",
-            tool.software, parsed.version, blacklist_entry.problem_url
+            "phase=package status=quarantined package={} version={} reason=blacklisted-{} url={}",
+            tool.software,
+            parsed.version,
+            build_blacklist_kind(blacklist_entry),
+            blacklist_entry.problem_url
         ));
         return ReportEntry {
             software: tool.software.clone(),
             priority: tool.priority,
             status: "quarantined".to_string(),
             reason,
+            overlap_recipe: resolved.recipe_name,
+            overlap_reason: resolved.overlap_reason,
+            variant_dir: resolved.variant_dir.display().to_string(),
+            package_name: parsed.package_name,
+            version: parsed.version,
+            payload_spec_path: String::new(),
+            meta_spec_path: String::new(),
+            staged_build_sh: String::new(),
+        };
+    }
+
+    if parsed_result.build_skip {
+        clear_quarantine_note(bad_spec_dir, &software_slug);
+        log_progress(format!(
+            "phase=package status=skipped package={} version={} reason=build-skip-selector",
+            tool.software, parsed.version
+        ));
+        return ReportEntry {
+            software: tool.software.clone(),
+            priority: tool.priority,
+            status: "skipped".to_string(),
+            reason: "recipe declares build.skip=true for this render context".to_string(),
             overlap_recipe: resolved.recipe_name,
             overlap_reason: resolved.overlap_reason,
             variant_dir: resolved.variant_dir.display().to_string(),
@@ -4756,23 +4772,37 @@ fn parse_single_version_requirement(raw: &str) -> Option<VersionRequirement> {
         ("=", VersionRequirementOp::Eq),
     ] {
         if let Some(version) = cleaned.strip_prefix(prefix) {
-            let version = version.trim();
-            if version.is_empty() || version == "*" {
-                return None;
-            }
+            let version = normalize_conda_requirement_version(version)?;
             return Some(VersionRequirement {
                 op,
-                version: version.to_string(),
+                version,
             });
         }
     }
     if cleaned.chars().any(|ch| ch.is_ascii_digit()) {
+        let version = normalize_conda_requirement_version(cleaned)?;
         return Some(VersionRequirement {
             op: VersionRequirementOp::Eq,
-            version: cleaned.to_string(),
+            version,
         });
     }
     None
+}
+
+fn normalize_conda_requirement_version(raw: &str) -> Option<String> {
+    let version = raw
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .split_once('=')
+        .map(|(version, _)| version)
+        .unwrap_or(raw)
+        .trim();
+    if version.is_empty() || version == "*" || version.starts_with('*') || version.contains('|') {
+        None
+    } else {
+        Some(version.to_string())
+    }
 }
 
 fn precompiled_binary_override(
@@ -6280,6 +6310,7 @@ fn interpret_build_script_minimal(script: &str) -> InterpretedBuildPlan {
     let mut build_commands = Vec::new();
     let mut install_commands = Vec::new();
     let mut control_flow_depth = 0usize;
+    let mut prefix_install_vars = BTreeSet::new();
 
     for logical_line in collect_logical_script_lines(script) {
         let trimmed = logical_line.trim();
@@ -6309,7 +6340,24 @@ fn interpret_build_script_minimal(script: &str) -> InterpretedBuildPlan {
             continue;
         };
 
-        if line_is_install_command(&line) {
+        if let Some((name, value)) = shell_assignment_name_and_rhs(&line) {
+            if line_targets_prefix_install(value)
+                || line_mentions_prefix_install_alias(value, &prefix_install_vars)
+            {
+                prefix_install_vars.insert(name.to_string());
+            }
+            build_commands.push(line.clone());
+            install_commands.push(line);
+            continue;
+        }
+        if line.starts_with("cd ") {
+            build_commands.push(line.clone());
+            install_commands.push(line);
+            continue;
+        }
+        if line_is_install_command(&line)
+            || line_mentions_prefix_install_alias(&line, &prefix_install_vars)
+        {
             install_commands.push(line);
             continue;
         }
@@ -6319,11 +6367,6 @@ fn interpret_build_script_minimal(script: &str) -> InterpretedBuildPlan {
         }
         if line_is_setup_command(&line) {
             build_commands.push(line);
-            continue;
-        }
-        if is_shell_assignment_line(&line) || line.starts_with("cd ") {
-            build_commands.push(line.clone());
-            install_commands.push(line);
             continue;
         }
         // Unknown fragments are dropped in minimal mode to avoid malformed shell.
@@ -6491,21 +6534,18 @@ fn is_shell_control_flow_line(line: &str) -> bool {
         || line.ends_with(')')
 }
 
-fn is_shell_assignment_line(line: &str) -> bool {
-    if let Some(rest) = line.strip_prefix("export ") {
-        return rest.contains('=');
-    }
-    if line.starts_with("unset ") {
-        return true;
-    }
-    let Some(eq_idx) = line.find('=') else {
-        return false;
-    };
-    let left = &line[..eq_idx];
+fn shell_assignment_name_and_rhs(line: &str) -> Option<(&str, &str)> {
+    let candidate = line.strip_prefix("export ").unwrap_or(line).trim();
+    let (left, right) = candidate.split_once('=')?;
+    let left = left.trim();
     if left.is_empty() || left.contains(char::is_whitespace) {
-        return false;
+        return None;
     }
-    left.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    if left.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        Some((left, right.trim()))
+    } else {
+        None
+    }
 }
 
 fn line_targets_prefix_install(line: &str) -> bool {
@@ -6513,6 +6553,12 @@ fn line_targets_prefix_install(line: &str) -> bool {
         || line.contains("${PREFIX}")
         || line.contains("%{buildroot}")
         || line.contains("%{phoreus_prefix}")
+}
+
+fn line_mentions_prefix_install_alias(line: &str, prefix_install_vars: &BTreeSet<String>) -> bool {
+    prefix_install_vars.iter().any(|var| {
+        line.contains(&format!("${var}")) || line.contains(&format!("${{{var}}}"))
+    })
 }
 
 fn line_is_install_command(line: &str) -> bool {
@@ -6632,7 +6678,21 @@ fn command_mentions_compiler_env(commands: &[String]) -> bool {
 }
 
 fn command_mentions_symlink_install(commands: &[String]) -> bool {
-    command_mentions_any(commands, &["ln -s", "ln -sn", "ln -sf"])
+    commands.iter().any(|line| ln_command_creates_symlink(line))
+}
+
+fn ln_command_creates_symlink(line: &str) -> bool {
+    let Some(words) = split_shell_words_for_rewrite(line.trim()) else {
+        return line.to_ascii_lowercase().contains("ln -s");
+    };
+    if words.first().map(String::as_str) != Some("ln") {
+        return false;
+    }
+    words
+        .iter()
+        .skip(1)
+        .take_while(|word| word.starts_with('-') && word.as_str() != "-")
+        .any(|word| word.contains('s'))
 }
 
 fn command_mentions_buildroot_text_risk(commands: &[String]) -> bool {
@@ -6775,14 +6835,15 @@ fn compute_minimal_build_scope(
                 "capnp",
             ],
         );
-    let buildroot_text_scrub_required =
-        command_mentions_buildroot_text_risk(&interpreted_build_plan.install_commands)
-            || (command_configures_install_prefix_from_prefix(
-                &interpreted_build_plan.build_commands,
-            ) && command_installs_configured_prefix(&interpreted_build_plan.install_commands))
-            || native_vendored_prefix_required;
     let recipe_build_sh_required =
         package_requires_original_build_script(software_slug, parsed, interpreted_build_plan);
+    let buildroot_text_scrub_required =
+        (!recipe_build_sh_required
+            && (command_mentions_buildroot_text_risk(&interpreted_build_plan.install_commands)
+                || (command_configures_install_prefix_from_prefix(
+                    &interpreted_build_plan.build_commands,
+                ) && command_installs_configured_prefix(&interpreted_build_plan.install_commands))))
+            || native_vendored_prefix_required;
     let blast_compat_required = package_requires_blast_compat(software_slug);
     let arch_env_required = command_mentions_arch_env(&all_commands)
         || (recipe_build_sh_required
@@ -6805,9 +6866,8 @@ fn compute_minimal_build_scope(
         conda_pkg_vars_required: command_mentions_conda_pkg_vars(&all_commands),
         arch_env_required,
         parallel_env_required,
-        symlink_normalization_required: command_mentions_symlink_install(
-            &interpreted_build_plan.install_commands,
-        ),
+        symlink_normalization_required: !recipe_build_sh_required
+            && command_mentions_symlink_install(&interpreted_build_plan.install_commands),
         buildroot_text_scrub_required,
         sparsehash_configure_fallback_required,
         recipe_build_sh_required,
@@ -11649,7 +11709,16 @@ fn normalize_name(name: &str) -> String {
 }
 
 fn normalize_dependency_token(dep: &str) -> String {
-    dep.trim().replace('_', "-").to_lowercase()
+    let trimmed = dep.trim();
+    let without_channel = if trimmed.contains('(') {
+        trimmed
+    } else {
+        trimmed
+            .rsplit_once("::")
+            .map(|(_, name)| name)
+            .unwrap_or(trimmed)
+    };
+    without_channel.replace('_', "-").to_lowercase()
 }
 
 fn normalize_identifier_key(name: &str) -> String {
@@ -14768,6 +14837,33 @@ mod tests {
     }
 
     #[test]
+    fn dependency_spec_parser_drops_conda_build_string_constraints() {
+        let lapacke = parse_dependency_spec("liblapacke >=3.8.0=8_*_netlib").unwrap();
+        assert_eq!(lapacke.name, "liblapacke");
+        assert_eq!(
+            lapacke.constraints,
+            vec![VersionRequirement {
+                op: VersionRequirementOp::Ge,
+                version: "3.8.0".to_string(),
+            }]
+        );
+
+        let hdf5 = parse_dependency_spec("hdf5 >=*=nompi").unwrap();
+        assert_eq!(hdf5.name, "hdf5");
+        assert!(hdf5.constraints.is_empty());
+
+        let pytorch = parse_dependency_spec("conda-forge::pytorch >=2.1.0=*mkl*100").unwrap();
+        assert_eq!(pytorch.name, "pytorch");
+        assert_eq!(
+            pytorch.constraints,
+            vec![VersionRequirement {
+                op: VersionRequirementOp::Ge,
+                version: "2.1.0".to_string(),
+            }]
+        );
+    }
+
+    #[test]
     fn versioned_rpm_requirements_preserve_bioconda_module_versions() {
         let raw = vec![
             "ncbi-vdb >=3.2.1,<4.0a0".to_string(),
@@ -14784,6 +14880,24 @@ mod tests {
             format_dep_lines("BuildRequires", &requirements),
             "BuildRequires:  ncbi-vdb < 4.0a0\nBuildRequires:  ncbi-vdb >= 3.2.1\nBuildRequires:  phoreus-samtools-0.1.19"
         );
+    }
+
+    #[test]
+    fn versioned_rpm_requirements_do_not_emit_conda_build_strings() {
+        let raw = vec![
+            "liblapacke >=3.8.0=8_*_netlib".to_string(),
+            "hdf5 >=*=nompi".to_string(),
+            "openblas >=*=*openmp".to_string(),
+            "conda-forge::pytorch >=2.1.0=*mkl*100".to_string(),
+        ];
+        let requirements = versioned_rpm_requirements_from_specs(&raw, RpmDependencyKind::Runtime);
+        let rendered = format_dep_lines("Requires", &requirements);
+
+        assert!(!rendered.contains('*'));
+        assert!(!rendered.contains("=nompi"));
+        assert!(!rendered.contains("=cpu"));
+        assert!(rendered.contains("Requires:  liblapacke >= 3.8.0"));
+        assert!(rendered.contains("Requires:  pytorch >= 2.1.0"));
     }
 
     #[test]
@@ -19829,6 +19943,44 @@ requirements:
     }
 
     #[test]
+    fn minimal_interpreter_keeps_prefix_alias_installs_in_install_phase() {
+        let script = r#"
+PACKAGE_HOME="${PREFIX}/share/${PKG_NAME}-${PKG_VERSION}-${PKG_BUILDNUM}"
+mkdir -p "${PACKAGE_HOME}"
+cp -f comparem2 LICENSE "${PACKAGE_HOME}"
+BIN=${PREFIX}/bin
+cp dupsifter ${BIN}
+"#;
+        let plan = interpret_build_script_minimal(script);
+
+        assert!(plan
+            .install_commands
+            .iter()
+            .any(|line| line.contains("cp -f comparem2 LICENSE")));
+        assert!(plan
+            .install_commands
+            .iter()
+            .any(|line| line.contains("cp dupsifter ${BIN}")));
+        assert!(!plan
+            .build_commands
+            .iter()
+            .any(|line| line.contains("cp -f comparem2 LICENSE")));
+        assert!(!plan
+            .build_commands
+            .iter()
+            .any(|line| line.contains("cp dupsifter ${BIN}")));
+    }
+
+    #[test]
+    fn symlink_detection_handles_permuted_ln_options() {
+        assert!(command_mentions_symlink_install(&[
+            "ln -fs $GORPIPEDIR/bin/gorpipe $PREFIX/bin/gorpipe".to_string()
+        ]));
+        assert!(command_mentions_symlink_install(&["ln -snf target link".to_string()]));
+        assert!(!command_mentions_symlink_install(&["ln target link".to_string()]));
+    }
+
+    #[test]
     fn harden_build_script_supports_nested_spades_source_layouts() {
         let hardened = harden_build_script_text(
             "BASEDIR=\"$(pwd)\"\nBUILD_DIR=build_spades\nWORK_DIR=\"$BASEDIR/$BUILD_DIR\"\n",
@@ -19946,6 +20098,24 @@ error: build stopped\n";
         let bax2bam = build_blacklist_entry("bax2bam").expect("bax2bam blacklist entry");
         assert!(bax2bam.justification.contains("binary repacks"));
         assert!(build_blacklist_reason(bax2bam).contains("source_unavailable"));
+
+        let skipped = build_blacklist_entry("2pg_cartesian").expect("2pg_cartesian blacklist entry");
+        assert!(skipped.justification.contains("build.skip=true"));
+
+        let blasr = build_blacklist_entry("blasr").expect("blasr blacklist entry");
+        assert!(blasr.justification.contains("source fetch/archive validation"));
+    }
+
+    #[test]
+    fn build_blacklist_is_checked_before_build_skip_return() {
+        let source = include_str!("priority_specs.rs");
+        let blacklist_pos = source
+            .find("build_blacklist_entry(&software_slug)")
+            .expect("blacklist lookup in process_tool");
+        let skip_pos = source
+            .find("if parsed_result.build_skip")
+            .expect("build skip return in process_tool");
+        assert!(blacklist_pos < skip_pos);
     }
 
     #[test]
