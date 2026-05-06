@@ -136,6 +136,7 @@ struct BuildBlacklistEntry {
 struct InterpretedBuildPlan {
     build_commands: Vec<String>,
     install_commands: Vec<String>,
+    prefix_install_vars: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -4790,18 +4791,26 @@ fn parse_single_version_requirement(raw: &str) -> Option<VersionRequirement> {
 }
 
 fn normalize_conda_requirement_version(raw: &str) -> Option<String> {
-    let version = raw
+    let mut version = raw
         .trim()
         .trim_matches('"')
         .trim_matches('\'')
         .split_once('=')
         .map(|(version, _)| version)
         .unwrap_or(raw)
-        .trim();
+        .trim()
+        .to_string();
+    if let Some((base, _)) = version.split_once('*') {
+        version = base.trim_end_matches('.').to_string();
+    }
+    version = version
+        .trim_end_matches(['.', '-', '_'])
+        .trim()
+        .to_string();
     if version.is_empty() || version == "*" || version.starts_with('*') || version.contains('|') {
         None
     } else {
-        Some(version.to_string())
+        Some(version)
     }
 }
 
@@ -6375,6 +6384,7 @@ fn interpret_build_script_minimal(script: &str) -> InterpretedBuildPlan {
     InterpretedBuildPlan {
         build_commands,
         install_commands,
+        prefix_install_vars,
     }
 }
 
@@ -6695,19 +6705,31 @@ fn ln_command_creates_symlink(line: &str) -> bool {
         .any(|word| word.contains('s'))
 }
 
-fn command_mentions_buildroot_text_risk(commands: &[String]) -> bool {
+fn command_mentions_buildroot_text_risk_with_aliases(
+    commands: &[String],
+    prefix_install_vars: &BTreeSet<String>,
+) -> bool {
     commands.iter().any(|line| {
-        (line.contains("$PREFIX")
-            || line.contains("${PREFIX}")
-            || line.contains("%{buildroot}")
-            || line.contains("%{phoreus_prefix}"))
-            && command_mentions_any(
-                std::slice::from_ref(line),
-                &[
-                    "sed ", "printf ", "echo ", "cat ", "tee ", "install ", "cp ",
-                ],
-            )
+        let mentions_prefix = command_line_mentions_prefix_like_path(line)
+            || line_mentions_prefix_install_alias(line, prefix_install_vars);
+        mentions_prefix && command_line_writes_text_or_metadata(line)
     })
+}
+
+fn command_line_mentions_prefix_like_path(line: &str) -> bool {
+    line.contains("$PREFIX")
+        || line.contains("${PREFIX}")
+        || line.contains("%{buildroot}")
+        || line.contains("%{phoreus_prefix}")
+}
+
+fn command_line_writes_text_or_metadata(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "sed ", "printf ", "echo ", "cat ", "tee ", "install ", "cp ",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 fn command_configures_install_prefix_from_prefix(commands: &[String]) -> bool {
@@ -6854,7 +6876,10 @@ fn compute_minimal_build_scope(
         package_requires_original_build_script(software_slug, parsed, interpreted_build_plan);
     let buildroot_text_scrub_required =
         (!recipe_build_sh_required
-            && (command_mentions_buildroot_text_risk(&interpreted_build_plan.install_commands)
+            && (command_mentions_buildroot_text_risk_with_aliases(
+                &interpreted_build_plan.install_commands,
+                &interpreted_build_plan.prefix_install_vars,
+            )
                 || (command_configures_install_prefix_from_prefix(
                     &interpreted_build_plan.build_commands,
                 ) && command_installs_configured_prefix(&interpreted_build_plan.install_commands))))
@@ -7246,6 +7271,20 @@ sed -E -i 's|cp \"\\$RESULT_PATH/lib/\"\\* \"\\$LIB_INSTALL_DIR\"|for blast_lib_
         .to_string()
 }
 
+fn render_gsl_prefix_shim_block(parsed: &ParsedMeta) -> &'static str {
+    if !recipe_dep_mentions(parsed, "gsl") {
+        return "";
+    }
+    "if command -v gsl-config >/dev/null 2>&1; then\n\
+  mkdir -p \"$PREFIX/bin\"\n\
+  ln -snf \"$(command -v gsl-config)\" \"$PREFIX/bin/gsl-config\" || true\n\
+fi\n\
+export CPPFLAGS=\"-I$PREFIX/include -I/usr/include ${CPPFLAGS:-}\"\n\
+export CFLAGS=\"-I$PREFIX/include -I/usr/include ${CFLAGS:-}\"\n\
+export CXXFLAGS=\"-I$PREFIX/include -I/usr/include ${CXXFLAGS:-}\"\n\
+export LDFLAGS=\"-L$PREFIX/lib -L$PREFIX/lib64 -L/usr/lib64 -L/usr/lib ${LDFLAGS:-}\"\n"
+}
+
 fn render_payload_spec_minimal(
     software_slug: &str,
     parsed: &ParsedMeta,
@@ -7518,6 +7557,7 @@ chmod 0755 buildsrc/build.sh\n"
         &parsed.build_number,
         &scope,
     );
+    let gsl_prefix_shim_block = render_gsl_prefix_shim_block(parsed);
     let build_commands = if scope.recipe_build_sh_required {
         "echo \"bioconda2rpm minimal mode: recipe build.sh retained for install phase\"\n"
             .to_string()
@@ -7675,6 +7715,7 @@ export SRC_DIR=$(pwd)/%{{bioconda_source_relsubdir}}\n\
 export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
 {parallel_env_block}\
 {runtime_env_block}\
+{gsl_prefix_shim_block}\
 {core_c_dep_bootstrap}\
 {build_commands}\
 \n\
@@ -7687,6 +7728,7 @@ export SRC_DIR=$(pwd)/%{{bioconda_source_relsubdir}}\n\
 export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
 {parallel_env_block}\
 {runtime_env_block}\
+{gsl_prefix_shim_block}\
 {blast_compat_block}\
 {core_c_dep_bootstrap}\
 {install_commands}\
@@ -7734,6 +7776,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         arch_env_block = arch_env_block,
         parallel_env_block = parallel_env_block,
         runtime_env_block = runtime_env_block,
+        gsl_prefix_shim_block = gsl_prefix_shim_block,
         core_c_dep_bootstrap = core_c_dep_bootstrap,
         blast_compat_block = blast_compat_block,
         build_commands = build_commands,
@@ -9195,6 +9238,10 @@ EOF\n\
     done\n\
     if command -v dnf >/dev/null 2>&1; then dnf -y install gsl >/dev/null 2>&1 || true; fi\n\
     if command -v microdnf >/dev/null 2>&1; then microdnf -y install gsl >/dev/null 2>&1 || true; fi\n\
+    if command -v gsl-config >/dev/null 2>&1; then\n\
+      mkdir -p \"$PREFIX/bin\"\n\
+      ln -snf \"$(command -v gsl-config)\" \"$PREFIX/bin/gsl-config\" || true\n\
+    fi\n\
     if [[ -d /usr/lib64 ]]; then export LD_LIBRARY_PATH=\"/usr/lib64${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"; fi\n\
     if ! perl -MBio::SeqIO -e1 >/dev/null 2>&1; then\n\
       export PERL5LIB=\"$PREFIX/lib/perl5:$PREFIX/lib64/perl5${{PERL5LIB:+:$PERL5LIB}}\"\n\
@@ -14905,6 +14952,8 @@ mod tests {
             "hdf5 >=*=nompi".to_string(),
             "openblas >=*=*openmp".to_string(),
             "conda-forge::pytorch >=2.1.0=*mkl*100".to_string(),
+            "intervaltree >=3.0.*".to_string(),
+            "pytorch >=2.* cpu_*".to_string(),
         ];
         let requirements = versioned_rpm_requirements_from_specs(&raw, RpmDependencyKind::Runtime);
         let rendered = format_dep_lines("Requires", &requirements);
@@ -14914,6 +14963,8 @@ mod tests {
         assert!(!rendered.contains("=cpu"));
         assert!(rendered.contains("Requires:  liblapacke >= 3.8.0"));
         assert!(rendered.contains("Requires:  pytorch >= 2.1.0"));
+        assert!(rendered.contains("Requires:  intervaltree >= 3.0"));
+        assert!(rendered.contains("Requires:  pytorch >= 2"));
     }
 
     #[test]
@@ -21091,6 +21142,7 @@ $R CMD INSTALL --build .
         let plan = InterpretedBuildPlan {
             build_commands: Vec::new(),
             install_commands: Vec::new(),
+            prefix_install_vars: BTreeSet::new(),
         };
         let spec = render_payload_spec_minimal(
             "example-tool",
@@ -21754,6 +21806,95 @@ install -v -m 755 build/trf "${PREFIX}/bin"
         assert!(spec.contains(
             "done < <(grep -RIlZ -- \"$buildroot_root\" %{buildroot}%{phoreus_prefix} 2>/dev/null || true)"
         ));
+    }
+
+    #[test]
+    fn minimal_payload_spec_scrubs_prefix_alias_wrapper_text() {
+        let parsed = ParsedMeta {
+            package_name: "jannovar-cli".to_string(),
+            version: "0.36".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/jannovar.zip".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/jannovar".to_string(),
+            license: "BSD-2-Clause".to_string(),
+            summary: "jannovar".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "PACKAGE_HOME=$PREFIX/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM\nDEST_FILE=$PACKAGE_HOME/jannovar\necho \"PACKAGE_HOME=$PACKAGE_HOME\" >> $DEST_FILE\nln -s $DEST_FILE $PREFIX/bin\n"
+                    .to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "jannovar-cli",
+            &parsed,
+            &plan,
+            None,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("buildroot-text-scrub"));
+        assert!(spec.contains("PACKAGE_HOME=$PREFIX/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM || true"));
+        assert!(spec.contains("sed -i \"s|$buildroot_prefix|$final_prefix|g\""));
+    }
+
+    #[test]
+    fn gsl_dependency_exposes_gsl_config_under_prefix() {
+        let parsed = ParsedMeta {
+            package_name: "fineradstructure".to_string(),
+            version: "0.3.2r109".to_string(),
+            build_number: "7".to_string(),
+            source_url: "https://example.invalid/fineradstructure.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/fineradstructure".to_string(),
+            license: "CC-BY-NC-ND-3.0".to_string(),
+            summary: "fineRADstructure".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "./configure --prefix=$PREFIX --with-gsl-prefix=$PREFIX\nmake\nmake install\n"
+                    .to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["make".to_string(), "c-compiler".to_string()],
+            host_dep_specs_raw: vec!["gsl".to_string()],
+            run_dep_specs_raw: vec!["gsl".to_string()],
+            build_deps: BTreeSet::from(["make".to_string(), "c-compiler".to_string()]),
+            host_deps: BTreeSet::from(["gsl".to_string()]),
+            run_deps: BTreeSet::from(["gsl".to_string()]),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "fineradstructure",
+            &parsed,
+            &plan,
+            None,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("BuildRequires:  gsl-devel"));
+        assert!(spec.contains("ln -snf \"$(command -v gsl-config)\" \"$PREFIX/bin/gsl-config\""));
     }
 
     #[test]
