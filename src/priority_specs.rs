@@ -13238,6 +13238,9 @@ if [[ -z \"${{companion_srpm_path}}\" ]]; then\n\
 fi\n\
 mapfile -t companion_build_requires < <(rpmspec -q --buildrequires --define \"_topdir $companion_build_root\" --define \"_sourcedir $companion_sourcedir\" --define \"_smp_build_ncpus ${{BIOCONDA2RPM_CPU_COUNT}}\" \"$companion_spec\" 2>/dev/null | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
 for dep in \"${{companion_build_requires[@]:-}}\"; do\n\
+  if [[ -z \"$dep\" ]]; then\n\
+    continue\n\
+  fi\n\
   if rpm -q --whatprovides \"$dep\" >/dev/null 2>&1; then\n\
     emit_depgraph \"$dep\" 'resolved' 'installed' \"$(rpm -q --whatprovides \"$dep\" | head -n 1 || true)\" 'companion_already_installed'\n\
   elif pm_install \"$dep\" >>\"$dep_log\" 2>&1; then\n\
@@ -13827,6 +13830,9 @@ install_local_with_hydration() {{\n\
 mapfile -t build_requires < <(rpmspec -q --buildrequires --define \"_topdir $build_root\" --define \"_sourcedir $build_sourcedir\" --define \"_smp_build_ncpus ${{BIOCONDA2RPM_CPU_COUNT}}\" '{spec}' | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
 dep_log=\"/tmp/bioconda2rpm-dep-{label}.log\"\n\
 for dep in \"${{build_requires[@]}}\"; do\n\
+  if [[ -z \"$dep\" ]]; then\n\
+    continue\n\
+  fi\n\
   if rpm -q --whatprovides \"$dep\" >/dev/null 2>&1; then\n\
     provider=$(rpm -q --whatprovides \"$dep\" | head -n 1 || true)\n\
     emit_depgraph \"$dep\" 'resolved' 'installed' \"$provider\" 'already_installed'\n\
@@ -18480,6 +18486,8 @@ requirements:
         assert!(SOURCE.contains("build_spec_pair_chain_in_container("));
         assert!(SOURCE.contains("BIOCONDA2RPM_COMPANION_SPEC_START"));
         assert!(SOURCE.contains("companion_build_root=\\\"$build_root-default\\\""));
+        assert!(SOURCE.contains("companion_build_requires"));
+        assert!(SOURCE.contains("if [[ -z \\\"$dep\\\" ]]; then"));
         assert!(SOURCE.contains("payload/default spec build failed in container"));
     }
 
