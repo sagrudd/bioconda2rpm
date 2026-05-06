@@ -6009,6 +6009,13 @@ fn command_mentions_arch_env(commands: &[String]) -> bool {
     })
 }
 
+fn build_script_mentions_arch_env(script: &str) -> bool {
+    script.contains("target_platform")
+        || script.contains("$target_platform")
+        || script.contains("${target_platform}")
+        || script.contains("BIOCONDA_TARGET_ARCH")
+}
+
 fn command_mentions_parallel_env(commands: &[String]) -> bool {
     command_mentions_any(
         commands,
@@ -6104,6 +6111,14 @@ fn package_requires_original_build_script(
         // ODGI's build.sh carries architecture-conditioned source rewrites for
         // upstream CPU target attributes before CMake configuration.
         "odgi" => true,
+        // HEURISTIC-TEMP(issue=bioconda2rpm#krakenuniq-stateful-build-script-scope):
+        // KrakenUniq's install script compiles and installs libexec payloads in one
+        // pass; splitting the recipe leaves %install editing files deleted with BUILDROOT.
+        "krakenuniq" => true,
+        // HEURISTIC-TEMP(issue=bioconda2rpm#trf-platform-conditional-build-script):
+        // TRF uses target_platform-conditioned linker flags and a multiline compile
+        // command; the minimal line splitter must keep the recipe script intact.
+        "trf" => true,
         _ => false,
     }
 }
@@ -6159,6 +6174,12 @@ fn compute_minimal_build_scope(
     let recipe_build_sh_required =
         package_requires_original_build_script(software_slug, parsed, interpreted_build_plan);
     let blast_compat_required = package_requires_blast_compat(software_slug);
+    let arch_env_required = command_mentions_arch_env(&all_commands)
+        || (recipe_build_sh_required
+            && parsed
+                .build_script
+                .as_deref()
+                .is_some_and(build_script_mentions_arch_env));
 
     MinimalBuildScope {
         python_runtime_required,
@@ -6168,7 +6189,7 @@ fn compute_minimal_build_scope(
         perl_runtime_required,
         compiler_env_required,
         conda_pkg_vars_required: command_mentions_conda_pkg_vars(&all_commands),
-        arch_env_required: command_mentions_arch_env(&all_commands),
+        arch_env_required,
         parallel_env_required,
         symlink_normalization_required: command_mentions_symlink_install(
             &interpreted_build_plan.install_commands,
@@ -6454,6 +6475,13 @@ mkdir -p %{bioconda_source_subdir}\n"
     }
     if source_kind == SourceArchiveKind::Git {
         build_requires.insert("git".to_string());
+        build_requires.insert("curl".to_string());
+    }
+    // HEURISTIC-TEMP(issue=bioconda2rpm#vcf-validator-lzma-link-interface):
+    // vcf-validator's CMake link line uses -llzma although the Bioconda
+    // metadata omits xz/liblzma from host deps.
+    if software_slug == "vcf-validator" {
+        build_requires.insert("xz-devel".to_string());
     }
     if scope.python_runtime_required {
         build_requires.insert(python_runtime.package.to_string());
@@ -7023,6 +7051,7 @@ mkdir -p %{bioconda_source_subdir}\n"
     }
     if source_kind == SourceArchiveKind::Git {
         build_requires.insert("git".to_string());
+        build_requires.insert("curl".to_string());
     }
     if r_runtime_required {
         build_requires.insert(PHOREUS_R_PACKAGE.to_string());
@@ -9873,22 +9902,51 @@ cp -f %{SOURCE0} %{bioconda_source_subdir}/\n"
         SourceArchiveKind::Git => "rm -rf buildsrc\n\
 git_url=\"%{bioconda_source_git_url}\"\n\
 git_rev=\"%{bioconda_source_git_rev}\"\n\
-git clone --recursive \"$git_url\" buildsrc\n\
-cd buildsrc\n\
-if ! git checkout \"$git_rev\"; then\n\
-  git fetch --all --tags --force || true\n\
+export GIT_TERMINAL_PROMPT=0\n\
+if ! git clone --recursive \"$git_url\" buildsrc; then\n\
+  rm -rf buildsrc\n\
+  if [[ \"$git_url\" =~ ^https://github\\.com/([^/]+)/([^/.]+)(\\.git)?$ ]]; then\n\
+    github_owner=\"${BASH_REMATCH[1]}\"\n\
+    github_repo=\"${BASH_REMATCH[2]}\"\n\
+    github_archive=\"$(mktemp)\"\n\
+    github_downloaded=0\n\
+    for github_ref in \"$git_rev\" \"v%{upstream_version}\" \"%{upstream_version}\"; do\n\
+      [[ -n \"$github_ref\" ]] || continue\n\
+      github_url=\"https://codeload.github.com/${github_owner}/${github_repo}/tar.gz/${github_ref}\"\n\
+      if curl -L --fail --retry 5 --retry-delay 2 -o \"$github_archive\" \"$github_url\"; then\n\
+        github_downloaded=1\n\
+        break\n\
+      fi\n\
+    done\n\
+    if [[ \"$github_downloaded\" -ne 1 ]]; then\n\
+      echo \"bioconda2rpm: unable to clone $git_url or fetch GitHub archive for $git_rev\" >&2\n\
+      rm -f \"$github_archive\"\n\
+      exit 1\n\
+    fi\n\
+    mkdir -p buildsrc\n\
+    tar -xzf \"$github_archive\" -C buildsrc --strip-components=1\n\
+    rm -f \"$github_archive\"\n\
+  else\n\
+    echo \"bioconda2rpm: unable to clone git source $git_url\" >&2\n\
+    exit 1\n\
+  fi\n\
+else\n\
+  cd buildsrc\n\
   if ! git checkout \"$git_rev\"; then\n\
-    if git rev-parse -q --verify \"refs/tags/v%{upstream_version}\" >/dev/null 2>&1; then\n\
-      git checkout \"v%{upstream_version}\"\n\
-    elif git rev-parse -q --verify \"refs/tags/%{upstream_version}\" >/dev/null 2>&1; then\n\
-      git checkout \"%{upstream_version}\"\n\
-    else\n\
-      echo \"bioconda2rpm: warning: unable to checkout git rev $git_rev; continuing on cloned HEAD\" >&2\n\
+    git fetch --all --tags --force || true\n\
+    if ! git checkout \"$git_rev\"; then\n\
+      if git rev-parse -q --verify \"refs/tags/v%{upstream_version}\" >/dev/null 2>&1; then\n\
+        git checkout \"v%{upstream_version}\"\n\
+      elif git rev-parse -q --verify \"refs/tags/%{upstream_version}\" >/dev/null 2>&1; then\n\
+        git checkout \"%{upstream_version}\"\n\
+      else\n\
+        echo \"bioconda2rpm: warning: unable to checkout git rev $git_rev; continuing on cloned HEAD\" >&2\n\
+      fi\n\
     fi\n\
   fi\n\
-fi\n\
-git submodule update --init --recursive || true\n\
-cd ..\n"
+  git submodule update --init --recursive || true\n\
+  cd ..\n\
+fi\n"
             .to_string(),
     }
 }
@@ -17123,6 +17181,23 @@ requirements:
         assert!(spec.contains("ln -sf /usr/lib64/liblzma.so.5 /usr/lib64/liblzma.so"));
         assert!(spec.contains("-idirafter /usr/include"));
         assert!(spec.contains("find . -type f -name flags.make | while IFS= read -r fm; do"));
+
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let minimal_spec = render_payload_spec_minimal(
+            "vcf-validator",
+            &parsed,
+            &plan,
+            None,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(minimal_spec.contains("BuildRequires:  xz-devel"));
     }
 
     #[test]
@@ -18622,7 +18697,12 @@ fi
         );
         assert!(!spec.contains("Source0:"));
         assert!(spec.contains("BuildRequires:  git"));
+        assert!(spec.contains("BuildRequires:  curl"));
+        assert!(spec.contains("export GIT_TERMINAL_PROMPT=0"));
         assert!(spec.contains("git clone --recursive \"$git_url\" buildsrc"));
+        assert!(spec.contains(
+            "https://codeload.github.com/${github_owner}/${github_repo}/tar.gz/${github_ref}"
+        ));
     }
 
     #[test]
@@ -19792,6 +19872,124 @@ cp "$RESULT_PATH/lib/"* "$LIB_INSTALL_DIR"
         assert!(!spec.contains("if [[ \"%{tool}\" =="));
         assert!(!spec.contains("bootstrapping capnproto into $PREFIX"));
         assert!(!spec.contains("perl-xml-libxml"));
+    }
+
+    #[test]
+    fn minimal_payload_spec_krakenuniq_keeps_stateful_build_script() {
+        let build_script = r#"#!/bin/bash
+export CPLUS_INCLUDE_PATH=${CPLUS_INCLUDE_PATH}:${PREFIX}/include
+outdir=$PREFIX/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM
+mkdir -p "${outdir}/libexec" "$PREFIX/bin"
+sed -i.bak 's/CXX *=/CXX ?=/' src/Makefile
+./install_krakenuniq.sh "${outdir}/libexec"
+sed -i.bak 's#jellyfish-install/bin/jellyfish#jellyfish#g' "${outdir}/libexec/build_db.sh"
+ln -s "${outdir}/libexec/krakenuniq" "$PREFIX/bin/krakenuniq"
+"#;
+        let parsed = ParsedMeta {
+            package_name: "krakenuniq".to_string(),
+            version: "1.0.4".to_string(),
+            build_number: "4".to_string(),
+            source_url: "https://example.invalid/krakenuniq.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/krakenuniq".to_string(),
+            license: "GPL-3.0-only".to_string(),
+            summary: "krakenuniq".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(build_script.to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["make".to_string(), "cxx-compiler".to_string()],
+            host_dep_specs_raw: vec!["perl".to_string(), "zlib".to_string(), "bzip2".to_string()],
+            run_dep_specs_raw: vec!["perl".to_string()],
+            build_deps: BTreeSet::from(["make".to_string(), "cxx-compiler".to_string()]),
+            host_deps: BTreeSet::from([
+                "perl".to_string(),
+                "zlib".to_string(),
+                "bzip2".to_string(),
+            ]),
+            run_deps: BTreeSet::from(["perl".to_string()]),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "krakenuniq",
+            &parsed,
+            &plan,
+            Some("bioconda-krakenuniq-build.sh"),
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("recipe-build-sh"));
+        assert!(spec.contains("Source1:        bioconda-krakenuniq-build.sh"));
+        assert!(spec.contains("bash -eo pipefail ./build.sh"));
+        assert!(
+            spec.contains("bioconda2rpm minimal mode: recipe build.sh retained for install phase")
+        );
+        assert!(!spec.contains("./install_krakenuniq.sh \"${outdir}/libexec\" || true"));
+    }
+
+    #[test]
+    fn minimal_payload_spec_trf_keeps_platform_conditional_build_script() {
+        let build_script = r#"#!/bin/bash
+set -euo pipefail
+case "${target_platform}" in
+    linux-64*|linux-aarch64*) EXTRA_LDFLAGS="-lm" ;;
+    *) exit 1 ;;
+esac
+${CC} ${CFLAGS} -O3 \
+    ${CPPFLAGS} -DUNIXCONSOLE -DVERSION=\"4.10.0-rc.2\" \
+    -I${PREFIX}/include \
+    -o build/trf \
+    src/trf.c \
+    ${LDFLAGS} ${EXTRA_LDFLAGS}
+install -v -m 755 build/trf "${PREFIX}/bin"
+"#;
+        let parsed = ParsedMeta {
+            package_name: "trf".to_string(),
+            version: "4.10.0rc2".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/trf.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/trf".to_string(),
+            license: "AGPL-3.0-or-later".to_string(),
+            summary: "trf".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(build_script.to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["c-compiler".to_string()],
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::from(["c-compiler".to_string()]),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "trf",
+            &parsed,
+            &plan,
+            Some("bioconda-trf-build.sh"),
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("recipe-build-sh"));
+        assert!(spec.contains("arch-env"));
+        assert!(spec.contains("Source1:        bioconda-trf-build.sh"));
+        assert!(spec.contains("export target_platform=linux-aarch64"));
+        assert!(spec.contains("bash -eo pipefail ./build.sh"));
+        assert!(!spec.contains("${CC} ${CFLAGS} -O3 || true"));
     }
 
     #[test]
