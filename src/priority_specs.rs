@@ -2886,6 +2886,8 @@ fn load_tools_csv_rows(tools_csv: &Path) -> Result<Vec<PriorityTool>> {
     Ok(rows)
 }
 
+const MAX_SOFTWARE_LIST_ENTRIES: usize = 100_000;
+
 fn load_software_list(software_list: &Path) -> Result<Vec<String>> {
     let text = fs::read_to_string(software_list)
         .with_context(|| format!("reading software list {}", software_list.display()))?;
@@ -2908,7 +2910,7 @@ fn load_software_list(software_list: &Path) -> Result<Vec<String>> {
         if seen.insert(key) {
             out.push(cleaned);
         }
-        if out.len() > 10_000 {
+        if out.len() > MAX_SOFTWARE_LIST_ENTRIES {
             anyhow::bail!(
                 "software list {} appears too large or malformed (line {})",
                 software_list.display(),
@@ -13573,6 +13575,23 @@ fn write_regression_reports(
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn software_list_accepts_full_bioconda_sized_inputs() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let list_path = tmp.path().join("bioconda_all.txt");
+        let body = (0..12_000)
+            .map(|idx| format!("package-{idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&list_path, body).expect("write package list");
+
+        let loaded = load_software_list(&list_path).expect("load large package list");
+
+        assert_eq!(loaded.len(), 12_000);
+        assert_eq!(loaded.first().map(String::as_str), Some("package-0"));
+        assert_eq!(loaded.last().map(String::as_str), Some("package-11999"));
+    }
 
     #[test]
     fn normalize_dependency_maps_compilers() {
