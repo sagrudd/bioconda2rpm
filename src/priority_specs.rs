@@ -5789,7 +5789,11 @@ fn rewrite_symlink_install_to_prefix_bin_line(line: &str) -> Option<Vec<String>>
     }
 
     let indent = &line[..line.len() - trimmed.len()];
-    Some(vec![format!("{indent}mkdir -p {dest}"), line.to_string()])
+    Some(vec![
+        format!("{indent}mkdir -p {dest}"),
+        line.to_string(),
+        format!("{indent}export PATH=\"{dest}:$PATH\""),
+    ])
 }
 
 fn split_shell_words_for_rewrite(line: &str) -> Option<Vec<String>> {
@@ -19806,10 +19810,12 @@ requirements:
         let hardened = harden_build_script_text(
             "ln -sf $gem_path/bin/* $PREFIX/bin\nln -sfn \"$tool_dir/bin/tool\" \"${PREFIX}/bin\"\n",
         );
-        assert!(hardened.contains("mkdir -p $PREFIX/bin\nln -sf $gem_path/bin/* $PREFIX/bin"));
+        assert!(hardened.contains(
+            "mkdir -p $PREFIX/bin\nln -sf $gem_path/bin/* $PREFIX/bin\nexport PATH=\"$PREFIX/bin:$PATH\""
+        ));
         assert!(
             hardened.contains(
-                "mkdir -p ${PREFIX}/bin\nln -sfn \"$tool_dir/bin/tool\" \"${PREFIX}/bin\""
+                "mkdir -p ${PREFIX}/bin\nln -sfn \"$tool_dir/bin/tool\" \"${PREFIX}/bin\"\nexport PATH=\"${PREFIX}/bin:$PATH\""
             )
         );
     }
