@@ -5667,6 +5667,8 @@ fn harden_build_script_text(script: &str) -> String {
             rewritten_lines.extend(expanded);
         } else if let Some(rewritten) = rewrite_cargo_bundle_licenses_line(line) {
             rewritten_lines.push(rewritten);
+        } else if let Some(rewritten) = rewrite_plain_rm_line_to_force(line) {
+            rewritten_lines.push(rewritten);
         } else {
             let rewritten = if pip_install_targets_local_source(line) {
                 ensure_local_pip_install_no_build_isolation(line.to_string())
@@ -5686,6 +5688,17 @@ fn harden_build_script_text(script: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+fn rewrite_plain_rm_line_to_force(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let rest = trimmed.strip_prefix("rm ")?;
+    let first_arg = rest.trim_start();
+    if first_arg.is_empty() || first_arg.starts_with('-') {
+        return None;
+    }
+    let indent = &line[..line.len() - trimmed.len()];
+    Some(format!("{indent}rm -f {first_arg}"))
 }
 
 fn detect_multiline_export_array_start(line: &str) -> Option<(String, String)> {
@@ -13259,6 +13272,18 @@ else\n\
     escaped_candidate=$(printf '%s' \"$candidate\" | sed 's/[\\/&]/\\\\&/g')\n\
     sed -i \"s/^Source0:[[:space:]].*$/Source0:        $escaped_candidate/\" '{spec}'\n\
     candidate_file=$(source_url_filename \"$candidate\")\n\
+    if ! is_remote_source \"$candidate\"; then\n\
+      if [[ -n \"$candidate_file\" && -s \"$build_sourcedir/$candidate_file\" ]]; then\n\
+        if validate_source_file \"$build_sourcedir/$candidate_file\"; then\n\
+          spectool_ok=1\n\
+          break\n\
+        fi\n\
+        echo \"staged local source validation failed for $build_sourcedir/$candidate_file\" >&2\n\
+      else\n\
+        echo \"staged local source missing from $build_sourcedir/$candidate_file\" >&2\n\
+      fi\n\
+      continue\n\
+    fi\n\
     if [[ -n \"$candidate_file\" ]]; then\n\
       rm -f \"$build_sourcedir/$candidate_file\" || true\n\
     fi\n\
@@ -13321,6 +13346,13 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
   for manual_url in \"${{dedup_manual_candidates[@]:-}}\"; do\n\
     manual_file=$(source_url_filename \"$manual_url\")\n\
     [[ -n \"$manual_file\" ]] || continue\n\
+    if ! is_remote_source \"$manual_url\"; then\n\
+      if [[ -s \"$build_sourcedir/$manual_file\" ]] && validate_source_file \"$build_sourcedir/$manual_file\"; then\n\
+        spectool_ok=1\n\
+        break\n\
+      fi\n\
+      continue\n\
+    fi\n\
     rm -f \"$build_sourcedir/$manual_file\" || true\n\
     echo \"Attempting manual prefetch fallback: $manual_url\"\n\
     if [[ \"$manual_url\" =~ ^https?://(www\\.)?circos\\.ca/ ]]; then\n\
@@ -19501,6 +19533,14 @@ requirements:
     }
 
     #[test]
+    fn harden_build_script_makes_plain_rm_cleanup_idempotent() {
+        let hardened =
+            harden_build_script_text("rm conda_build.sh build_env_setup.sh\nrm -rf build\n");
+        assert!(hardened.contains("rm -f conda_build.sh build_env_setup.sh"));
+        assert!(hardened.contains("rm -rf build"));
+    }
+
+    #[test]
     fn harden_build_script_adds_no_build_isolation_for_local_pip_install() {
         let raw = "$PYTHON -m pip install . --no-deps --ignore-installed -vv\n";
         let hardened = harden_build_script_text(raw);
@@ -20188,6 +20228,7 @@ requirements:
         assert!(SOURCE.contains("source_url_filename()"));
         assert!(SOURCE.contains("filepath|filename|file|path"));
         assert!(SOURCE.contains(r#"candidate_file=$(source_url_filename \"$candidate\")"#));
+        assert!(SOURCE.contains("if ! is_remote_source \\\"$candidate\\\"; then"));
         assert!(
             source_archive_kind(
                 "https://search.maven.org/remotecontent?filepath=x/y/tool-1.0.tar.gz"
