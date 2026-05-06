@@ -73,6 +73,7 @@ The product is structured as layered components:
 - Supports policy-driven precompiled-binary overrides for selected packages (for example, `k8`) to bypass fragile source bootstrap chains when upstream recommends prebuilt artefacts.
 - Treats missing, deleted, or invalid upstream source archives as a first-class `source_unavailable` quarantine condition.
 - Does not use Bioconda/conda binary package artifacts as source-fetch fallbacks; source replacement must be source-equivalent and provenance-preserving.
+- Uses the repository-root `blacklist.txt` CSV to quarantine known unavailable upstream sources before expensive source-fetch/build work begins.
 - Supports policy-governed build-helper bootstrapping and deterministic build-shim replacement for legacy ecosystems when approved repos lack required helper tooling (for example, `pplacer` requiring `opam`).
 - Build-helper bootstrapping logic is constrained to build-container scope, must use pinned upstream versions with architecture mapping, and must not leak helper binaries into packaged payload prefixes.
 - Transitive-source compatibility rewrites used during helper bootstrap (for example, legacy `mcl` keyword fixes) must be deterministic, applied before configure/build phases, and fully auditable in generated spec/build logs.

@@ -363,6 +363,8 @@ Ensure network access is available for `spectool -g -R` to fetch `Source0`.
 
 If the source URL is gone, returns 404/503, no longer resolves, or downloads an invalid archive, the package is a `source_unavailable` failure. This is an intentional provenance boundary: `bioconda2rpm` does not turn missing source builds into binary repacks from existing conda artifacts.
 
+Known unavailable upstream sources are recorded in the repository-root `blacklist.txt` CSV with `package`, `problem_url`, and `justification` columns. Packages listed there are quarantined early as `source_unavailable`; remove or update the entry only when a provenance-preserving source-equivalent URL is available again.
+
 ## 10. Recommended Enterprise Run Pattern
 
 1. Run `build <tool>` in a clean dedicated topdir.

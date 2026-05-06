@@ -115,6 +115,23 @@ struct BuildConfig {
     force_rebuild: bool,
 }
 
+const BUILD_BLACKLIST_CSV: &str = include_str!("../blacklist.txt");
+
+#[derive(Debug, Clone, Deserialize)]
+struct BuildBlacklistCsvRow {
+    package: String,
+    problem_url: String,
+    justification: String,
+}
+
+#[derive(Debug, Clone)]
+struct BuildBlacklistEntry {
+    package: String,
+    normalized_package: String,
+    problem_url: String,
+    justification: String,
+}
+
 #[derive(Debug, Clone)]
 struct InterpretedBuildPlan {
     build_commands: Vec<String>,
@@ -3182,6 +3199,48 @@ fn load_tools_csv_rows(tools_csv: &Path) -> Result<Vec<PriorityTool>> {
     Ok(rows)
 }
 
+fn build_blacklist_entries() -> &'static [BuildBlacklistEntry] {
+    static BUILD_BLACKLIST: OnceLock<Vec<BuildBlacklistEntry>> = OnceLock::new();
+    BUILD_BLACKLIST
+        .get_or_init(|| {
+            let mut reader = ReaderBuilder::new()
+                .has_headers(true)
+                .trim(csv::Trim::All)
+                .from_reader(BUILD_BLACKLIST_CSV.as_bytes());
+            reader
+                .deserialize::<BuildBlacklistCsvRow>()
+                .map(|row| {
+                    let row = row.expect("embedded blacklist.txt must parse as CSV");
+                    BuildBlacklistEntry {
+                        normalized_package: normalize_name(&row.package),
+                        package: row.package,
+                        problem_url: row.problem_url,
+                        justification: row.justification,
+                    }
+                })
+                .filter(|entry| !entry.normalized_package.is_empty())
+                .collect()
+        })
+        .as_slice()
+}
+
+fn build_blacklist_entry(package_name: &str) -> Option<&'static BuildBlacklistEntry> {
+    let key = normalize_name(package_name);
+    if key.is_empty() {
+        return None;
+    }
+    build_blacklist_entries()
+        .iter()
+        .find(|entry| entry.normalized_package == key)
+}
+
+fn build_blacklist_reason(entry: &BuildBlacklistEntry) -> String {
+    format!(
+        "blacklisted source_unavailable: package={} problem_url={} justification={}",
+        entry.package, entry.problem_url, entry.justification
+    )
+}
+
 const MAX_SOFTWARE_LIST_ENTRIES: usize = 100_000;
 
 fn load_software_list(software_list: &Path) -> Result<Vec<String>> {
@@ -3336,6 +3395,31 @@ fn process_tool(
         };
     }
     let mut parsed = parsed_result.parsed;
+
+    if let Some(blacklist_entry) = build_blacklist_entry(&software_slug)
+        .or_else(|| build_blacklist_entry(&parsed.package_name))
+    {
+        let reason = build_blacklist_reason(blacklist_entry);
+        quarantine_note(bad_spec_dir, &software_slug, &reason);
+        log_progress(format!(
+            "phase=package status=quarantined package={} version={} reason=blacklisted-source-unavailable url={}",
+            tool.software, parsed.version, blacklist_entry.problem_url
+        ));
+        return ReportEntry {
+            software: tool.software.clone(),
+            priority: tool.priority,
+            status: "quarantined".to_string(),
+            reason,
+            overlap_recipe: resolved.recipe_name,
+            overlap_reason: resolved.overlap_reason,
+            variant_dir: resolved.variant_dir.display().to_string(),
+            package_name: parsed.package_name,
+            version: parsed.version,
+            payload_spec_path: String::new(),
+            meta_spec_path: String::new(),
+            staged_build_sh: String::new(),
+        };
+    }
 
     let version_state = match payload_version_state(
         &build_config.topdir,
@@ -5669,6 +5753,8 @@ fn harden_build_script_text(script: &str) -> String {
             rewritten_lines.push(rewritten);
         } else if let Some(rewritten) = rewrite_plain_rm_line_to_force(line) {
             rewritten_lines.push(rewritten);
+        } else if let Some(expanded) = rewrite_symlink_install_to_prefix_bin_line(line) {
+            rewritten_lines.extend(expanded);
         } else if line.trim() == r#"WORK_DIR="$BASEDIR/$BUILD_DIR""# {
             rewritten_lines.push(line.to_string());
             rewritten_lines.push(
@@ -5705,6 +5791,75 @@ fn rewrite_plain_rm_line_to_force(line: &str) -> Option<String> {
     }
     let indent = &line[..line.len() - trimmed.len()];
     Some(format!("{indent}rm -f {first_arg}"))
+}
+
+fn rewrite_symlink_install_to_prefix_bin_line(line: &str) -> Option<Vec<String>> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with('#') {
+        return None;
+    }
+    let words = split_shell_words_for_rewrite(trimmed)?;
+    if words.len() < 4 || words.first()? != "ln" {
+        return None;
+    }
+
+    let mut saw_symlink_option = false;
+    for word in words.iter().skip(1).take(words.len().saturating_sub(3)) {
+        if !word.starts_with('-') || word == "-" {
+            break;
+        }
+        if word.contains('s') {
+            saw_symlink_option = true;
+        }
+    }
+    if !saw_symlink_option {
+        return None;
+    }
+
+    let dest = words.last()?;
+    if !matches!(
+        dest.as_str(),
+        "$PREFIX/bin" | "$PREFIX/bin/" | "${PREFIX}/bin" | "${PREFIX}/bin/"
+    ) {
+        return None;
+    }
+
+    let indent = &line[..line.len() - trimmed.len()];
+    Some(vec![format!("{indent}mkdir -p {dest}"), line.to_string()])
+}
+
+fn split_shell_words_for_rewrite(line: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut chars = line.chars().peekable();
+    let mut quote: Option<char> = None;
+
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some(q) if ch == q => quote = None,
+            Some(_) => current.push(ch),
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            None if ch == '\\' => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            None if ch.is_whitespace() => {
+                if !current.is_empty() {
+                    words.push(std::mem::take(&mut current));
+                }
+            }
+            None => current.push(ch),
+        }
+    }
+
+    if quote.is_some() {
+        return None;
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    Some(words)
 }
 
 fn detect_multiline_export_array_start(line: &str) -> Option<(String, String)> {
@@ -19582,6 +19737,19 @@ requirements:
     }
 
     #[test]
+    fn harden_build_script_creates_prefix_bin_for_symlink_installs() {
+        let hardened = harden_build_script_text(
+            "ln -sf $gem_path/bin/* $PREFIX/bin\nln -sfn \"$tool_dir/bin/tool\" \"${PREFIX}/bin\"\n",
+        );
+        assert!(hardened.contains("mkdir -p $PREFIX/bin\nln -sf $gem_path/bin/* $PREFIX/bin"));
+        assert!(
+            hardened.contains(
+                "mkdir -p ${PREFIX}/bin\nln -sfn \"$tool_dir/bin/tool\" \"${PREFIX}/bin\""
+            )
+        );
+    }
+
+    #[test]
     fn harden_build_script_supports_nested_spades_source_layouts() {
         let hardened = harden_build_script_text(
             "BASEDIR=\"$(pwd)\"\nBUILD_DIR=build_spades\nWORK_DIR=\"$BASEDIR/$BUILD_DIR\"\n",
@@ -19689,6 +19857,16 @@ error: build stopped\n";
     fn classify_build_failure_detects_source_unavailable() {
         let log = "Downloading: https://example.invalid/pkg.tar.gz\ncurl: (22) The requested URL returned error: 404\nsource download failed after retries";
         assert_eq!(classify_build_failure(log), "source_unavailable");
+    }
+
+    #[test]
+    fn build_blacklist_contains_known_source_unavailable_packages() {
+        let agg = build_blacklist_entry("agg").expect("agg blacklist entry");
+        assert!(agg.problem_url.contains("Illumina/agg"));
+
+        let bax2bam = build_blacklist_entry("bax2bam").expect("bax2bam blacklist entry");
+        assert!(bax2bam.justification.contains("binary repacks"));
+        assert!(build_blacklist_reason(bax2bam).contains("source_unavailable"));
     }
 
     #[test]

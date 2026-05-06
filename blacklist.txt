@@ -1,0 +1,8 @@
+package,problem_url,justification
+agg,https://github.com/Illumina/agg/archive/v0.3.6.tar.gz,"GitHub source repository/tag now returns 404; keep as source_unavailable until a source-equivalent archive is restored."
+apoc,http://cssb.biology.gatech.edu/skolnick/files/APoc/apoc_v1b16.tar.gz,"Upstream host no longer resolves; keep as source_unavailable until the source archive reappears."
+astalavista,http://sammeth.net/data/public/astalavista-4.0.tgz,"Upstream host no longer resolves; keep as source_unavailable until the source archive reappears."
+bam2fasta,https://pypi.io/packages/source/b/bam2fasta/bam2fasta-1.0.8.tar.gz,"PyPI source redirects to a 404 and the historical GitHub project is unavailable; keep as source_unavailable pending a provenance-preserving source archive."
+bax2bam,https://github.com/PacificBiosciences/bax2bam/releases/download/0.0.11/bax2bam,"PacBio release asset/repository now returns 404; original recipe consumed a binary asset, but binary repacks from conda artifacts are disallowed."
+bicseq2-norm,http://compbio.med.harvard.edu/BIC-seq/NBICseq-norm_v0.2.4.tar.gz,"Harvard compbio source currently returns HTTP 503; may be transient, but avoid repeated retries until reachable."
+bicseq2-seg,http://compbio.med.harvard.edu/BIC-seq/NBICseq-seg_v0.7.2.tar.gz,"Harvard compbio source currently returns HTTP 503; may be transient, but avoid repeated retries until reachable."
