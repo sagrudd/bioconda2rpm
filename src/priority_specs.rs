@@ -238,6 +238,9 @@ struct PhoreusPythonRuntime {
 const PHOREUS_PYTHON_VERSION: &str = "3.11";
 const PHOREUS_PYTHON_FULL_VERSION: &str = "3.11.14";
 const PHOREUS_PYTHON_PACKAGE: &str = "phoreus-python-3.11";
+const PHOREUS_PYTHON_VERSION_27: &str = "2.7";
+const PHOREUS_PYTHON_FULL_VERSION_27: &str = "2.7.18";
+const PHOREUS_PYTHON_PACKAGE_27: &str = "phoreus-python-2.7";
 const PHOREUS_PYTHON_VERSION_312: &str = "3.12";
 const PHOREUS_PYTHON_FULL_VERSION_312: &str = "3.12.11";
 const PHOREUS_PYTHON_PACKAGE_312: &str = "phoreus-python-3.12";
@@ -250,6 +253,13 @@ const PHOREUS_PYTHON_RUNTIME_311: PhoreusPythonRuntime = PhoreusPythonRuntime {
     minor_str: PHOREUS_PYTHON_VERSION,
     full_version: PHOREUS_PYTHON_FULL_VERSION,
     package: PHOREUS_PYTHON_PACKAGE,
+};
+const PHOREUS_PYTHON_RUNTIME_27: PhoreusPythonRuntime = PhoreusPythonRuntime {
+    major: 2,
+    minor: 7,
+    minor_str: PHOREUS_PYTHON_VERSION_27,
+    full_version: PHOREUS_PYTHON_FULL_VERSION_27,
+    package: PHOREUS_PYTHON_PACKAGE_27,
 };
 const PHOREUS_PYTHON_RUNTIME_312: PhoreusPythonRuntime = PhoreusPythonRuntime {
     major: 3,
@@ -265,7 +275,8 @@ const PHOREUS_PYTHON_RUNTIME_313: PhoreusPythonRuntime = PhoreusPythonRuntime {
     full_version: PHOREUS_PYTHON_FULL_VERSION_313,
     package: PHOREUS_PYTHON_PACKAGE_313,
 };
-const PHOREUS_PYTHON_RUNTIMES: [PhoreusPythonRuntime; 3] = [
+const PHOREUS_PYTHON_RUNTIMES: [PhoreusPythonRuntime; 4] = [
+    PHOREUS_PYTHON_RUNTIME_27,
     PHOREUS_PYTHON_RUNTIME_311,
     PHOREUS_PYTHON_RUNTIME_312,
     PHOREUS_PYTHON_RUNTIME_313,
@@ -3366,7 +3377,11 @@ fn parse_meta_for_resolved_native(
 ) -> Result<ParsedRecipeResult> {
     let meta_text = fs::read_to_string(&resolved.meta_path)
         .with_context(|| format!("failed to read metadata {}", resolved.meta_path.display()))?;
-    let selector_ctx = SelectorContext::for_rpm_build(target_arch);
+    let selector_ctx = if meta_text_requests_python2(&meta_text) {
+        SelectorContext::for_rpm_build_with_python(target_arch, 2, 7)
+    } else {
+        SelectorContext::for_rpm_build(target_arch)
+    };
     let selected_meta = apply_selectors(&meta_text, &selector_ctx);
     let rendered = render_meta_yaml(&selected_meta).with_context(|| {
         format!(
@@ -3402,8 +3417,15 @@ fn parse_meta_for_resolved_conda(
     resolved: &ResolvedRecipe,
     target_arch: &str,
 ) -> Result<ParsedRecipeResult> {
+    let meta_text = fs::read_to_string(&resolved.meta_path).unwrap_or_default();
+    let conda_py = if meta_text_requests_python2(&meta_text) {
+        "27"
+    } else {
+        "311"
+    };
     let output = Command::new("python3")
         .env("CONDA_SUBDIR", conda_subdir_for_target_arch(target_arch))
+        .env("CONDA_PY", conda_py)
         .arg(CONDA_RENDER_ADAPTER_SCRIPT)
         .arg(&resolved.variant_dir)
         .stdout(Stdio::piped())
@@ -5006,6 +5028,14 @@ pub(crate) struct SelectorContext {
 
 impl SelectorContext {
     pub(crate) fn for_rpm_build(target_arch: &str) -> Self {
+        Self::for_rpm_build_with_python(target_arch, 3, 11)
+    }
+
+    pub(crate) fn for_rpm_build_with_python(
+        target_arch: &str,
+        py_major: i64,
+        py_minor: i64,
+    ) -> Self {
         let arch = target_arch;
         let linux = true;
         let osx = false;
@@ -5021,10 +5051,24 @@ impl SelectorContext {
             aarch64,
             arm64,
             x86_64,
-            py_major: 3,
-            py_minor: 11,
+            py_major,
+            py_minor,
         }
     }
+}
+
+fn meta_text_requests_python2(meta_text: &str) -> bool {
+    meta_text.lines().any(|line| {
+        let dependency = line
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .strip_prefix('-')
+            .unwrap_or_else(|| line.split('#').next().unwrap_or_default().trim())
+            .trim();
+        dep_spec_requests_python27(dependency)
+    })
 }
 
 pub(crate) fn apply_selectors(meta: &str, ctx: &SelectorContext) -> String {
@@ -5085,6 +5129,12 @@ fn evaluate_python_selector(term: &str, ctx: &SelectorContext) -> Option<bool> {
     if !term.starts_with("py") {
         return None;
     }
+    if term == "py2k" {
+        return Some(ctx.py_major == 2);
+    }
+    if term == "py3k" {
+        return Some(ctx.py_major == 3);
+    }
 
     let ops = [">=", "<=", "==", "!=", ">", "<"];
     for op in ops {
@@ -5102,7 +5152,13 @@ fn evaluate_python_selector(term: &str, ctx: &SelectorContext) -> Option<bool> {
             });
         }
     }
-    None
+    let value = term.strip_prefix("py")?.trim().parse::<i64>().ok()?;
+    let current = ctx.py_major * 10 + ctx.py_minor;
+    if value < 100 {
+        return Some(current == value);
+    }
+    let current = ctx.py_major * 100 + ctx.py_minor;
+    Some(current == value)
 }
 
 pub(crate) fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
@@ -5691,9 +5747,18 @@ fn recipe_python_runtime_incompatible_with(
         .any(|raw| python_dep_spec_conflicts_with_runtime(raw, runtime_major, runtime_minor))
 }
 
-fn select_phoreus_python_runtime(parsed: &ParsedMeta, python_recipe: bool) -> PhoreusPythonRuntime {
-    if !python_recipe {
-        return PHOREUS_PYTHON_RUNTIME_311;
+fn select_phoreus_python_runtime(
+    parsed: &ParsedMeta,
+    _python_recipe: bool,
+) -> PhoreusPythonRuntime {
+    if parsed
+        .build_dep_specs_raw
+        .iter()
+        .chain(parsed.host_dep_specs_raw.iter())
+        .chain(parsed.run_dep_specs_raw.iter())
+        .any(|raw| dep_spec_requests_python27(raw))
+    {
+        return PHOREUS_PYTHON_RUNTIME_27;
     }
     if normalize_name(&parsed.package_name) == "flair" {
         // flair-brookslab currently requires Python >=3.12.
@@ -5736,12 +5801,62 @@ fn select_phoreus_python_runtime(parsed: &ParsedMeta, python_recipe: bool) -> Ph
     }
 }
 
+fn dep_spec_requests_python27(raw: &str) -> bool {
+    let lower = raw
+        .split('#')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    if lower == "python2.7" || lower == "python-2.7" {
+        return true;
+    }
+
+    let Some(dep) = parse_dependency_spec(&lower) else {
+        return false;
+    };
+    if dep.name != "python" {
+        return false;
+    }
+    if dep.constraints.iter().any(|constraint| {
+        constraint.op == VersionRequirementOp::Eq
+            && parse_major_minor(&constraint.version)
+                .map(|(major, _)| major == 2)
+                .unwrap_or(false)
+    }) {
+        return true;
+    }
+
+    python_dep_spec_conflicts_with_runtime(
+        &lower,
+        PHOREUS_PYTHON_RUNTIME_311.major,
+        PHOREUS_PYTHON_RUNTIME_311.minor,
+    ) && !python_dep_spec_conflicts_with_runtime(
+        &lower,
+        PHOREUS_PYTHON_RUNTIME_27.major,
+        PHOREUS_PYTHON_RUNTIME_27.minor,
+    )
+}
+
 fn phoreus_python_runtime_from_dep(dep: &str) -> Option<PhoreusPythonRuntime> {
     match normalize_dependency_token(dep).as_str() {
+        PHOREUS_PYTHON_PACKAGE_27 => Some(PHOREUS_PYTHON_RUNTIME_27),
+        "python2.7" | "python-2.7" => Some(PHOREUS_PYTHON_RUNTIME_27),
         PHOREUS_PYTHON_PACKAGE => Some(PHOREUS_PYTHON_RUNTIME_311),
         PHOREUS_PYTHON_PACKAGE_312 => Some(PHOREUS_PYTHON_RUNTIME_312),
         PHOREUS_PYTHON_PACKAGE_313 => Some(PHOREUS_PYTHON_RUNTIME_313),
         _ => None,
+    }
+}
+
+fn remove_phoreus_python_runtime_requirements(requirements: &mut BTreeSet<String>) {
+    for runtime in PHOREUS_PYTHON_RUNTIMES {
+        requirements.remove(runtime.package);
     }
 }
 
@@ -7877,9 +7992,10 @@ if [[ -x \"$PHOREUS_PYTHON_PREFIX/bin/python{python_minor}\" ]]; then\n\
 else\n\
   export PYTHON=\"${{PYTHON:-python3}}\"\n\
 fi\n\
-export PYTHON3=\"$PYTHON\"\n\
-export PIP=\"${{PIP:-$PYTHON -m pip}}\"\n\
+export PYTHON{python_major}=\"$PYTHON\"\n\
+export PIP=\"${{PIP:-$PHOREUS_PYTHON_PREFIX/bin/pip{python_minor}}}\"\n\
 ",
+            python_major = python_runtime.major,
             python_minor = python_runtime.minor_str
         ));
     }
@@ -8159,6 +8275,10 @@ mkdir -p %{bioconda_source_subdir}\n"
         &parsed.host_dep_specs_raw,
         RpmDependencyKind::Build,
     ));
+    remove_phoreus_python_runtime_requirements(&mut build_requires);
+    if scope.python_runtime_required {
+        build_requires.insert(python_runtime.package.to_string());
+    }
     // Core C dependencies may be provisioned in-prefix by the deterministic
     // bootstrap block before build.sh executes; keep resolver churn out of
     // BuildRequires for these tokens when bootstrap is active.
@@ -8210,6 +8330,10 @@ mkdir -p %{bioconda_source_subdir}\n"
         &parsed.run_dep_specs_raw,
         RpmDependencyKind::Runtime,
     ));
+    remove_phoreus_python_runtime_requirements(&mut runtime_requires);
+    if scope.python_runtime_required {
+        runtime_requires.insert(python_runtime.package.to_string());
+    }
 
     let build_requires_lines = format_dep_lines("BuildRequires", &build_requires);
     let requires_lines = format_dep_lines("Requires", &runtime_requires);
@@ -8384,6 +8508,27 @@ export CMAKE_BUILD_PARALLEL_LEVEL=\"$CPU_COUNT\"\n"
     } else {
         String::new()
     };
+    let elf_arch_guard_block = "\
+if command -v file >/dev/null 2>&1; then\n\
+  expected_rpm_arch=\"%{_arch}\"\n\
+  while IFS= read -r -d '' elf_path; do\n\
+    elf_desc=$(file -b \"$elf_path\" 2>/dev/null || true)\n\
+    [[ \"$elf_desc\" == *ELF* ]] || continue\n\
+    case \"$expected_rpm_arch\" in\n\
+      x86_64)\n\
+        [[ \"$elf_desc\" == *x86-64* || \"$elf_desc\" == *x86_64* ]] && continue\n\
+        ;;\n\
+      aarch64)\n\
+        [[ \"$elf_desc\" == *aarch64* || \"$elf_desc\" == *\"ARM aarch64\"* ]] && continue\n\
+        ;;\n\
+      *)\n\
+        continue\n\
+        ;;\n\
+    esac\n\
+    echo \"foreign ELF architecture mismatch: target=$expected_rpm_arch file=$elf_path detail=$elf_desc\" >&2\n\
+    exit 86\n\
+  done < <(find %{buildroot}%{phoreus_prefix} -type f -print0 2>/dev/null)\n\
+fi\n";
     let blast_compat_block = render_minimal_blast_compat_block(&scope);
     let build_scope = scope.label_string();
     let perl_module_provides = if perl_recipe {
@@ -8457,6 +8602,7 @@ export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
 {blast_compat_block}\
 {core_c_dep_bootstrap}\
 {install_commands}\
+{elf_arch_guard_block}\
 {symlink_normalization_block}\
 {buildroot_text_scrub_block}\
 mkdir -p %{{buildroot}}%{{phoreus_moddir}}\n\
@@ -8506,6 +8652,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         blast_compat_block = blast_compat_block,
         build_commands = build_commands,
         install_commands = install_commands,
+        elf_arch_guard_block = elf_arch_guard_block,
         symlink_normalization_block = symlink_normalization_block,
         buildroot_text_scrub_block = buildroot_text_scrub_block,
         module_prefix_path = module_prefix_path,
@@ -8855,9 +9002,7 @@ mkdir -p %{bioconda_source_subdir}\n"
         build_requires.insert("gcc-c++".to_string());
         build_requires.insert("make".to_string());
     }
-    build_requires.remove(PHOREUS_PYTHON_PACKAGE);
-    build_requires.remove(PHOREUS_PYTHON_PACKAGE_312);
-    build_requires.remove(PHOREUS_PYTHON_PACKAGE_313);
+    remove_phoreus_python_runtime_requirements(&mut build_requires);
     build_requires.insert(python_runtime.package.to_string());
     // Core C dependencies may be provisioned in-prefix by the deterministic
     // bootstrap block before build.sh executes; keep resolver churn out of
@@ -8917,9 +9062,7 @@ mkdir -p %{bioconda_source_subdir}\n"
         runtime_requires.insert("java-21-openjdk".to_string());
     }
     if python_recipe {
-        runtime_requires.remove(PHOREUS_PYTHON_PACKAGE);
-        runtime_requires.remove(PHOREUS_PYTHON_PACKAGE_312);
-        runtime_requires.remove(PHOREUS_PYTHON_PACKAGE_313);
+        remove_phoreus_python_runtime_requirements(&mut runtime_requires);
         runtime_requires.insert(python_runtime.package.to_string());
     }
     // HEURISTIC-TEMP(issue=HEUR-0019): perl-xml-libxml can build/runtime
@@ -8931,6 +9074,10 @@ mkdir -p %{bioconda_source_subdir}\n"
         &parsed.run_dep_specs_raw,
         RpmDependencyKind::Runtime,
     ));
+    if python_recipe {
+        remove_phoreus_python_runtime_requirements(&mut runtime_requires);
+        runtime_requires.insert(python_runtime.package.to_string());
+    }
 
     let build_requires_lines = format_dep_lines("BuildRequires", &build_requires);
     let requires_lines = format_dep_lines("Requires", &runtime_requires);
@@ -9137,7 +9284,7 @@ mkdir -p %{bioconda_source_subdir}\n"
     export PATH=\"$PHOREUS_PYTHON_PREFIX/bin:$PATH\"\n\
     export LD_LIBRARY_PATH=\"$PHOREUS_PYTHON_PREFIX/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n\
     export PYTHON=\"$PHOREUS_PYTHON_PREFIX/bin/python{phoreus_python_version}\"\n\
-    export PYTHON3=\"$PHOREUS_PYTHON_PREFIX/bin/python{phoreus_python_version}\"\n\
+    export PYTHON{phoreus_python_major}=\"$PHOREUS_PYTHON_PREFIX/bin/python{phoreus_python_version}\"\n\
     export PIP=\"$PHOREUS_PYTHON_PREFIX/bin/pip{phoreus_python_version}\"\n\
     export PYTHONNOUSERSITE=1\n\
     export RECIPE_DIR=/work/SOURCES\n\
@@ -11083,6 +11230,7 @@ SVYNCEOF\n\
         changelog_date = changelog_date,
         meta_path = spec_escape(&meta_path.display().to_string()),
         variant_dir = spec_escape(&variant_dir.display().to_string()),
+        phoreus_python_major = python_runtime.major,
         phoreus_python_version = python_runtime.minor_str,
         conda_pkg_name = spec_escape(&parsed.package_name),
         conda_pkg_version = spec_escape(&parsed.version),
@@ -12908,11 +13056,14 @@ fn is_phoreus_python_toolchain_dependency(dep: &str) -> bool {
         "python"
             | "python3"
             | "python2"
+            | "python2.7"
+            | "python-2.7"
             | "python-abi"
             | "python-abi3"
             | "pip"
             | "setuptools"
             | "wheel"
+            | PHOREUS_PYTHON_PACKAGE_27
             | PHOREUS_PYTHON_PACKAGE
             | PHOREUS_PYTHON_PACKAGE_312
             | PHOREUS_PYTHON_PACKAGE_313
@@ -13150,6 +13301,7 @@ Builds CPython from upstream source into a dedicated Phoreus prefix.\n\
 %autosetup -n Python-%{{version}}\n\
 \n\
 %build\n\
+export LDFLAGS=\"${{LDFLAGS:-}} -Wl,-rpath,%{{phoreus_prefix}}/lib\"\n\
 ./configure \\\n\
   --prefix=%{{phoreus_prefix}} \\\n\
   --enable-shared \\\n\
@@ -13161,6 +13313,7 @@ make %{{?_smp_mflags}}\n\
 rm -rf %{{buildroot}}\n\
 make install DESTDIR=%{{buildroot}}\n\
 ln -sfn python%{{py_minor}} %{{buildroot}}%{{phoreus_prefix}}/bin/python\n\
+ln -sfn python%{{py_minor}} %{{buildroot}}%{{phoreus_prefix}}/bin/python{py_major}\n\
 ln -sfn pip%{{py_minor}} %{{buildroot}}%{{phoreus_prefix}}/bin/pip\n\
 # Ensure library/test payload files are not executable; avoids shebang mangling failures.\n\
 find %{{buildroot}}%{{phoreus_prefix}}/lib/python%{{py_minor}} -type f -perm /111 -exec chmod a-x {{}} +\n\
@@ -13185,6 +13338,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{py_minor}}.lua\n\
 * Thu Feb 26 2026 Phoreus Builder <packaging@phoreus.local> - {version}-1\n\
 - Build CPython {version} from upstream source under Phoreus prefix\n",
         py_minor = runtime.minor_str,
+        py_major = runtime.major,
         package = runtime.package,
         version = runtime.full_version,
     )
@@ -15245,6 +15399,18 @@ fn looks_like_transfer_progress(line: &str) -> bool {
 fn classify_arch_policy(build_log: &str, host_arch: &str) -> Option<&'static str> {
     let lower = build_log.to_lowercase();
     if (host_arch == "aarch64" || host_arch == "arm64")
+        && lower.contains("foreign elf architecture mismatch")
+        && (lower.contains("x86-64") || lower.contains("x86_64"))
+    {
+        return Some("amd64_only");
+    }
+    if (host_arch == "x86_64" || host_arch == "amd64")
+        && lower.contains("foreign elf architecture mismatch")
+        && lower.contains("aarch64")
+    {
+        return Some("aarch64_only");
+    }
+    if (host_arch == "aarch64" || host_arch == "arm64")
         && lower.contains("no upstream precompiled k8 binary for linux/aarch64")
     {
         return Some("amd64_only");
@@ -16902,6 +17068,18 @@ build:
     }
 
     #[test]
+    fn python2_selector_context_reenables_py3k_skipped_recipes() {
+        let meta =
+            "build:\n  skip: True  # [py3k or osx]\nrequirements:\n  run:\n    - python 2.7\n";
+        let py2_ctx = SelectorContext::for_rpm_build_with_python("x86_64", 2, 7);
+        let py3_ctx = SelectorContext::for_rpm_build_with_python("x86_64", 3, 11);
+
+        assert!(meta_text_requests_python2(meta));
+        assert!(!apply_selectors(meta, &py2_ctx).contains("skip: True"));
+        assert!(apply_selectors(meta, &py3_ctx).contains("skip: True"));
+    }
+
+    #[test]
     fn build_skip_reason_classifies_interpreter_selectors() {
         let lines = recipe_build_skip_lines(
             r#"
@@ -17347,6 +17525,17 @@ requirements:
     }
 
     #[test]
+    fn phoreus_python_27_bootstrap_spec_is_rendered_with_expected_name() {
+        let spec = render_phoreus_python_bootstrap_spec(PHOREUS_PYTHON_RUNTIME_27);
+        assert!(spec.contains("Name:           phoreus-python-2.7"));
+        assert!(spec.contains("Version:        2.7.18"));
+        assert!(spec.contains("-Wl,-rpath,%{phoreus_prefix}/lib"));
+        assert!(
+            spec.contains("ln -sfn python%{py_minor} %{buildroot}%{phoreus_prefix}/bin/python2")
+        );
+    }
+
+    #[test]
     fn phoreus_python_313_bootstrap_spec_is_rendered_with_expected_name() {
         let spec = render_phoreus_python_bootstrap_spec(PHOREUS_PYTHON_RUNTIME_313);
         assert!(spec.contains("Name:           phoreus-python-3.13"));
@@ -17591,6 +17780,107 @@ requirements:
 
         let runtime = select_phoreus_python_runtime(&parsed, true);
         assert_eq!(runtime.package, PHOREUS_PYTHON_PACKAGE_313);
+    }
+
+    #[test]
+    fn python_runtime_selector_uses_27_for_legacy_python_constraint() {
+        let parsed = ParsedMeta {
+            package_name: "strelka".to_string(),
+            version: "2.9.10".to_string(),
+            build_number: "2".to_string(),
+            source_url: "https://example.invalid/strelka.tar.bz2".to_string(),
+            source_folder: String::new(),
+            homepage: "https://github.com/Illumina/strelka".to_string(),
+            license: "GPL-3.0".to_string(),
+            summary: "strelka".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("configureStrelkaGermlineWorkflow.py -h".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: vec!["python 2.7.*".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::from(["python".to_string()]),
+        };
+
+        let runtime = select_phoreus_python_runtime(&parsed, false);
+        assert_eq!(runtime.package, PHOREUS_PYTHON_PACKAGE_27);
+    }
+
+    #[test]
+    fn python_runtime_selector_uses_27_for_python2_only_range() {
+        let parsed = ParsedMeta {
+            package_name: "afterqc".to_string(),
+            version: "0.9.7".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/afterqc.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/afterqc".to_string(),
+            license: "MIT".to_string(),
+            summary: "afterqc".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON setup.py install".to_string()),
+            noarch_python: true,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["python >=2.7,<3.0a0".to_string()],
+            run_dep_specs_raw: vec!["python >=2.7,<3.0a0".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::from(["python".to_string()]),
+        };
+
+        assert!(dep_spec_requests_python27("python >=2.7,<3.0a0"));
+        assert!(!dep_spec_requests_python27("python >=2.7"));
+        let runtime = select_phoreus_python_runtime(&parsed, true);
+        assert_eq!(runtime.package, PHOREUS_PYTHON_PACKAGE_27);
+    }
+
+    #[test]
+    fn minimal_payload_spec_contains_foreign_elf_architecture_guard() {
+        let parsed = ParsedMeta {
+            package_name: "strelka".to_string(),
+            version: "2.9.10".to_string(),
+            build_number: "2".to_string(),
+            source_url: "https://example.invalid/strelka.tar.bz2".to_string(),
+            source_folder: String::new(),
+            homepage: "https://github.com/Illumina/strelka".to_string(),
+            license: "GPL-3.0".to_string(),
+            summary: "strelka".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("cp -a bin lib libexec share $PREFIX/".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: vec!["python 2.7.*".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::from(["python".to_string()]),
+        };
+        let plan = InterpretedBuildPlan {
+            build_commands: Vec::new(),
+            install_commands: vec!["cp -a bin lib libexec share $PREFIX/".to_string()],
+            prefix_install_vars: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec_minimal(
+            "strelka",
+            &parsed,
+            &plan,
+            None,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            true,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("BuildRequires:  phoreus-python-2.7"));
+        assert!(!spec.contains("phoreus-python-3.11"));
+        assert!(spec.contains("export PYTHON2=\"$PYTHON\""));
+        assert!(spec.contains("foreign ELF architecture mismatch"));
     }
 
     #[test]
@@ -21092,6 +21382,12 @@ error: build stopped\n";
     #[test]
     fn classify_arch_policy_detects_k8_precompiled_gap_on_aarch64() {
         let log = "no upstream precompiled k8 binary for Linux/aarch64; available entries: k8-x86_64-Linux,k8-arm64-Darwin";
+        assert_eq!(classify_arch_policy(log, "aarch64"), Some("amd64_only"));
+    }
+
+    #[test]
+    fn classify_arch_policy_detects_foreign_x86_elf_on_aarch64() {
+        let log = "foreign ELF architecture mismatch: target=aarch64 file=/usr/local/phoreus/strelka/2.9.10/libexec/strelka2 detail=ELF 64-bit LSB executable, x86-64";
         assert_eq!(classify_arch_policy(log, "aarch64"), Some("amd64_only"));
     }
 
