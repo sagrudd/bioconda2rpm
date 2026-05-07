@@ -1698,6 +1698,71 @@ fn classify_duplicate_forwarded_request(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn preflight_up_to_date_root(
+    root: &str,
+    planning_context: &mut BuildPlanContext<'_>,
+    build_config: &BuildConfig,
+    bad_spec_dir: &Path,
+    build_started: Instant,
+) -> Result<Option<ReportEntry>> {
+    let Some(resolved_parsed) =
+        planning_context.resolve_and_parse_recipe_with_constraints(root, &[], true)?
+    else {
+        return Ok(None);
+    };
+    let resolved = resolved_parsed.resolved;
+    let parsed = resolved_parsed.parsed;
+    let software_slug = normalize_name(&resolved.recipe_name);
+
+    if build_blacklist_entry(&software_slug)
+        .or_else(|| build_blacklist_entry(&parsed.package_name))
+        .is_some()
+    {
+        return Ok(None);
+    }
+
+    let version_state = match payload_version_state(
+        &build_config.topdir,
+        &build_config.target_root,
+        &software_slug,
+        &parsed.version,
+    ) {
+        Ok(state) => state,
+        Err(_) => return Ok(None),
+    };
+
+    let PayloadVersionState::UpToDate { existing_version } = version_state else {
+        return Ok(None);
+    };
+
+    clear_quarantine_note(bad_spec_dir, &software_slug);
+    log_progress(format!(
+        "phase=build-preflight status=up-to-date package={} version={} local_version={} elapsed={}",
+        resolved.recipe_name,
+        parsed.version,
+        existing_version,
+        format_elapsed(build_started.elapsed())
+    ));
+    Ok(Some(ReportEntry {
+        software: resolved.recipe_name.clone(),
+        priority: 0,
+        status: "up-to-date".to_string(),
+        reason: format!(
+            "already up-to-date: bioconda version {} already built (latest local payload version {})",
+            parsed.version, existing_version
+        ),
+        overlap_recipe: resolved.recipe_name,
+        overlap_reason: resolved.overlap_reason,
+        variant_dir: resolved.variant_dir.display().to_string(),
+        package_name: parsed.package_name,
+        version: parsed.version,
+        payload_spec_path: String::new(),
+        meta_spec_path: String::new(),
+        staged_build_sh: String::new(),
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_build_batch_queue(
     args: &BuildArgs,
     requested_packages: &[String],
@@ -1749,14 +1814,69 @@ fn run_build_batch_queue(
         metadata_adapter,
         &build_config.target_arch,
     );
+    let mut active_roots = Vec::new();
+    if !build_config.force_rebuild && !build_config.refresh_files {
+        log_progress(format!(
+            "phase=build-preflight status=started roots={} mode=catalog-up-to-date",
+            requested_packages.len()
+        ));
+        for root in requested_packages {
+            match preflight_up_to_date_root(
+                root,
+                &mut planning_context,
+                build_config,
+                bad_spec_dir,
+                build_started,
+            ) {
+                Ok(Some(entry)) => {
+                    results.push(entry);
+                    if results.len() <= 10 || results.len() % 100 == 0 {
+                        if let Err(err) = write_report_json(&results, &report_json) {
+                            log_progress(format!(
+                                "phase=report-update status=failed report_json={} reason={}",
+                                report_json.display(),
+                                compact_reason(&err.to_string(), 240)
+                            ));
+                        } else {
+                            last_persisted_results_len = results.len();
+                            log_progress(format!(
+                                "phase=report-update status=written entries={} report_json={} catalog_update=deferred reason=preflight-up-to-date",
+                                results.len(),
+                                report_json.display()
+                            ));
+                        }
+                    }
+                }
+                Ok(None) => active_roots.push(root.clone()),
+                Err(err) => {
+                    log_progress(format!(
+                        "phase=build-preflight status=deferred package={} reason={}",
+                        root,
+                        compact_reason(&err.to_string(), 220)
+                    ));
+                    active_roots.push(root.clone());
+                }
+            }
+        }
+        log_progress(format!(
+            "phase=build-preflight status=completed roots={} up_to_date={} active={} parsed_recipes={} elapsed={}",
+            requested_packages.len(),
+            results.len(),
+            active_roots.len(),
+            planning_context.cached_recipe_count(),
+            format_elapsed(build_started.elapsed())
+        ));
+    } else {
+        active_roots = requested_packages.to_vec();
+    }
     log_progress(format!(
         "phase=dependency-index status=started roots={} deps_enabled={} policy={:?}",
-        requested_packages.len(),
+        active_roots.len(),
         args.with_deps(),
         args.dependency_policy
     ));
 
-    for (idx, root) in requested_packages.iter().enumerate() {
+    for (idx, root) in active_roots.iter().enumerate() {
         match collect_build_plan_with_context(
             root,
             args.with_deps(),
@@ -1834,12 +1954,12 @@ fn run_build_batch_queue(
             }
         }
         let processed = idx + 1;
-        if processed == requested_packages.len() || processed <= 10 || processed % 100 == 0 {
+        if processed == active_roots.len() || processed <= 10 || processed % 100 == 0 {
             let stats = planning_context.stats();
             log_progress(format!(
                 "phase=dependency-index status=running roots_done={}/{} unique_nodes={} parsed_recipes={} parse_hits={} parse_misses={} resolution_hits={} resolution_misses={}",
                 processed,
-                requested_packages.len(),
+                active_roots.len(),
                 global_nodes.len(),
                 planning_context.cached_recipe_count(),
                 stats.parse_hits,
@@ -1852,7 +1972,7 @@ fn run_build_batch_queue(
     let stats = planning_context.stats();
     log_progress(format!(
         "phase=dependency-index status=completed roots={} unique_nodes={} parsed_recipes={} parse_hits={} parse_misses={} resolution_hits={} resolution_misses={} elapsed={}",
-        requested_packages.len(),
+        active_roots.len(),
         global_nodes.len(),
         planning_context.cached_recipe_count(),
         stats.parse_hits,
@@ -15854,7 +15974,23 @@ fn persist_incremental_build_report(
         ));
         return;
     }
-    if let Err(err) = list::record_build_results(topdir, entries, arch, target_id, report_json) {
+    let catalog_delta = entries
+        .last()
+        .filter(|entry| entry.status != "up-to-date")
+        .cloned()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if catalog_delta.is_empty() {
+        log_progress(format!(
+            "phase=report-update status=written entries={} report_json={} catalog_update=skipped reason=up-to-date-only",
+            entries.len(),
+            report_json.display()
+        ));
+        return;
+    }
+    if let Err(err) =
+        list::record_build_results(topdir, &catalog_delta, arch, target_id, report_json)
+    {
         log_progress(format!(
             "phase=catalog-update status=failed report_json={} reason={}",
             report_json.display(),

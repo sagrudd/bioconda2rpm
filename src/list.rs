@@ -108,6 +108,7 @@ const CATALOG_SCHEMA_VERSION: u32 = 2;
 struct CachedCatalog {
     modified: Option<SystemTime>,
     catalog: Catalog,
+    success_index: HashMap<(String, String), String>,
 }
 
 static CATALOG_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedCatalog>>> = OnceLock::new();
@@ -143,15 +144,48 @@ fn read_catalog(topdir: &Path) -> Catalog {
     };
 
     if let Ok(mut cache_guard) = cache.lock() {
+        let success_index = build_success_index(&catalog);
         cache_guard.insert(
             path,
             CachedCatalog {
                 modified,
                 catalog: catalog.clone(),
+                success_index,
             },
         );
     }
     catalog
+}
+
+fn build_success_index(catalog: &Catalog) -> HashMap<(String, String), String> {
+    let mut index: HashMap<(String, String), String> = HashMap::new();
+    for package in &catalog.packages {
+        let software_key = normalize_package_slug(&package.software);
+        for version in &package.versions {
+            for build in &version.builds {
+                if !is_success_status(&build.status) {
+                    continue;
+                }
+                if build
+                    .binary_rpms
+                    .iter()
+                    .any(|rpm| !rpm.is_empty() && !Path::new(rpm).exists())
+                {
+                    continue;
+                }
+                let key = (build.target_id.clone(), software_key.clone());
+                match index.get(&key) {
+                    Some(existing)
+                        if compare_catalog_version_labels(existing, &version.version)
+                            != std::cmp::Ordering::Less => {}
+                    _ => {
+                        index.insert(key, version.version.clone());
+                    }
+                }
+            }
+        }
+    }
+    index
 }
 
 fn write_catalog(topdir: &Path, catalog: &Catalog) -> Result<()> {
@@ -168,11 +202,13 @@ fn write_catalog(topdir: &Path, catalog: &Catalog) -> Result<()> {
     if let Some(cache) = CATALOG_CACHE.get()
         && let Ok(mut cache_guard) = cache.lock()
     {
+        let success_index = build_success_index(&normalized);
         cache_guard.insert(
             path,
             CachedCatalog {
                 modified,
                 catalog: normalized,
+                success_index,
             },
         );
     }
@@ -522,29 +558,31 @@ pub fn latest_catalog_payload_version(
     target_id: &str,
     software: &str,
 ) -> Option<String> {
-    let catalog = read_catalog(topdir);
+    let path = catalog_path(topdir);
+    let modified = fs::metadata(&path).and_then(|meta| meta.modified()).ok();
     let software_key = normalize_package_slug(software);
-    catalog
-        .packages
-        .iter()
-        .find(|package| normalize_package_slug(&package.software) == software_key)
-        .and_then(|package| {
-            package
-                .versions
-                .iter()
-                .filter(|version| {
-                    version.builds.iter().any(|build| {
-                        build.target_id == target_id
-                            && is_success_status(&build.status)
-                            && build
-                                .binary_rpms
-                                .iter()
-                                .all(|rpm| rpm.is_empty() || Path::new(rpm).exists())
-                    })
-                })
-                .max_by(|a, b| compare_catalog_version_labels(&a.version, &b.version))
-        })
-        .map(|version| version.version.clone())
+    let cache = CATALOG_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache_guard) = cache.lock()
+        && let Some(cached) = cache_guard.get(&path)
+        && cached.modified == modified
+    {
+        return cached
+            .success_index
+            .get(&(target_id.to_string(), software_key))
+            .cloned();
+    }
+
+    let _ = read_catalog(topdir);
+    if let Ok(cache_guard) = cache.lock()
+        && let Some(cached) = cache_guard.get(&path)
+        && cached.modified == modified
+    {
+        return cached
+            .success_index
+            .get(&(target_id.to_string(), software_key))
+            .cloned();
+    }
+    None
 }
 
 fn inject_srpm_artifacts(topdir: &Path, catalog: &mut Catalog) -> usize {
@@ -1193,6 +1231,10 @@ pub fn record_build_results(
 
     for entry in entries {
         let key = failure_key(&entry.software, target_id);
+        if entry.status == "up-to-date" {
+            failures.remove(&key);
+            continue;
+        }
         let srpm = if entry.version.is_empty() {
             None
         } else {
