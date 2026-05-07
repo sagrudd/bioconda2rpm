@@ -1910,12 +1910,14 @@ fn run_build_batch_queue(
                     .iter()
                     .filter_map(|key| nodes.get(key).map(|node| node.name.clone()))
                     .collect::<Vec<_>>();
-                log_progress(format!(
-                    "phase=dependency-plan status=completed package={} planned_nodes={} order={}",
-                    root,
-                    root_order.len(),
-                    root_order.join("->")
-                ));
+                if args.with_deps() || active_roots.len() <= 100 || root_order.len() > 1 {
+                    log_progress(format!(
+                        "phase=dependency-plan status=completed package={} planned_nodes={} order={}",
+                        root,
+                        root_order.len(),
+                        root_order.join("->")
+                    ));
+                }
                 for (key, node) in nodes {
                     global_nodes
                         .entry(key)
@@ -2303,14 +2305,16 @@ fn run_build_batch_queue(
                                         &mut refresh_keys,
                                     );
                                 }
-                                log_progress(format!(
-                                    "phase=dependency-plan status=completed package={} planned_nodes={} added_nodes={} parsed_recipes={} order={}",
-                                    root,
-                                    root_order.len(),
-                                    added,
-                                    planning_context.cached_recipe_count(),
-                                    root_order.join("->")
-                                ));
+                                if args.with_deps() || root_order.len() > 1 {
+                                    log_progress(format!(
+                                        "phase=dependency-plan status=completed package={} planned_nodes={} added_nodes={} parsed_recipes={} order={}",
+                                        root,
+                                        root_order.len(),
+                                        added,
+                                        planning_context.cached_recipe_count(),
+                                        root_order.join("->")
+                                    ));
+                                }
                             }
                             Err(err) => {
                                 let slug = normalize_name(&root);

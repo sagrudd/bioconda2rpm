@@ -14,6 +14,20 @@ use std::time::Duration;
 
 static SIGNAL_HANDLER_INSTALLED: OnceLock<()> = OnceLock::new();
 
+fn package_list_summary(packages: &[String]) -> String {
+    const LIMIT: usize = 24;
+    if packages.len() <= LIMIT {
+        return packages.join(",");
+    }
+    let preview = packages
+        .iter()
+        .take(LIMIT)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{preview},...(+{} more)", packages.len() - LIMIT)
+}
+
 fn ensure_workspace_paths(
     topdir: &std::path::Path,
     bad_spec: &std::path::Path,
@@ -105,7 +119,7 @@ fn main() -> ExitCode {
                         "phase=workspace-lock status=acquired topdir={} target_id={} packages={}",
                         topdir.display(),
                         args.effective_target_id(),
-                        requested_packages.join(",")
+                        package_list_summary(&requested_packages)
                     ));
                     guard
                 }
@@ -116,14 +130,14 @@ fn main() -> ExitCode {
                         forwarded.owner_target_id,
                         forwarded.owner_force_rebuild,
                         forwarded.owner_refresh_files,
-                        forwarded.queued_packages.join(",")
+                        package_list_summary(&forwarded.queued_packages)
                     ));
                     priority_specs::clear_progress_sink();
                     if let Some(ui) = progress_ui.take() {
                         ui.finish(format!(
                             "request forwarded to active build session (owner pid={}, packages={})",
                             forwarded.owner_pid,
-                            forwarded.queued_packages.join(",")
+                            package_list_summary(&forwarded.queued_packages)
                         ));
                     }
                     println!(
@@ -132,7 +146,7 @@ fn main() -> ExitCode {
                         forwarded.owner_target_id,
                         forwarded.owner_force_rebuild,
                         forwarded.owner_refresh_files,
-                        forwarded.queued_packages.join(",")
+                        package_list_summary(&forwarded.queued_packages)
                     );
                     return ExitCode::SUCCESS;
                 }
@@ -394,7 +408,7 @@ fn main() -> ExitCode {
                         "phase=workspace-lock status=server-acquired topdir={} target_id={} initial_packages={}",
                         topdir.display(),
                         args.effective_target_id(),
-                        initial_packages.join(",")
+                        package_list_summary(&initial_packages)
                     ));
                     guard
                 }
@@ -638,7 +652,7 @@ fn main() -> ExitCode {
                         args.effective_target_id(),
                         args.force,
                         args.refresh_files,
-                        args.packages.join(",")
+                        package_list_summary(&args.packages)
                     ));
                     let outcome = priority_specs::run_build(&args);
                     update_server_status_packages(&server_status_packages, &[], &[]);
@@ -714,7 +728,7 @@ fn main() -> ExitCode {
             println!(
                 "remove target_id={} packages={} queued_removed={} retained_queue_requests={} active_remove_request=submitted stopped_containers={}",
                 target_id,
-                args.packages.join(","),
+                package_list_summary(&args.packages),
                 queue_summary.removed_packages,
                 queue_summary.retained_requests,
                 stopped.join(",")
