@@ -5709,7 +5709,11 @@ fn build_python_requirements_for_runtime(
     let runtime_incompatible =
         recipe_python_runtime_incompatible_with(parsed, runtime_major, runtime_minor);
     let mut out = BTreeSet::new();
-    for raw in &parsed.host_dep_specs_raw {
+    for raw in parsed
+        .host_dep_specs_raw
+        .iter()
+        .chain(parsed.run_dep_specs_raw.iter())
+    {
         if let Some(req) = conda_dep_to_pip_requirement(raw) {
             let normalized_req = if runtime_incompatible {
                 relax_pip_requirement_for_runtime(req)
@@ -6053,8 +6057,10 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
 
     let pip_name = match normalized.as_str() {
         "python-annoy" => "annoy".to_string(),
+        "python-graphviz" => "graphviz".to_string(),
         "python-kaleido" => "kaleido".to_string(),
         "matplotlib-base" => "matplotlib".to_string(),
+        "seaborn-base" => "seaborn".to_string(),
         other => other.to_string(),
     };
 
@@ -7711,21 +7717,22 @@ fn compute_minimal_build_scope(
     ) || software_slug == "mash";
     let recipe_build_sh_required =
         package_requires_original_build_script(software_slug, parsed, interpreted_build_plan);
-    let buildroot_text_scrub_required = (!recipe_build_sh_required
-        && (command_mentions_buildroot_text_risk_with_aliases(
-            &interpreted_build_plan.install_commands,
-            &interpreted_build_plan.prefix_install_vars,
-        ) || (package_requires_make_install_buildroot_scrub(software_slug)
-            && command_runs_make_install_with_prefix_env(
+    let buildroot_text_scrub_required = python_recipe
+        || (!recipe_build_sh_required
+            && (command_mentions_buildroot_text_risk_with_aliases(
                 &interpreted_build_plan.install_commands,
-            ))
-            || ((command_configures_install_prefix_from_prefix(
-                &interpreted_build_plan.build_commands,
-            ) || command_configures_install_prefix_from_prefix(
-                &interpreted_build_plan.install_commands,
-            )) && command_installs_configured_prefix(
-                &interpreted_build_plan.install_commands,
-            ))))
+                &interpreted_build_plan.prefix_install_vars,
+            ) || (package_requires_make_install_buildroot_scrub(software_slug)
+                && command_runs_make_install_with_prefix_env(
+                    &interpreted_build_plan.install_commands,
+                ))
+                || ((command_configures_install_prefix_from_prefix(
+                    &interpreted_build_plan.build_commands,
+                ) || command_configures_install_prefix_from_prefix(
+                    &interpreted_build_plan.install_commands,
+                )) && command_installs_configured_prefix(
+                    &interpreted_build_plan.install_commands,
+                ))))
         || native_vendored_prefix_required
         || core_c_bootstrap_prefix_required;
     let blast_compat_required = package_requires_blast_compat(software_slug);
@@ -7875,6 +7882,7 @@ fn buildrequire_is_safe_for_noarch_python(req: &str) -> bool {
     matches!(
         normalized.as_str(),
         "bash"
+            | "chrpath"
             | "curl"
             | "git"
             | "gzip"
@@ -7885,6 +7893,7 @@ fn buildrequire_is_safe_for_noarch_python(req: &str) -> bool {
             | "wget"
             | "which"
             | "xz"
+            | PHOREUS_PYTHON_PACKAGE_27
             | PHOREUS_PYTHON_PACKAGE
             | PHOREUS_PYTHON_PACKAGE_312
             | PHOREUS_PYTHON_PACKAGE_313
@@ -7958,10 +7967,23 @@ fn render_scoped_shell_lines(
                 .trim_end_matches(';')
                 .trim_end()
                 .to_string();
-            format!("{scoped} || true\n")
+            if minimal_shell_command_must_succeed(&scoped) {
+                format!("{scoped}\n")
+            } else {
+                format!("{scoped} || true\n")
+            }
         })
         .collect::<Vec<_>>()
         .join("")
+}
+
+fn minimal_shell_command_must_succeed(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("pip install")
+        || lower.contains("python -m pip")
+        || lower.contains("$python -m pip")
+        || lower.contains("${python} -m pip")
+        || lower.contains(" setup.py install")
 }
 
 fn render_patch_apply_lines_minimal(staged_patch_sources: &[String], source_dir: &str) -> String {
@@ -8120,6 +8142,74 @@ sed -E -i 's|cp \"\\$RESULT_PATH/lib/\"\\* \"\\$LIB_INSTALL_DIR\"|for blast_lib_
         .to_string()
 }
 
+fn render_spacerplacer_mafft_cleanup_block(software_slug: &str) -> &'static str {
+    if software_slug != "spacerplacer" {
+        return "";
+    }
+
+    r###"# HEURISTIC-TEMP(issue=bioconda2rpm#spacerplacer-vendored-mafft-binaries):
+# SpacerPlacer vendors x86_64, macOS, and Windows MAFFT helper binaries.
+# Use the declared MAFFT runtime dependency instead so the payload remains
+# architecture-native on both aarch64 and x86_64.
+if [[ -n "${SP_DIR:-}" && -f "$SP_DIR/sp_model/mafft_integration.py" ]]; then
+  "$PYTHON" - "$SP_DIR/sp_model/mafft_integration.py" "$SP_DIR/sp_model/spacer_visualization/visualization.py" <<'PYEOF'
+from pathlib import Path
+import re
+import sys
+
+mafft_path = Path(sys.argv[1])
+text = mafft_path.read_text()
+replacement = '''# bioconda2rpm: use the architecture-native MAFFT dependency instead of bundled helpers.
+MAFFT_PATH = os.environ.get('SPACERPLACER_MAFFT_PATH')
+if not MAFFT_PATH:
+    _mafft_candidates = ['/usr/libexec/mafft', '/usr/lib64/mafft', '/usr/lib/mafft']
+    _phoreus_mafft_root = '/usr/local/phoreus/mafft'
+    if os.path.isdir(_phoreus_mafft_root):
+        for _version in sorted(os.listdir(_phoreus_mafft_root), reverse=True):
+            _version_root = os.path.join(_phoreus_mafft_root, _version)
+            _mafft_candidates.extend([
+                os.path.join(_version_root, 'libexec', 'mafft'),
+                os.path.join(_version_root, 'libexec'),
+                os.path.join(_version_root, 'lib', 'mafft'),
+                os.path.join(_version_root, 'bin'),
+            ])
+    for _candidate in _mafft_candidates:
+        if os.path.exists(os.path.join(_candidate, 'hex2maffttext')):
+            MAFFT_PATH = _candidate
+            break
+    else:
+        MAFFT_PATH = '/usr/libexec/mafft'
+'''
+pattern = r"# probably don't need windows as extra case.*?# MAFFT_PATH = '/usr/libexec/mafft'"
+updated = re.sub(pattern, replacement, text, flags=re.S)
+if updated == text:
+    raise SystemExit('bioconda2rpm: unable to patch spacerplacer MAFFT helper path')
+mafft_path.write_text(updated)
+
+visualization_path = Path(sys.argv[2])
+if visualization_path.exists():
+    text = visualization_path.read_text()
+    eager_import = 'from sp_model.spacer_visualization import custom_ete3\n'
+    lazy_import = '''custom_ete3 = None
+
+def _custom_ete3():
+    global custom_ete3
+    if custom_ete3 is None:
+        from sp_model.spacer_visualization import custom_ete3 as loaded_custom_ete3
+        custom_ete3 = loaded_custom_ete3
+    return custom_ete3
+'''
+    updated = text.replace(eager_import, lazy_import)
+    updated = updated.replace('custom_ete3.', '_custom_ete3().')
+    if updated == text:
+        raise SystemExit('bioconda2rpm: unable to patch spacerplacer optional PyQt import')
+    visualization_path.write_text(updated)
+PYEOF
+  rm -rf "$SP_DIR/sp_model/mafft_scripts"
+fi
+"###
+}
+
 fn render_gsl_prefix_shim_block(parsed: &ParsedMeta) -> &'static str {
     if !recipe_dep_mentions(parsed, "gsl") {
         return "";
@@ -8162,6 +8252,11 @@ fn render_payload_spec_minimal(
     let source_relsubdir = ".".to_string();
     let python_recipe = is_python_recipe(parsed) || python_script_hint;
     let python_runtime = select_phoreus_python_runtime(parsed, python_recipe);
+    let python_requirements = if python_recipe {
+        build_python_requirements_for_runtime(parsed, python_runtime.major, python_runtime.minor)
+    } else {
+        Vec::new()
+    };
     let scope = compute_minimal_build_scope(
         software_slug,
         parsed,
@@ -8275,13 +8370,15 @@ mkdir -p %{bioconda_source_subdir}\n"
             .map(|d| map_build_dependency(d))
             .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep)),
     );
-    build_requires.extend(versioned_rpm_requirements_from_specs(
+    build_requires.extend(versioned_rpm_requirements_from_specs_for_payload(
         &parsed.build_dep_specs_raw,
         RpmDependencyKind::Build,
+        python_recipe,
     ));
-    build_requires.extend(versioned_rpm_requirements_from_specs(
+    build_requires.extend(versioned_rpm_requirements_from_specs_for_payload(
         &parsed.host_dep_specs_raw,
         RpmDependencyKind::Build,
+        python_recipe,
     ));
     remove_phoreus_python_runtime_requirements(&mut build_requires);
     if scope.python_runtime_required {
@@ -8334,9 +8431,10 @@ mkdir -p %{bioconda_source_subdir}\n"
             .map(|d| map_runtime_dependency(d))
             .filter(|dep| !perl_recipe || should_keep_rpm_dependency_for_perl(dep)),
     );
-    runtime_requires.extend(versioned_rpm_requirements_from_specs(
+    runtime_requires.extend(versioned_rpm_requirements_from_specs_for_payload(
         &parsed.run_dep_specs_raw,
         RpmDependencyKind::Runtime,
+        python_recipe,
     ));
     remove_phoreus_python_runtime_requirements(&mut runtime_requires);
     if scope.python_runtime_required {
@@ -8379,7 +8477,7 @@ chmod 0755 buildsrc/build.sh\n"
     let build_arch_line = render_payload_build_arch_line(
         parsed,
         &build_requires,
-        &[],
+        &python_requirements,
         python_recipe,
         r_runtime_required,
         rust_runtime_required,
@@ -8414,6 +8512,7 @@ chmod 0755 buildsrc/build.sh\n"
         &parsed.build_number,
         &scope,
     );
+    let python_venv_setup = render_python_venv_setup_block(python_recipe, &python_requirements);
     let gsl_prefix_shim_block = render_gsl_prefix_shim_block(parsed);
     let build_commands = if scope.recipe_build_sh_required {
         "echo \"bioconda2rpm minimal mode: recipe build.sh retained for install phase\"\n"
@@ -8535,9 +8634,10 @@ if command -v file >/dev/null 2>&1; then\n\
     esac\n\
     echo \"foreign ELF architecture mismatch: target=$expected_rpm_arch file=$elf_path detail=$elf_desc\" >&2\n\
     exit 86\n\
-  done < <(find %{buildroot}%{phoreus_prefix} -type f -print0 2>/dev/null)\n\
+done < <(find %{buildroot}%{phoreus_prefix} -type f -print0 2>/dev/null)\n\
 fi\n";
     let blast_compat_block = render_minimal_blast_compat_block(&scope);
+    let spacerplacer_mafft_cleanup_block = render_spacerplacer_mafft_cleanup_block(software_slug);
     let build_scope = scope.label_string();
     let perl_module_provides = if perl_recipe {
         perl_module_name_from_conda(&parsed.package_name)
@@ -8546,9 +8646,15 @@ fi\n";
     } else {
         String::new()
     };
+    let python_binary_post_macros = if python_recipe {
+        "%global __strip /bin/true\n%global __objdump /bin/true\n"
+    } else {
+        ""
+    };
 
     format!(
         "%global debug_package %{{nil}}\n\
+{python_binary_post_macros}\
 %global __brp_mangle_shebangs %{{nil}}\n\
 \n\
 %global tool {tool}\n\
@@ -8609,7 +8715,9 @@ export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
 {gsl_prefix_shim_block}\
 {blast_compat_block}\
 {core_c_dep_bootstrap}\
+{python_venv_setup}\
 {install_commands}\
+{spacerplacer_mafft_cleanup_block}\
 {elf_arch_guard_block}\
 {symlink_normalization_block}\
 {buildroot_text_scrub_block}\
@@ -8633,6 +8741,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
 - Auto-generated from Bioconda metadata (minimal canonical mode)\n",
         tool = software_slug,
         version = spec_escape(&parsed.version),
+        python_binary_post_macros = python_binary_post_macros,
         build_scope = build_scope,
         source_subdir = spec_escape(&source_subdir),
         source_relsubdir = spec_escape(&source_relsubdir),
@@ -8660,6 +8769,8 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         blast_compat_block = blast_compat_block,
         build_commands = build_commands,
         install_commands = install_commands,
+        python_venv_setup = python_venv_setup,
+        spacerplacer_mafft_cleanup_block = spacerplacer_mafft_cleanup_block,
         elf_arch_guard_block = elf_arch_guard_block,
         symlink_normalization_block = symlink_normalization_block,
         buildroot_text_scrub_block = buildroot_text_scrub_block,
@@ -8928,18 +9039,21 @@ mkdir -p %{bioconda_source_subdir}\n"
                 .map(|d| map_build_dependency(d)),
         );
     }
-    build_requires.extend(versioned_rpm_requirements_from_specs(
+    build_requires.extend(versioned_rpm_requirements_from_specs_for_payload(
         &parsed.build_dep_specs_raw,
         RpmDependencyKind::Build,
+        python_recipe,
     ));
-    build_requires.extend(versioned_rpm_requirements_from_specs(
+    build_requires.extend(versioned_rpm_requirements_from_specs_for_payload(
         &parsed.host_dep_specs_raw,
         RpmDependencyKind::Build,
+        python_recipe,
     ));
     if !python_recipe && !perl_recipe && !runtime_only_metapackage {
-        build_requires.extend(versioned_rpm_requirements_from_specs(
+        build_requires.extend(versioned_rpm_requirements_from_specs_for_payload(
             &parsed.run_dep_specs_raw,
             RpmDependencyKind::Build,
+            python_recipe,
         ));
     }
     // HEURISTIC-TEMP(issue=HEUR-0004): IGV currently requires Java 21 toolchain at build time.
@@ -9078,9 +9192,10 @@ mkdir -p %{bioconda_source_subdir}\n"
     if software_slug == "perl-xml-libxml" {
         runtime_requires.remove("perl(Alien::Libxml2)");
     }
-    runtime_requires.extend(versioned_rpm_requirements_from_specs(
+    runtime_requires.extend(versioned_rpm_requirements_from_specs_for_payload(
         &parsed.run_dep_specs_raw,
         RpmDependencyKind::Runtime,
+        python_recipe,
     ));
     if python_recipe {
         remove_phoreus_python_runtime_requirements(&mut runtime_requires);
@@ -11860,7 +11975,7 @@ pip-compile --generate-hashes requirements.in --output-file requirements.lock{co
     format!(
         "# Charter-compliant Python dependency handling: build hermetic venv and lock deps.\n\
 mkdir -p \"$PREFIX/venv\"\n\
-\"$PYTHON\" -m venv --copies \"$PREFIX/venv\"\n\
+\"$PYTHON\" -m venv \"$PREFIX/venv\"\n\
 export VIRTUAL_ENV=\"$PREFIX/venv\"\n\
 export PATH=\"$VIRTUAL_ENV/bin:$PATH\"\n\
 export PYTHON=\"$VIRTUAL_ENV/bin/python\"\n\
@@ -12990,18 +13105,31 @@ enum RpmDependencyKind {
     Runtime,
 }
 
+#[cfg(test)]
 fn versioned_rpm_requirements_from_specs(
     raw_specs: &[String],
     kind: RpmDependencyKind,
 ) -> BTreeSet<String> {
+    versioned_rpm_requirements_from_specs_for_payload(raw_specs, kind, false)
+}
+
+fn versioned_rpm_requirements_from_specs_for_payload(
+    raw_specs: &[String],
+    kind: RpmDependencyKind,
+    suppress_python_ecosystem: bool,
+) -> BTreeSet<String> {
     raw_specs
         .iter()
-        .filter_map(|raw| versioned_rpm_requirement_from_spec(raw, kind))
+        .filter_map(|raw| versioned_rpm_requirement_from_spec(raw, kind, suppress_python_ecosystem))
         .flatten()
         .collect()
 }
 
-fn versioned_rpm_requirement_from_spec(raw: &str, kind: RpmDependencyKind) -> Option<Vec<String>> {
+fn versioned_rpm_requirement_from_spec(
+    raw: &str,
+    kind: RpmDependencyKind,
+    suppress_python_ecosystem: bool,
+) -> Option<Vec<String>> {
     let parsed = parse_dependency_spec(raw)?;
     if parsed.constraints.is_empty() || is_conda_only_dependency(&parsed.name) {
         return None;
@@ -13010,6 +13138,7 @@ fn versioned_rpm_requirement_from_spec(raw: &str, kind: RpmDependencyKind) -> Op
         || parsed.name == "openjdk"
         || parsed.name.starts_with("java-")
         || is_r_ecosystem_dependency_name(&parsed.name)
+        || (suppress_python_ecosystem && is_python_ecosystem_dependency_name(&parsed.name))
         || is_rust_ecosystem_dependency_name(&parsed.name)
         || is_nim_ecosystem_dependency_name(&parsed.name)
         || map_perl_core_dependency(&parsed.name).is_some()
@@ -17760,7 +17889,7 @@ requirements:
 
         let reqs = build_python_requirements(&parsed);
         assert!(reqs.contains(&"jinja2>=3.0.0".to_string()));
-        assert!(!reqs.contains(&"click>=8.0".to_string()));
+        assert!(reqs.contains(&"click>=8.0".to_string()));
         assert!(!reqs.iter().any(|r| r.contains("automake")));
     }
 
@@ -22993,6 +23122,94 @@ $R CMD INSTALL --build .
         );
         assert!(!native_spec.contains("BuildArch:      noarch"));
         assert!(native_spec.contains("noarch suppressed"));
+    }
+
+    #[test]
+    fn minimal_python_payload_installs_into_versioned_venv_and_keeps_failures_fatal() {
+        let parsed = ParsedMeta {
+            package_name: "spacerplacer".to_string(),
+            version: "1.0.1".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/spacerplacer.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://github.com/fbaumdicker/SpacerPlacer".to_string(),
+            license: "GPL-3.0-only".to_string(),
+            summary: "SpacerPlacer".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "$PYTHON -m pip install . -vvv --no-deps --no-build-isolation --no-cache-dir"
+                    .to_string(),
+            ),
+            noarch_python: true,
+            build_dep_specs_raw: vec![
+                "python <3.13".to_string(),
+                "setuptools".to_string(),
+                "pip".to_string(),
+            ],
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: vec![
+                "python <3.13".to_string(),
+                "numpy >=1.21.4".to_string(),
+                "matplotlib-base >=3.4.3".to_string(),
+                "seaborn-base >=0.11.2".to_string(),
+                "python-graphviz >=0.17".to_string(),
+                "mafft >=7.490".to_string(),
+            ],
+            build_deps: BTreeSet::from([
+                "python".to_string(),
+                "setuptools".to_string(),
+                "pip".to_string(),
+            ]),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::from([
+                "python".to_string(),
+                "numpy".to_string(),
+                "matplotlib-base".to_string(),
+                "seaborn-base".to_string(),
+                "python-graphviz".to_string(),
+                "mafft".to_string(),
+            ]),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "spacerplacer",
+            &parsed,
+            &plan,
+            None,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            true,
+            true,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("\"$PYTHON\" -m venv \"$PREFIX/venv\""));
+        assert!(!spec.contains("\"$PYTHON\" -m venv --copies"));
+        assert!(spec.contains("numpy>=1.21.4"));
+        assert!(spec.contains("matplotlib>=3.4.3"));
+        assert!(spec.contains("seaborn>=0.11.2"));
+        assert!(spec.contains("graphviz>=0.17"));
+        assert!(!spec.contains("mafft>=7.490"));
+        assert!(spec.contains(
+            "$PYTHON -m pip install . -vvv --no-deps --no-build-isolation --no-cache-dir\n"
+        ));
+        assert!(!spec.contains(
+            "$PYTHON -m pip install . -vvv --no-deps --no-build-isolation --no-cache-dir || true"
+        ));
+        assert!(spec.contains("SPACERPLACER_MAFFT_PATH"));
+        assert!(spec.contains("rm -rf \"$SP_DIR/sp_model/mafft_scripts\""));
+        assert!(spec.contains("def _custom_ete3():"));
+        assert!(spec.contains("BuildRequires:  chrpath"));
+        assert!(spec.contains("buildroot_prefix=\"%{buildroot}%{phoreus_prefix}\""));
+        assert!(spec.contains("%global __strip /bin/true"));
+        assert!(spec.contains("%global __objdump /bin/true"));
+        assert!(!spec.contains("BuildArch:      noarch"));
+        assert!(spec.contains("noarch suppressed"));
+        assert!(!spec.contains("Requires:  numpy >="));
+        assert!(spec.contains("Requires:  mafft >="));
     }
 
     #[test]
