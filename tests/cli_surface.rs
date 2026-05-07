@@ -24,6 +24,7 @@ fn help_lists_primary_commands() {
         "lookup",
         "list",
         "failures",
+        "todo",
         "catalog",
     ] {
         assert!(
@@ -73,6 +74,85 @@ fn failures_json_emits_catalogue_failures() {
     let parsed: Value = serde_json::from_str(stdout.trim()).expect("failures json");
     assert_eq!(parsed.as_array().expect("array").len(), 1);
     assert_eq!(parsed[0]["software"], "tbl2asn-forever");
+}
+
+#[test]
+fn todo_json_emits_manual_source_file_task() {
+    let topdir = tempdir().expect("tempdir");
+    let topdir_arg = topdir.path().to_string_lossy().to_string();
+    let report_path = topdir.path().join("targets/test-target/reports/build_cap3.json");
+    let spec_path = topdir.path().join("SPECS/phoreus-cap3.spec");
+    std::fs::create_dir_all(report_path.parent().expect("report parent")).expect("reports dir");
+    std::fs::create_dir_all(spec_path.parent().expect("spec parent")).expect("spec dir");
+    std::fs::create_dir_all(topdir.path().join("SOURCES")).expect("sources dir");
+    std::fs::write(
+        &spec_path,
+        "Name: phoreus-cap3\nSource0:        https://example.invalid/downloads/cap3.tar.gz\n",
+    )
+    .expect("write spec");
+    std::fs::write(
+        topdir
+            .path()
+            .join("SOURCES/.bioconda2rpm-source-checksum-cap3.env"),
+        "BIOCONDA2RPM_SOURCE_SHA256='abc123'\n",
+    )
+    .expect("write checksum policy");
+    let report = serde_json::json!([
+        {
+            "software": "cap3",
+            "priority": 0,
+            "status": "quarantined",
+            "reason": "source download failed after retries",
+            "overlap_recipe": "cap3",
+            "overlap_reason": "exact",
+            "variant_dir": "/recipes/cap3",
+            "package_name": "cap3",
+            "version": "10.2011",
+            "payload_spec_path": spec_path.display().to_string(),
+            "meta_spec_path": "",
+            "staged_build_sh": ""
+        }
+    ]);
+    std::fs::write(
+        &report_path,
+        serde_json::to_string(&report).expect("report json"),
+    )
+    .expect("write report");
+    let catalog = serde_json::json!({
+        "entries": [],
+        "failures": [
+            {
+                "software": "cap3",
+                "version": "10.2011",
+                "arch": "aarch64",
+                "target_id": "test-target",
+                "status": "quarantined",
+                "reason": "source download failed after retries",
+                "report_path": report_path.display().to_string(),
+                "failed_at": "2026-05-07T10:00:00Z"
+            }
+        ]
+    });
+    std::fs::write(
+        topdir.path().join(".catalog.json"),
+        serde_json::to_string(&catalog).expect("catalog json"),
+    )
+    .expect("write catalog");
+
+    let output = run(&["todo", "--json", "--topdir", &topdir_arg]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Value = serde_json::from_str(stdout.trim()).expect("todo json");
+    let items = parsed.as_array().expect("array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["software"], "cap3");
+    assert_eq!(items[0]["expected_file"], "cap3.tar.gz");
+    assert_eq!(items[0]["source_url"], "https://example.invalid/downloads/cap3.tar.gz");
+    assert_eq!(items[0]["sha256"], "abc123");
+    assert_eq!(
+        items[0]["command"],
+        "bioconda2rpm build cap3 --files cap3.tar.gz"
+    );
 }
 
 #[test]

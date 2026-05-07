@@ -970,6 +970,16 @@ fn main() -> ExitCode {
                 }
             }
         }
+        cli::Command::Todo(args) => {
+            let topdir = args.effective_topdir();
+            match list::run_todo(&topdir, &args) {
+                Ok(_) => {}
+                Err(err) => {
+                    eprintln!("todo failed: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
         cli::Command::Catalog(args) => match args.command {
             cli::CatalogCommand::Migrate(migrate_args) => {
                 let topdir = migrate_args.effective_topdir();

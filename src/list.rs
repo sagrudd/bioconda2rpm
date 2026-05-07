@@ -1462,6 +1462,212 @@ fn render_failures_text(entries: &[&FailureEntry], cat_path: &Path) -> String {
     out
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct TodoTask {
+    pub software: String,
+    pub version: String,
+    pub arch: String,
+    pub target_id: String,
+    pub failed_at: String,
+    pub kind: String,
+    pub summary: String,
+    pub source_url: String,
+    pub expected_file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub md5: Option<String>,
+    pub command: String,
+    pub report_path: String,
+}
+
+fn source_failure_is_human_actionable(reason: &str) -> bool {
+    let lower = reason.to_ascii_lowercase();
+    lower.contains("source_unavailable")
+        || lower.contains("source unavailable")
+        || lower.contains("source download failed")
+        || lower.contains("source archive validation")
+        || lower.contains("source fetch")
+        || lower.contains("spectool")
+        || lower.contains("no source0")
+        || lower.contains("missing staged source")
+        || lower.contains("blacklisted source_unavailable")
+}
+
+fn value_string<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(|v| v.as_str()).filter(|v| !v.is_empty())
+}
+
+fn report_item_for_failure(entry: &FailureEntry) -> Option<serde_json::Value> {
+    let payload = fs::read_to_string(&entry.report_path).ok()?;
+    let items: Vec<serde_json::Value> = serde_json::from_str(&payload).ok()?;
+    items.into_iter().find(|item| {
+        value_string(item, "software") == Some(entry.software.as_str())
+            && value_string(item, "version").unwrap_or("") == entry.version
+    })
+}
+
+fn source0_from_spec(spec_path: &Path) -> Option<String> {
+    let payload = fs::read_to_string(spec_path).ok()?;
+    payload.lines().find_map(|line| {
+        let trimmed = line.trim();
+        let rest = trimmed.strip_prefix("Source0:")?;
+        let source = rest.trim();
+        if source.is_empty() {
+            None
+        } else {
+            Some(source.to_string())
+        }
+    })
+}
+
+fn problem_url_from_blacklist_reason(reason: &str) -> Option<String> {
+    let marker = "problem_url=";
+    let start = reason.find(marker)? + marker.len();
+    let rest = &reason[start..];
+    let end = rest.find(" justification=").unwrap_or(rest.len());
+    let url = rest[..end].trim();
+    if url.is_empty() || url == "unknown" {
+        None
+    } else {
+        Some(url.to_string())
+    }
+}
+
+fn source_file_from_url(url: &str) -> Option<String> {
+    let mut value = url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/');
+    if value.ends_with("/download") {
+        value = value.trim_end_matches("/download").trim_end_matches('/');
+    }
+    let name = value.rsplit('/').next()?.trim();
+    if name.is_empty() || name == "download" {
+        return None;
+    }
+    Some(name.replace("%20", " "))
+}
+
+fn sanitize_source_label(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn source_checksum_policy(topdir: &Path, software: &str) -> (Option<String>, Option<String>) {
+    let policy = topdir.join("SOURCES").join(format!(
+        ".bioconda2rpm-source-checksum-{}.env",
+        sanitize_source_label(software)
+    ));
+    let Ok(payload) = fs::read_to_string(policy) else {
+        return (None, None);
+    };
+    let mut sha256 = None;
+    let mut md5 = None;
+    for line in payload.lines() {
+        if let Some(rest) = line.strip_prefix("BIOCONDA2RPM_SOURCE_SHA256=") {
+            sha256 = Some(rest.trim_matches('\'').trim_matches('"').to_string());
+        } else if let Some(rest) = line.strip_prefix("BIOCONDA2RPM_SOURCE_MD5=") {
+            md5 = Some(rest.trim_matches('\'').trim_matches('"').to_string());
+        }
+    }
+    (sha256.filter(|v| !v.is_empty()), md5.filter(|v| !v.is_empty()))
+}
+
+fn shell_quote(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | ':'))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+fn todo_task_for_failure(topdir: &Path, entry: &FailureEntry) -> Option<TodoTask> {
+    if !source_failure_is_human_actionable(&entry.reason) {
+        return None;
+    }
+    let report_item = report_item_for_failure(entry);
+    let spec_source = report_item
+        .as_ref()
+        .and_then(|item| value_string(item, "payload_spec_path"))
+        .and_then(|path| source0_from_spec(Path::new(path)));
+    let source_url = spec_source
+        .or_else(|| problem_url_from_blacklist_reason(&entry.reason))
+        .filter(|url| url.starts_with("http://") || url.starts_with("https://") || url.starts_with("ftp://"))?;
+    let expected_file = source_file_from_url(&source_url)?;
+    let (sha256, md5) = source_checksum_policy(topdir, &entry.software);
+    let command = format!(
+        "bioconda2rpm build {} --files {}",
+        shell_quote(&entry.software),
+        shell_quote(&expected_file)
+    );
+    Some(TodoTask {
+        software: entry.software.clone(),
+        version: entry.version.clone(),
+        arch: entry.arch.clone(),
+        target_id: entry.target_id.clone(),
+        failed_at: entry.failed_at.clone(),
+        kind: "manual-source-file".to_string(),
+        summary: format!(
+            "Download the missing source file for {} and retry the build with --files.",
+            entry.software
+        ),
+        source_url,
+        expected_file,
+        sha256,
+        md5,
+        command,
+        report_path: entry.report_path.clone(),
+    })
+}
+
+fn render_todo_text(tasks: &[TodoTask], total_actionable: usize, cat_path: &Path) -> String {
+    if tasks.is_empty() {
+        return format!(
+            "no actionable human todo items found in current failures (catalogue: {})\n",
+            cat_path.display()
+        );
+    }
+    let mut out = format!(
+        "actionable todo items: showing {} of {}\ncatalogue: {}\n\n",
+        tasks.len(),
+        total_actionable,
+        cat_path.display()
+    );
+    for (idx, task) in tasks.iter().enumerate() {
+        if tasks.len() > 1 {
+            out.push_str(&format!("{}. ", idx + 1));
+        }
+        out.push_str(&format!(
+            "{} {} ({}, {})\n",
+            task.software, task.version, task.arch, task.target_id
+        ));
+        out.push_str(&format!("Task: {}\n", task.summary));
+        out.push_str(&format!("Download: {}\n", task.source_url));
+        out.push_str(&format!("Expected file: {}\n", task.expected_file));
+        if let Some(sha256) = task.sha256.as_deref() {
+            out.push_str(&format!("Expected sha256: {sha256}\n"));
+        }
+        if let Some(md5) = task.md5.as_deref() {
+            out.push_str(&format!("Expected md5: {md5}\n"));
+        }
+        out.push_str(&format!("Retry command: {}\n", task.command));
+        out.push_str(&format!("Failure report: {}\n", task.report_path));
+        if idx + 1 < tasks.len() {
+            out.push('\n');
+        }
+    }
+    out
+}
+
 pub fn run_list(topdir: &Path, args: &crate::cli::ListArgs) -> Result<()> {
     let cat_path = catalog_path(topdir);
 
@@ -1537,6 +1743,54 @@ pub fn run_failures(topdir: &Path, args: &crate::cli::FailuresArgs) -> Result<()
         println!("{json}");
     } else {
         print!("{}", render_failures_text(&filtered, &cat_path));
+    }
+
+    Ok(())
+}
+
+pub fn run_todo(topdir: &Path, args: &crate::cli::TodoArgs) -> Result<()> {
+    let cat_path = catalog_path(topdir);
+
+    let catalog = if args.refresh {
+        update_catalog(topdir)
+    } else {
+        read_catalog(topdir)
+    };
+
+    let name_pat = args
+        .name
+        .as_deref()
+        .map(Pattern::new)
+        .transpose()
+        .with_context(|| "invalid --name glob pattern")?;
+    let version_pat = args
+        .version
+        .as_deref()
+        .map(Pattern::new)
+        .transpose()
+        .with_context(|| "invalid --version glob pattern")?;
+
+    let filtered = filter_failures(
+        &catalog.failures,
+        name_pat.as_ref(),
+        version_pat.as_ref(),
+        args.arch.as_deref(),
+    );
+    let actionable: Vec<TodoTask> = filtered
+        .into_iter()
+        .filter_map(|failure| todo_task_for_failure(topdir, failure))
+        .collect();
+    let visible: Vec<TodoTask> = if args.all {
+        actionable.clone()
+    } else {
+        actionable.iter().take(1).cloned().collect()
+    };
+
+    if args.json {
+        let json = serde_json::to_string_pretty(&visible).context("serializing todo entries")?;
+        println!("{json}");
+    } else {
+        print!("{}", render_todo_text(&visible, actionable.len(), &cat_path));
     }
 
     Ok(())
