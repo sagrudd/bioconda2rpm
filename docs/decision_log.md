@@ -229,3 +229,9 @@
 - `bioconda2rpm server` is now the long-lived owner for the existing forwarded-build queue: it acquires the target workspace lock, launches the TUI, accepts optional initial packages, and continues draining forwarded `build` requests after each batch until Ctrl-C.
 - `bioconda2rpm remove` adds an explicit remove-request side channel and prunes the pending forwarded queue. Active owners poll this side channel between scheduling passes and mark removed nodes skipped.
 - Running package containers use deterministic `bioconda2rpm-<package>-...` names, so `remove` also stops matching containers by default; this releases worker capacity for stalled package builds while preserving an auditable queue event. `--queue-only` leaves containers untouched.
+
+### Force bypass and skip evidence
+- `build --force` now bypasses blacklist quarantine for the requested root and its dependency closure, including requests forwarded into a persistent server; unrelated queued assets remain under normal blacklist quarantine.
+- Forwarded queue entries now persist request-level force intent instead of relying only on the server owner's startup flags.
+- `server --force` is rejected because a persistent server must not broadcast force policy across unrelated future submissions.
+- Recipe-declared skips now record adapter, target architecture, rendered skip value, and selector-family detail at the moment of exclusion, and append missing skip entries to `blacklist.txt` when the process is running from the repository root.

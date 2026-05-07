@@ -245,8 +245,9 @@ Per `build <tool>` run:
    - a node builds only after all upstream Bioconda dependency nodes succeed
    - blocked descendants are quarantined/skipped according to missing-dependency policy
    - if another local `bioconda2rpm build ...` process starts while this run owns the workspace lock, that secondary request is forwarded into this queue as additional root package(s)
-   - forwarded requests contribute package names only; queue/scheduler/container configuration remains authoritative from the owning process
-   - when the owning process is running with `--force`, forwarded packages are rebuilt under the same force policy
+   - forwarded requests contribute package names and their `--force` intent; queue/scheduler/container configuration remains authoritative from the owning process
+   - `bioconda2rpm server` itself does not enforce `--force`; submit `bioconda2rpm build --force <package>` to force a package through a running server
+   - when `--force` is used directly or on a forwarded request, blacklist quarantine is bypassed only for the requested package and its dependency closure
    - `bioconda2rpm server` uses the same queue but keeps ownership after a batch completes, draining future forwarded requests until Ctrl-C
    - `bioconda2rpm remove <package...>` records operator removals so pending nodes are skipped and matching active package containers can be stopped
 5. For each package:
@@ -385,7 +386,9 @@ Ensure network access is available for `spectool -g -R` to fetch `Source0`.
 
 If the source URL is gone, returns 404/503, no longer resolves, or downloads an invalid archive, the package is a `source_unavailable` failure. This is an intentional provenance boundary: `bioconda2rpm` does not turn missing source builds into binary repacks from existing conda artifacts.
 
-Known unavailable upstream sources and recipe-declared build skips are recorded in the repository-root `blacklist.txt` CSV with `package`, `problem_url`, and `justification` columns. Packages listed there are quarantined early; remove or update an entry only when a provenance-preserving source-equivalent URL is available again or the skipped recipe has a supported build path.
+Known unavailable upstream sources and recipe-declared build skips are recorded in the repository-root `blacklist.txt` CSV with `package`, `problem_url`, and `justification` columns. Packages listed there are quarantined early unless `build --force` is used; remove or update an entry only when a provenance-preserving source-equivalent URL is available again or the skipped recipe has a supported build path.
+
+When a recipe renders `build.skip=true`, the skip is recorded immediately with adapter, target architecture, and selector-family detail such as interpreter or platform selector. These entries are appended to `blacklist.txt` when the command is run from the repository root, so running-session skipped state and committed blacklist evidence do not drift silently.
 
 ## 10. Recommended Enterprise Run Pattern
 

@@ -7,7 +7,7 @@ use crate::cli::{
 use crate::list;
 use anyhow::{Context, Result};
 use chrono::Utc;
-use csv::{ReaderBuilder, Writer};
+use csv::{ReaderBuilder, Writer, WriterBuilder};
 use minijinja::{Environment, context, value::Kwargs};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -73,11 +73,14 @@ pub(crate) struct ParsedMeta {
 struct ParsedRecipeResult {
     parsed: ParsedMeta,
     build_skip: bool,
+    build_skip_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct CondaRenderMetadata {
     build_skip: bool,
+    #[serde(default)]
+    build_skip_reason: Option<String>,
     package_name: String,
     version: String,
     build_number: String,
@@ -99,6 +102,7 @@ struct ResolvedParsedRecipe {
     resolved: ResolvedRecipe,
     parsed: ParsedMeta,
     build_skip: bool,
+    build_skip_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -837,6 +841,7 @@ impl<'a> BuildPlanContext<'a> {
             resolved,
             parsed: parsed_result.parsed,
             build_skip: parsed_result.build_skip,
+            build_skip_reason: parsed_result.build_skip_reason,
         }))
     }
 
@@ -1214,7 +1219,14 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     if root_recipe.build_skip {
         let root_slug = normalize_name(&root_recipe.resolved.recipe_name);
         clear_quarantine_note(&bad_spec_dir, &root_slug);
-        let reason = "recipe declares build.skip=true for this render context".to_string();
+        let reason = root_recipe.build_skip_reason.clone().unwrap_or_else(|| {
+            "recipe declares build.skip=true for this render context".to_string()
+        });
+        record_build_skip_blacklist_entry(
+            &root_recipe.parsed.package_name,
+            &root_recipe.resolved,
+            &reason,
+        );
         let entry = ReportEntry {
             software: root_recipe.resolved.recipe_name.clone(),
             priority: 0,
@@ -1233,7 +1245,13 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         let report_json = reports_dir.join(format!("build_{report_stem}.json"));
         let report_csv = reports_dir.join(format!("build_{report_stem}.csv"));
         let report_md = reports_dir.join(format!("build_{report_stem}.md"));
-        write_reports(&[entry], &report_json, &report_csv, &report_md)?;
+        let entries = vec![entry];
+        write_reports(&entries, &report_json, &report_csv, &report_md)?;
+        if let Err(err) =
+            list::record_build_results(&topdir, &entries, &target_arch, &target_id, &report_json)
+        {
+            log_progress(format!("phase=catalog-update status=failed reason={}", err));
+        }
         let kpi = compute_arch_adjusted_kpi(&[]);
         return Ok(BuildSummary {
             requested: 1,
@@ -1595,6 +1613,22 @@ fn requeue_existing_node_for_rerun(
     true
 }
 
+fn mark_force_dependency_closure(
+    root_key: &str,
+    global_nodes: &BTreeMap<String, BuildPlanNode>,
+    forced_keys: &mut HashSet<String>,
+) {
+    let mut stack = vec![root_key.to_string()];
+    while let Some(key) = stack.pop() {
+        if !forced_keys.insert(key.clone()) {
+            continue;
+        }
+        if let Some(node) = global_nodes.get(&key) {
+            stack.extend(node.direct_bioconda_deps.iter().cloned());
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DuplicateForwardedRequestAction {
     Rerun,
@@ -1603,6 +1637,7 @@ enum DuplicateForwardedRequestAction {
 
 fn classify_duplicate_forwarded_request(
     key: &str,
+    force_rebuild: bool,
     node_present: bool,
     finalized: &HashSet<String>,
     succeeded: &HashSet<String>,
@@ -1616,9 +1651,8 @@ fn classify_duplicate_forwarded_request(
     if running_keys.contains(key) {
         return DuplicateForwardedRequestAction::Ignore("already-running");
     }
-    if succeeded.contains(key) {
+    if succeeded.contains(key) && !force_rebuild {
         // Never rerun successful packages within the same active session,
-        // even when the owning session was started with --force.
         return DuplicateForwardedRequestAction::Ignore("already-successful-session");
     }
     if !node_present {
@@ -1826,6 +1860,7 @@ fn run_build_batch_queue(
     let mut pending_fail_queue: VecDeque<String> = VecDeque::new();
     let mut build_order = Vec::new();
     let mut removed_keys: HashMap<String, String> = HashMap::new();
+    let mut forced_keys: HashSet<String> = HashSet::new();
 
     while !ready.is_empty() || running > 0 || !pending_fail_queue.is_empty() {
         if !cancellation_requested() {
@@ -1909,6 +1944,7 @@ fn run_build_batch_queue(
                         if !requested_root_keys.insert(key.clone()) {
                             match classify_duplicate_forwarded_request(
                                 &key,
+                                forwarded.force_rebuild,
                                 global_nodes.contains_key(&key),
                                 &finalized,
                                 &succeeded,
@@ -1930,10 +1966,18 @@ fn run_build_batch_queue(
                                         &running_keys,
                                     );
                                     if queued {
+                                        if forwarded.force_rebuild {
+                                            mark_force_dependency_closure(
+                                                &key,
+                                                &global_nodes,
+                                                &mut forced_keys,
+                                            );
+                                        }
                                         log_progress(format!(
-                                            "phase=workspace-lock status=forwarded-request-rerun package={} key={} submit_host={} submit_pid={} submit_ts={} queued={} reason=previous-attempt-not-successful",
+                                            "phase=workspace-lock status=forwarded-request-rerun package={} key={} force={} submit_host={} submit_pid={} submit_ts={} queued={} reason=previous-attempt-not-successful",
                                             root,
                                             key,
+                                            forwarded.force_rebuild,
                                             forwarded.submitted_host,
                                             forwarded.submitted_pid,
                                             forwarded.submitted_at_utc,
@@ -1971,10 +2015,14 @@ fn run_build_batch_queue(
                             continue;
                         }
                         requested_roots.push(root.clone());
+                        if forwarded.force_rebuild {
+                            forced_keys.insert(key.clone());
+                        }
                         log_progress(format!(
-                            "phase=workspace-lock status=forwarded-request-received package={} target_id={} submit_host={} submit_pid={} submit_ts={}",
+                            "phase=workspace-lock status=forwarded-request-received package={} target_id={} force={} submit_host={} submit_pid={} submit_ts={}",
                             root,
                             build_config.target_id,
+                            forwarded.force_rebuild,
                             forwarded.submitted_host,
                             forwarded.submitted_pid,
                             forwarded.submitted_at_utc
@@ -2003,6 +2051,13 @@ fn run_build_batch_queue(
                                     &mut ready,
                                     &mut pending_fail_queue,
                                 );
+                                if forwarded.force_rebuild {
+                                    mark_force_dependency_closure(
+                                        &key,
+                                        &global_nodes,
+                                        &mut forced_keys,
+                                    );
+                                }
                                 log_progress(format!(
                                     "phase=dependency-plan status=completed package={} planned_nodes={} added_nodes={} parsed_recipes={} order={}",
                                     root,
@@ -2146,6 +2201,9 @@ fn run_build_batch_queue(
             let sources_dir_c = Arc::clone(&sources_dir);
             let bad_spec_dir_c = Arc::clone(&bad_spec_dir);
             let build_config_c = Arc::clone(&build_config);
+            let mut package_build_config = (*build_config_c).clone();
+            package_build_config.force_rebuild =
+                package_build_config.force_rebuild || forced_keys.contains(&key_for_thread);
             let metadata_adapter_c = Arc::clone(&metadata_adapter);
             running += 1;
             running_keys.insert(key_for_thread.clone());
@@ -2165,7 +2223,7 @@ fn run_build_batch_queue(
                     specs_dir_c.as_path(),
                     sources_dir_c.as_path(),
                     bad_spec_dir_c.as_path(),
-                    &build_config_c,
+                    &package_build_config,
                     &metadata_adapter_c,
                 );
                 let _ = txc.send((key_for_thread, entry, package_started.elapsed()));
@@ -2752,9 +2810,15 @@ fn visit_build_plan_node(
     let resolved = &resolved_parsed.resolved;
     let parsed = &resolved_parsed.parsed;
     if resolved_parsed.build_skip && !is_root {
+        let reason = resolved_parsed
+            .build_skip_reason
+            .as_deref()
+            .unwrap_or("recipe declares build.skip=true for this render context");
+        record_build_skip_blacklist_entry(&parsed.package_name, resolved, reason);
         log_progress(format!(
-            "phase=dependency action=skip package={} reason=build.skip=true",
-            resolved.recipe_name
+            "phase=dependency action=skip package={} reason={}",
+            resolved.recipe_name,
+            compact_reason(reason, 220)
         ));
         return Ok(None);
     }
@@ -3159,6 +3223,7 @@ fn resolve_and_parse_recipe_with_constraints(
         resolved,
         parsed: parsed_result.parsed,
         build_skip: parsed_result.build_skip,
+        build_skip_reason: parsed_result.build_skip_reason,
     }))
 }
 
@@ -3220,13 +3285,27 @@ fn parse_meta_for_resolved_native(
         )
     })?;
     let build_skip = rendered_meta_declares_build_skip(&rendered);
+    let build_skip_reason = if build_skip {
+        Some(build_skip_reason_for_recipe(
+            resolved,
+            Some(&rendered),
+            target_arch,
+            "native-render",
+        ))
+    } else {
+        None
+    };
     let parsed = parse_rendered_meta(&rendered).with_context(|| {
         format!(
             "failed to parse rendered metadata for {}",
             resolved.meta_path.display()
         )
     })?;
-    Ok(ParsedRecipeResult { parsed, build_skip })
+    Ok(ParsedRecipeResult {
+        parsed,
+        build_skip,
+        build_skip_reason,
+    })
 }
 
 fn parse_meta_for_resolved_conda(
@@ -3292,6 +3371,18 @@ fn parse_meta_for_resolved_conda(
     Ok(ParsedRecipeResult {
         parsed,
         build_skip: adapter.build_skip,
+        build_skip_reason: if adapter.build_skip {
+            adapter.build_skip_reason.or_else(|| {
+                Some(build_skip_reason_for_recipe(
+                    resolved,
+                    None,
+                    target_arch,
+                    "conda-render",
+                ))
+            })
+        } else {
+            None
+        },
     })
 }
 
@@ -3392,13 +3483,20 @@ fn build_blacklist_entries() -> &'static [BuildBlacklistEntry] {
         .as_slice()
 }
 
-fn build_blacklist_entry(package_name: &str) -> Option<&'static BuildBlacklistEntry> {
+fn build_blacklist_entry(package_name: &str) -> Option<BuildBlacklistEntry> {
     let key = normalize_name(package_name);
     if key.is_empty() {
         return None;
     }
-    build_blacklist_entries()
+    if let Some(entry) = build_blacklist_entries()
         .iter()
+        .find(|entry| entry.normalized_package == key)
+        .cloned()
+    {
+        return Some(entry);
+    }
+    runtime_build_blacklist_entries()
+        .into_iter()
         .find(|entry| entry.normalized_package == key)
 }
 
@@ -3418,6 +3516,106 @@ fn build_blacklist_kind(entry: &BuildBlacklistEntry) -> &'static str {
         "build_skip"
     } else {
         "source_unavailable"
+    }
+}
+
+fn parse_blacklist_entries(raw: &str) -> Vec<BuildBlacklistEntry> {
+    let mut reader = ReaderBuilder::new()
+        .has_headers(true)
+        .trim(csv::Trim::All)
+        .from_reader(raw.as_bytes());
+    reader
+        .deserialize::<BuildBlacklistCsvRow>()
+        .filter_map(|row| row.ok())
+        .map(|row| BuildBlacklistEntry {
+            normalized_package: normalize_name(&row.package),
+            package: row.package,
+            problem_url: row.problem_url,
+            justification: row.justification,
+        })
+        .filter(|entry| !entry.normalized_package.is_empty())
+        .collect()
+}
+
+fn runtime_blacklist_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("BIOCONDA2RPM_BLACKLIST") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+    let current_dir = std::env::current_dir().ok()?;
+    let path = current_dir.join("blacklist.txt");
+    if path.exists() || current_dir.join("Cargo.toml").exists() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn runtime_build_blacklist_entries() -> Vec<BuildBlacklistEntry> {
+    let Some(path) = runtime_blacklist_path() else {
+        return Vec::new();
+    };
+    match fs::read_to_string(&path) {
+        Ok(raw) => parse_blacklist_entries(&raw),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn append_runtime_blacklist_entry(entry: &BuildBlacklistEntry) -> Result<()> {
+    let Some(path) = runtime_blacklist_path() else {
+        return Ok(());
+    };
+    if build_blacklist_entry(&entry.package).is_some() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating blacklist parent {}", parent.display()))?;
+    }
+    let needs_header = !path.exists()
+        || fs::metadata(&path)
+            .map(|metadata| metadata.len() == 0)
+            .unwrap_or(true);
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("opening blacklist {}", path.display()))?;
+    let mut writer = WriterBuilder::new().has_headers(false).from_writer(file);
+    if needs_header {
+        writer.write_record(["package", "problem_url", "justification"])?;
+    }
+    writer.write_record([&entry.package, &entry.problem_url, &entry.justification])?;
+    writer.flush()?;
+    log_progress(format!(
+        "phase=blacklist status=recorded package={} url={} reason={}",
+        entry.package,
+        entry.problem_url,
+        compact_reason(&entry.justification, 180)
+    ));
+    Ok(())
+}
+
+fn record_build_skip_blacklist_entry(package: &str, resolved: &ResolvedRecipe, reason: &str) {
+    let entry = BuildBlacklistEntry {
+        normalized_package: normalize_name(package),
+        package: package.to_string(),
+        problem_url: format!(
+            "recipe://bioconda-recipes/recipes/{}/meta.yaml",
+            resolved.recipe_name
+        ),
+        justification: format!(
+            "Bioconda recipe declares build.skip=true for the active render context; {reason}"
+        ),
+    };
+    if let Err(err) = append_runtime_blacklist_entry(&entry) {
+        log_progress(format!(
+            "phase=blacklist status=failed package={} reason={}",
+            package,
+            compact_reason(&err.to_string(), 220)
+        ));
     }
 }
 
@@ -3555,16 +3753,17 @@ fn process_tool(
         };
     let mut parsed = parsed_result.parsed;
 
-    if let Some(blacklist_entry) = build_blacklist_entry(&software_slug)
-        .or_else(|| build_blacklist_entry(&parsed.package_name))
+    if !build_config.force_rebuild
+        && let Some(blacklist_entry) = build_blacklist_entry(&software_slug)
+            .or_else(|| build_blacklist_entry(&parsed.package_name))
     {
-        let reason = build_blacklist_reason(blacklist_entry);
+        let reason = build_blacklist_reason(&blacklist_entry);
         quarantine_note(bad_spec_dir, &software_slug, &reason);
         log_progress(format!(
             "phase=package status=quarantined package={} version={} reason=blacklisted-{} url={}",
             tool.software,
             parsed.version,
-            build_blacklist_kind(blacklist_entry),
+            build_blacklist_kind(&blacklist_entry),
             blacklist_entry.problem_url
         ));
         return ReportEntry {
@@ -3581,19 +3780,36 @@ fn process_tool(
             meta_spec_path: String::new(),
             staged_build_sh: String::new(),
         };
+    } else if build_config.force_rebuild
+        && let Some(blacklist_entry) = build_blacklist_entry(&software_slug)
+            .or_else(|| build_blacklist_entry(&parsed.package_name))
+    {
+        log_progress(format!(
+            "phase=package status=blacklist-bypassed package={} version={} force=true reason=blacklisted-{} url={}",
+            tool.software,
+            parsed.version,
+            build_blacklist_kind(&blacklist_entry),
+            blacklist_entry.problem_url
+        ));
     }
 
     if parsed_result.build_skip {
         clear_quarantine_note(bad_spec_dir, &software_slug);
+        let reason = parsed_result.build_skip_reason.unwrap_or_else(|| {
+            "recipe declares build.skip=true for this render context".to_string()
+        });
+        record_build_skip_blacklist_entry(&parsed.package_name, &resolved, &reason);
         log_progress(format!(
-            "phase=package status=skipped package={} version={} reason=build-skip-selector",
-            tool.software, parsed.version
+            "phase=package status=skipped package={} version={} reason={}",
+            tool.software,
+            parsed.version,
+            compact_reason(&reason, 220)
         ));
         return ReportEntry {
             software: tool.software.clone(),
             priority: tool.priority,
             status: "skipped".to_string(),
-            reason: "recipe declares build.skip=true for this render context".to_string(),
+            reason,
             overlap_recipe: resolved.recipe_name,
             overlap_reason: resolved.overlap_reason,
             variant_dir: resolved.variant_dir.display().to_string(),
@@ -4839,6 +5055,92 @@ fn rendered_meta_declares_build_skip(rendered: &str) -> bool {
         return normalized == "true" || normalized == "yes" || normalized == "1";
     }
     false
+}
+
+fn rendered_meta_build_skip_value(rendered: &str) -> Option<String> {
+    let doc: Value = serde_yaml::from_str(rendered).ok()?;
+    let skip = doc.get("build")?.get("skip")?;
+    if let Some(b) = skip.as_bool()
+        && b
+    {
+        return Some("true".to_string());
+    }
+    if let Some(s) = skip.as_str() {
+        let normalized = s.trim().to_ascii_lowercase();
+        if normalized == "true" || normalized == "yes" || normalized == "1" {
+            return Some(s.trim().to_string());
+        }
+    }
+    None
+}
+
+fn build_skip_reason_for_recipe(
+    resolved: &ResolvedRecipe,
+    rendered: Option<&str>,
+    target_arch: &str,
+    adapter: &str,
+) -> String {
+    let rendered_skip = rendered
+        .and_then(rendered_meta_build_skip_value)
+        .unwrap_or_else(|| "true".to_string());
+    let meta_text = fs::read_to_string(&resolved.meta_path).unwrap_or_default();
+    let skip_lines = recipe_build_skip_lines(&meta_text);
+    let selector_family = classify_build_skip_selector_family(&skip_lines);
+    let line_detail = if skip_lines.is_empty() {
+        "skip_lines=none".to_string()
+    } else {
+        format!(
+            "skip_lines={}",
+            compact_reason(&skip_lines.join(" ; "), 260)
+        )
+    };
+    format!(
+        "recipe declares build.skip=true for this render context; adapter={} target_arch={} rendered_skip={} selector_family={} {} recipe={}",
+        adapter,
+        target_arch,
+        rendered_skip,
+        selector_family,
+        line_detail,
+        resolved.meta_path.display()
+    )
+}
+
+fn recipe_build_skip_lines(meta_text: &str) -> Vec<String> {
+    meta_text
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.starts_with("skip:") || lower.contains(" skip:")
+        })
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .take(8)
+        .collect()
+}
+
+fn classify_build_skip_selector_family(skip_lines: &[String]) -> &'static str {
+    let joined = skip_lines.join(" ").to_ascii_lowercase();
+    if joined.contains("py")
+        || joined.contains("python")
+        || joined.contains("numpy")
+        || joined.contains("perl")
+        || joined.contains("r_base")
+    {
+        "interpreter-selector"
+    } else if joined.contains("linux")
+        || joined.contains("osx")
+        || joined.contains("win")
+        || joined.contains("aarch64")
+        || joined.contains("arm64")
+        || joined.contains("x86_64")
+        || joined.contains("ppc64le")
+    {
+        "platform-selector"
+    } else if joined.contains('#') {
+        "selector"
+    } else {
+        "unconditional"
+    }
 }
 
 fn extract_dep_specs_raw(node: &Value) -> Vec<String> {
@@ -16337,6 +16639,20 @@ build:
     }
 
     #[test]
+    fn build_skip_reason_classifies_interpreter_selectors() {
+        let lines = recipe_build_skip_lines(
+            r#"
+build:
+  skip: true  # [py<38]
+"#,
+        );
+        assert_eq!(
+            classify_build_skip_selector_family(&lines),
+            "interpreter-selector"
+        );
+    }
+
+    #[test]
     fn parse_meta_preserves_raw_run_dependency_specs() {
         let rendered = r#"
 package:
@@ -20529,7 +20845,7 @@ error: build stopped\n";
 
         let bax2bam = build_blacklist_entry("bax2bam").expect("bax2bam blacklist entry");
         assert!(bax2bam.justification.contains("binary repacks"));
-        assert!(build_blacklist_reason(bax2bam).contains("source_unavailable"));
+        assert!(build_blacklist_reason(&bax2bam).contains("source_unavailable"));
 
         let skipped =
             build_blacklist_entry("2pg_cartesian").expect("2pg_cartesian blacklist entry");
@@ -20547,12 +20863,19 @@ error: build stopped\n";
     fn build_blacklist_is_checked_before_build_skip_return() {
         let source = include_str!("priority_specs.rs");
         let blacklist_pos = source
-            .find("build_blacklist_entry(&software_slug)")
+            .find("if !build_config.force_rebuild")
             .expect("blacklist lookup in process_tool");
         let skip_pos = source
             .find("if parsed_result.build_skip")
             .expect("build skip return in process_tool");
         assert!(blacklist_pos < skip_pos);
+    }
+
+    #[test]
+    fn build_blacklist_lookup_is_force_gated() {
+        let source = include_str!("priority_specs.rs");
+        assert!(source.contains("if !build_config.force_rebuild"));
+        assert!(source.contains("status=blacklist-bypassed"));
     }
 
     #[test]
@@ -20897,6 +21220,7 @@ about:
 
         let action = classify_duplicate_forwarded_request(
             &key,
+            false,
             true,
             &finalized,
             &succeeded,
@@ -20918,6 +21242,7 @@ about:
 
         let action = classify_duplicate_forwarded_request(
             &key,
+            false,
             true,
             &finalized,
             &succeeded,
@@ -20929,6 +21254,18 @@ about:
             action,
             DuplicateForwardedRequestAction::Ignore("already-successful-session")
         );
+
+        let forced_action = classify_duplicate_forwarded_request(
+            &key,
+            true,
+            true,
+            &finalized,
+            &succeeded,
+            &running,
+            &ready,
+            &pending_fail,
+        );
+        assert_eq!(forced_action, DuplicateForwardedRequestAction::Rerun);
     }
 
     #[test]
@@ -20938,6 +21275,7 @@ about:
         running.insert(key.clone());
         let action_running = classify_duplicate_forwarded_request(
             &key,
+            false,
             true,
             &HashSet::new(),
             &HashSet::new(),
@@ -20954,6 +21292,7 @@ about:
         ready.push_back(key.clone());
         let action_ready = classify_duplicate_forwarded_request(
             &key,
+            false,
             true,
             &HashSet::new(),
             &HashSet::new(),
@@ -20965,6 +21304,38 @@ about:
             action_ready,
             DuplicateForwardedRequestAction::Ignore("already-queued")
         );
+    }
+
+    #[test]
+    fn force_marker_includes_dependency_closure() {
+        let mut nodes = BTreeMap::new();
+        nodes.insert(
+            "root".to_string(),
+            BuildPlanNode {
+                name: "root".to_string(),
+                direct_bioconda_deps: BTreeSet::from(["dep-a".to_string()]),
+            },
+        );
+        nodes.insert(
+            "dep-a".to_string(),
+            BuildPlanNode {
+                name: "dep-a".to_string(),
+                direct_bioconda_deps: BTreeSet::from(["dep-b".to_string()]),
+            },
+        );
+        nodes.insert(
+            "unrelated".to_string(),
+            BuildPlanNode {
+                name: "unrelated".to_string(),
+                direct_bioconda_deps: BTreeSet::new(),
+            },
+        );
+        let mut forced = HashSet::new();
+        mark_force_dependency_closure("root", &nodes, &mut forced);
+        assert!(forced.contains("root"));
+        assert!(forced.contains("dep-a"));
+        assert!(forced.contains("dep-b"));
+        assert!(!forced.contains("unrelated"));
     }
 
     #[test]

@@ -212,6 +212,12 @@ fn main() -> ExitCode {
         }
         cli::Command::Server(mut args) => {
             priority_specs::reset_cancellation();
+            if args.force {
+                eprintln!(
+                    "server does not accept --force; start the server without --force and submit forced work with `bioconda2rpm build --force <package>`"
+                );
+                return ExitCode::FAILURE;
+            }
             let topdir = args.effective_topdir();
             let bad_spec = args.effective_bad_spec_dir();
             let reports = args.effective_reports_dir();
@@ -227,7 +233,7 @@ fn main() -> ExitCode {
                 Some(ui)
             };
 
-            let mut pending_packages = match collect_initial_server_packages(&args) {
+            let initial_packages = match collect_initial_server_packages(&args) {
                 Ok(packages) => packages,
                 Err(err) => {
                     priority_specs::clear_progress_sink();
@@ -238,20 +244,26 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            let owner_force = false;
+            let mut pending_packages = initial_packages
+                .iter()
+                .cloned()
+                .map(|package| (package, owner_force))
+                .collect::<Vec<_>>();
 
             let _server_session = match build_lock::BuildSessionGuard::acquire(
                 &topdir,
                 &args.effective_target_id(),
-                &pending_packages,
+                &initial_packages,
                 build_lock::BuildSessionKind::Build,
-                args.force,
+                false,
             ) {
                 Ok(guard) => {
                     priority_specs::log_external_progress(format!(
                         "phase=workspace-lock status=server-acquired topdir={} target_id={} initial_packages={}",
                         topdir.display(),
                         args.effective_target_id(),
-                        pending_packages.join(",")
+                        initial_packages.join(",")
                     ));
                     guard
                 }
@@ -302,7 +314,7 @@ fn main() -> ExitCode {
                 ) {
                     Ok(forwarded) => {
                         for request in forwarded {
-                            pending_packages.push(request.package);
+                            pending_packages.push((request.package, request.force_rebuild));
                         }
                     }
                     Err(err) => {
@@ -314,8 +326,19 @@ fn main() -> ExitCode {
                     }
                 }
 
-                pending_packages.sort();
-                pending_packages.dedup();
+                pending_packages.sort_by(|a, b| a.0.cmp(&b.0));
+                let mut merged_packages: Vec<(String, bool)> = Vec::new();
+                for (package, force) in std::mem::take(&mut pending_packages) {
+                    if let Some((_, existing_force)) = merged_packages
+                        .iter_mut()
+                        .find(|(existing, _)| existing == &package)
+                    {
+                        *existing_force |= force;
+                    } else {
+                        merged_packages.push((package, force));
+                    }
+                }
+                pending_packages = merged_packages;
                 if pending_packages.is_empty() {
                     priority_specs::log_external_progress(format!(
                         "phase=server status=waiting target_id={} detail=idle-until-forwarded-build-or-ctrl-c",
@@ -325,34 +348,58 @@ fn main() -> ExitCode {
                     continue;
                 }
 
-                args.packages = std::mem::take(&mut pending_packages);
-                priority_specs::log_external_progress(format!(
-                    "phase=server status=build-start target_id={} packages={}",
-                    args.effective_target_id(),
-                    args.packages.join(",")
-                ));
-                let outcome = priority_specs::run_build(&args);
-                match outcome {
-                    Ok(summary) => {
-                        priority_specs::log_external_progress(format!(
-                            "phase=server status=build-completed requested={} generated={} up_to_date={} skipped={} quarantined={} kpi_success_rate={:.2}",
-                            summary.requested,
-                            summary.generated,
-                            summary.up_to_date,
-                            summary.skipped,
-                            summary.quarantined,
-                            summary.kpi_success_rate
-                        ));
+                let batch_items = std::mem::take(&mut pending_packages);
+                let mut normal_packages = batch_items
+                    .iter()
+                    .filter_map(
+                        |(package, force)| if *force { None } else { Some(package.clone()) },
+                    )
+                    .collect::<Vec<_>>();
+                let mut forced_packages = batch_items
+                    .into_iter()
+                    .filter_map(|(package, force)| if force { Some(package) } else { None })
+                    .collect::<Vec<_>>();
+                for (force, packages) in
+                    [(false, &mut normal_packages), (true, &mut forced_packages)]
+                {
+                    if packages.is_empty() {
+                        continue;
                     }
-                    Err(err) => {
-                        if priority_specs::cancellation_requested_public() {
-                            break;
+                    packages.sort();
+                    packages.dedup();
+                    args.packages = packages.clone();
+                    args.force = force;
+                    priority_specs::log_external_progress(format!(
+                        "phase=server status=build-start target_id={} force={} packages={}",
+                        args.effective_target_id(),
+                        args.force,
+                        args.packages.join(",")
+                    ));
+                    let outcome = priority_specs::run_build(&args);
+                    args.force = false;
+                    match outcome {
+                        Ok(summary) => {
+                            priority_specs::log_external_progress(format!(
+                                "phase=server status=build-completed requested={} generated={} up_to_date={} skipped={} quarantined={} kpi_success_rate={:.2}",
+                                summary.requested,
+                                summary.generated,
+                                summary.up_to_date,
+                                summary.skipped,
+                                summary.quarantined,
+                                summary.kpi_success_rate
+                            ));
                         }
-                        priority_specs::log_external_progress(format!(
-                            "phase=server status=build-error target_id={} detail={}",
-                            args.effective_target_id(),
-                            err
-                        ));
+                        Err(err) => {
+                            if priority_specs::cancellation_requested_public() {
+                                break;
+                            }
+                            priority_specs::log_external_progress(format!(
+                                "phase=server status=build-error target_id={} force={} detail={}",
+                                args.effective_target_id(),
+                                force,
+                                err
+                            ));
+                        }
                     }
                 }
                 args.packages.clear();

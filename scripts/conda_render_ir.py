@@ -69,6 +69,7 @@ def build_script(value: Any) -> str | None:
 def default_payload(recipe_dir: pathlib.Path, skip: bool) -> dict[str, Any]:
     return {
         "build_skip": skip,
+        "build_skip_reason": None,
         "package_name": recipe_dir.name,
         "version": "",
         "build_number": "0",
@@ -116,6 +117,9 @@ def main() -> int:
 
     if not rendered:
         payload["build_skip"] = True
+        payload["build_skip_reason"] = (
+            "conda-build render returned no buildable outputs for the active selector context"
+        )
         return emit(payload)
 
     meta = rendered[0][0]

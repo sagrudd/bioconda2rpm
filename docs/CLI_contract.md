@@ -163,7 +163,9 @@ Regression-only options:
 - Multiple requested roots are supported in one build invocation.
 - Multi-package queue mode enforces dependency gates: a package is dispatched only after its Bioconda dependency nodes succeed.
 - Workspace-lock ownership is authoritative: secondary `build` invocations submit package names into the active session queue instead of failing lock-acquisition.
-- Forwarded packages inherit the authoritative session force-rebuild policy (`--force`) and do not override other scheduler/container settings.
+- Forwarded packages carry `--force` into the authoritative queue for that request and otherwise inherit the owning session scheduler/container settings.
+- The persistent `server` process does not own or broadcast `--force`; submit `bioconda2rpm build --force <package>` to force a package through a running server.
+- `--force` bypasses blacklist quarantine only for the requested package and its dependency closure; recipe-declared `build.skip=true` still records a skipped result because the active render context has no buildable recipe output.
 - Persistent `server` ownership keeps the queue interface available between batches and exits only on user Ctrl-C.
 - Operator removals are explicit queue events; removed package nodes are reported as skipped and their dependents are blocked by normal dependency-gate handling.
 - Recipes with `outputs:` are expanded into discrete package outputs.

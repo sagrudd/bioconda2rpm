@@ -39,6 +39,7 @@ pub struct ForwardedBuildRequest {
 #[derive(Debug, Clone)]
 pub struct ForwardedQueuedPackage {
     pub package: String,
+    pub force_rebuild: bool,
     pub submitted_host: String,
     pub submitted_pid: u32,
     pub submitted_at_utc: String,
@@ -60,6 +61,7 @@ pub struct LookupQueuedBuildRequest {
     pub pid: u32,
     pub target_id: String,
     pub packages: Vec<String>,
+    pub force_rebuild: bool,
     pub submitted_host: String,
     pub submitted_at_utc: String,
 }
@@ -120,6 +122,8 @@ struct BuildQueueRequest {
     pid: u32,
     target_id: String,
     packages: Vec<String>,
+    #[serde(default)]
+    force_rebuild: bool,
     #[serde(default = "default_host_name")]
     submitted_host: String,
     submitted_at_utc: String,
@@ -319,7 +323,7 @@ impl BuildSessionGuard {
                 if queued_packages.is_empty() {
                     bail!("no package names to submit to active build queue");
                 }
-                append_build_request(topdir, target_id, &queued_packages)?;
+                append_build_request(topdir, target_id, &queued_packages, force_rebuild)?;
                 Ok(BuildAcquireOutcome::Forwarded(ForwardedBuildRequest {
                     owner_pid: owner.pid,
                     owner_target_id: owner.target_id.clone(),
@@ -447,6 +451,7 @@ pub fn drain_forwarded_build_requests(
                 }
                 queued.push(ForwardedQueuedPackage {
                     package,
+                    force_rebuild: req.force_rebuild,
                     submitted_host: req.submitted_host.clone(),
                     submitted_pid: req.pid,
                     submitted_at_utc: req.submitted_at_utc.clone(),
@@ -800,6 +805,7 @@ fn load_queued_requests(path: &Path) -> Result<Vec<LookupQueuedBuildRequest>> {
             pid: req.pid,
             target_id: req.target_id,
             packages: req.packages,
+            force_rebuild: req.force_rebuild,
             submitted_host: req.submitted_host,
             submitted_at_utc: req.submitted_at_utc,
         });
@@ -842,7 +848,12 @@ fn write_state(path: &Path, state: &ActiveBuildState) -> Result<()> {
     Ok(())
 }
 
-fn append_build_request(topdir: &Path, target_id: &str, packages: &[String]) -> Result<()> {
+fn append_build_request(
+    topdir: &Path,
+    target_id: &str,
+    packages: &[String],
+    force_rebuild: bool,
+) -> Result<()> {
     let requests_file = topdir.join(REQUESTS_FILE_NAME);
     let mut file = fs::OpenOptions::new()
         .create(true)
@@ -857,6 +868,7 @@ fn append_build_request(topdir: &Path, target_id: &str, packages: &[String]) -> 
         pid: std::process::id(),
         target_id: target_id.to_string(),
         packages: packages.to_vec(),
+        force_rebuild,
         submitted_host: current_host_name(),
         submitted_at_utc: chrono::Utc::now().to_rfc3339(),
     };
@@ -893,6 +905,7 @@ mod tests {
             pid: 1,
             target_id: "target-a".to_string(),
             packages: vec!["samtools".to_string(), "bcftools".to_string()],
+            force_rebuild: true,
             submitted_host: "host-a".to_string(),
             submitted_at_utc: "2026-03-01T00:00:00Z".to_string(),
         };
@@ -900,6 +913,7 @@ mod tests {
             pid: 2,
             target_id: "target-b".to_string(),
             packages: vec!["blast".to_string()],
+            force_rebuild: false,
             submitted_host: "host-b".to_string(),
             submitted_at_utc: "2026-03-01T00:00:01Z".to_string(),
         };
@@ -913,8 +927,10 @@ mod tests {
         let drained = drain_forwarded_build_requests(&topdir, "target-a").expect("drain requests");
         assert_eq!(drained.len(), 2);
         assert_eq!(drained[0].package, "samtools");
+        assert!(drained[0].force_rebuild);
         assert_eq!(drained[0].submitted_host, "host-a");
         assert_eq!(drained[1].package, "bcftools");
+        assert!(drained[1].force_rebuild);
         assert_eq!(drained[1].submitted_host, "host-a");
 
         let remainder = fs::read_to_string(&requests).expect("read remaining requests");
@@ -959,6 +975,7 @@ mod tests {
         let drained = drain_forwarded_build_requests(&topdir, "target-a").expect("drain requests");
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].package, "blast");
+        assert!(!drained[0].force_rebuild);
         assert!(!drained[0].submitted_host.is_empty());
 
         let _ = fs::remove_dir_all(&topdir);
@@ -976,6 +993,7 @@ mod tests {
                 "blast".to_string(),
                 "samtools".to_string(),
             ],
+            force_rebuild: false,
             submitted_host: "host-a".to_string(),
             submitted_at_utc: "2026-05-07T00:00:00Z".to_string(),
         };
@@ -983,6 +1001,7 @@ mod tests {
             pid: 2,
             target_id: "target-b".to_string(),
             packages: vec!["emboss".to_string()],
+            force_rebuild: false,
             submitted_host: "host-b".to_string(),
             submitted_at_utc: "2026-05-07T00:00:01Z".to_string(),
         };
