@@ -12449,20 +12449,32 @@ fn render_python_venv_setup_block(python_recipe: bool, python_requirements: &[St
         } else {
             ""
         };
-        let compile_flags = if legacy_pomegranate_mode {
-            " --pip-args \"--no-build-isolation\""
-        } else {
-            ""
-        };
-        let install_flags = if legacy_pomegranate_mode {
-            " --no-build-isolation"
-        } else {
-            ""
-        };
+        let compile_flags = " --pip-args \"--no-build-isolation\"";
+        let install_flags = " --no-build-isolation";
         format!(
             "cat > requirements.in <<'REQEOF'\n\
 {requirements_body}\n\
 REQEOF\n\
+python - <<'PYREQSAN'\n\
+from pathlib import Path\n\
+import re\n\
+drop = {{\n\
+    'openblas', 'libopenblas', 'libblas', 'libcblas', 'mkl', 'mkl-devel',\n\
+    'pytorch', 'torch', 'tensorflow', 'tensorflow-base', 'jax', 'jaxlib', 'triton',\n\
+}}\n\
+path = Path('requirements.in')\n\
+lines = []\n\
+for raw in path.read_text().splitlines():\n\
+    line = raw.strip()\n\
+    if not line or line.startswith('#'):\n\
+        continue\n\
+    name = re.split(r'[<>=!~\\[; ]', line, 1)[0].strip().lower().replace('_', '-')\n\
+    if name in drop or name.startswith('nvidia-'):\n\
+        continue\n\
+    line = re.sub(r'(?P<op>>=|<=|>|<|~=)(?P<ver>[0-9][0-9A-Za-z_.!+-]*)\\.\\*', r'\\g<op>\\g<ver>', line)\n\
+    lines.append(line)\n\
+path.write_text('\\n'.join(lines) + ('\\n' if lines else ''))\n\
+PYREQSAN\n\
 {preinstall_legacy_build_bits}\
 \"$PIP\" install pip-tools\n\
 pip-compile --generate-hashes requirements.in --output-file requirements.lock{compile_flags}\n\
@@ -12928,6 +12940,7 @@ fi\n\
 patch_applied=0\n\
 patch_referenced_paths=0\n\
 patch_target_seen=0\n\
+patch_exact_target_seen=0\n\
 patch_dirs=(.)\n\
 while IFS= read -r patch_rel; do\n\
   patch_rel=\"${{patch_rel%%$'\\r'}}\"\n\
@@ -12940,6 +12953,7 @@ while IFS= read -r patch_rel; do\n\
   patch_referenced_paths=$((patch_referenced_paths + 1))\n\
   while IFS= read -r hit; do\n\
     patch_target_seen=1\n\
+    patch_exact_target_seen=1\n\
     candidate=\"${{hit%/$patch_rel}}\"\n\
     if [[ \"$candidate\" == \"$hit\" ]]; then\n\
       continue\n\
@@ -13008,7 +13022,7 @@ if [[ -n \"$patch_origfix_tmp\" ]]; then\n\
   rm -f \"$patch_origfix_tmp\"\n\
 fi\n\
 if [[ \"$patch_applied\" -ne 1 ]]; then\n\
-  if [[ \"$patch_referenced_paths\" -gt 0 && \"$patch_target_seen\" -eq 0 ]]; then\n\
+  if [[ \"$patch_referenced_paths\" -gt 0 && \"$patch_exact_target_seen\" -eq 0 ]]; then\n\
     echo \"bioconda2rpm: skipping obsolete patch %{{SOURCE{}}}; none of its referenced target paths exist in the selected source tree\" >&2\n\
     patch_applied=1\n\
   else\n\
@@ -13626,6 +13640,9 @@ fn map_build_dependency(dep: &str) -> String {
         "glib" => "glib2-devel".to_string(),
         "hdf5" | "hdf5-devel" => "hdf5".to_string(),
         "go-compiler" => "golang".to_string(),
+        "gxx" | "cxx-compiler" => "gcc-c++ make".to_string(),
+        "c-compiler" | "compilers" => "gcc gcc-c++ make".to_string(),
+        "openmp" | "llvm-openmp" => "libgomp".to_string(),
         "gnuconfig" => "automake".to_string(),
         // Keep ISA-L as a Bioconda/Phoreus dependency so libraries are staged
         // into the Phoreus prefix expected by fastp-style build scripts.
@@ -13650,6 +13667,7 @@ fn map_build_dependency(dep: &str) -> String {
         "lapack" | "liblapack" => "lapack-devel".to_string(),
         "lp-solve" | "lpsolve" => "lpsolve".to_string(),
         "libboost" | "libboost-devel" => "boost-devel".to_string(),
+        "libhwloc" | "hwloc" => "hwloc-devel".to_string(),
         "libhwy" => "highway-devel".to_string(),
         "libiconv" => "glibc-devel".to_string(),
         "libxau" => "libXau-devel".to_string(),
@@ -13670,6 +13688,7 @@ fn map_build_dependency(dep: &str) -> String {
         "ninja" => "ninja-build".to_string(),
         "openssl" => "openssl-devel".to_string(),
         "openjdk" => "java-11-openjdk".to_string(),
+        "javafx-sdk" => "java-11-openjdk".to_string(),
         "openmpi" => "openmpi-devel".to_string(),
         // staden-io-lib link interfaces require liblzma/libbz2 symlinks from
         // -devel packages on EL; keep those available for downstream links
@@ -13683,6 +13702,7 @@ fn map_build_dependency(dep: &str) -> String {
         "qt6-main" => "qt6-qtbase-devel qt6-qtsvg-devel".to_string(),
         "pybind11" => "pybind11-devel".to_string(),
         "pybind11-global" => "pybind11-devel".to_string(),
+        "ruby" => "ruby ruby-devel rubygems".to_string(),
         "llvmdev" => "llvm-devel".to_string(),
         "libvulkan-headers" => "vulkan-headers".to_string(),
         "libvulkan-loader" => "vulkan-loader-devel".to_string(),
@@ -13752,6 +13772,9 @@ fn map_runtime_dependency(dep: &str) -> String {
         "k8" => "nodejs".to_string(),
         "boost-cpp" => "boost".to_string(),
         "libboost" | "libboost-devel" => "boost".to_string(),
+        "gxx" | "cxx-compiler" | "compilers" => "gcc-c++".to_string(),
+        "c-compiler" => "gcc".to_string(),
+        "openmp" | "llvm-openmp" => "libgomp".to_string(),
         "biopython" => "python3-biopython".to_string(),
         "capnproto" | "capnp" => "capnproto".to_string(),
         "cffi" => "python3-cffi".to_string(),
@@ -13769,6 +13792,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "libcblas" => "openblas".to_string(),
         "mkl" | "mkl-devel" => "openblas lapack".to_string(),
         "openblas" | "libopenblas" => "openblas".to_string(),
+        "libhwloc" | "hwloc" => "hwloc".to_string(),
         "libhwy" => "highway".to_string(),
         "libiconv" => "glibc".to_string(),
         "libxau" => "libXau".to_string(),
@@ -13792,7 +13816,9 @@ fn map_runtime_dependency(dep: &str) -> String {
         "sparsehash" => "sparsehash-devel".to_string(),
         "ninja" => "ninja-build".to_string(),
         "openjdk" => "java-11-openjdk".to_string(),
+        "javafx-sdk" => "java-11-openjdk".to_string(),
         "pybind11" => "pybind11-devel".to_string(),
+        "ruby" => "ruby".to_string(),
         "snappy" => "snappy".to_string(),
         "zstd-static" => "zstd".to_string(),
         "xorg-libxext" => "libXext".to_string(),
@@ -17101,6 +17127,21 @@ mod tests {
         );
         assert_eq!(map_build_dependency("libuuid"), "libuuid-devel".to_string());
         assert_eq!(map_build_dependency("libhwy"), "highway-devel".to_string());
+        assert_eq!(map_build_dependency("libhwloc"), "hwloc-devel".to_string());
+        assert_eq!(map_build_dependency("gxx"), "gcc-c++ make".to_string());
+        assert_eq!(
+            map_build_dependency("compilers"),
+            "gcc gcc-c++ make".to_string()
+        );
+        assert_eq!(map_build_dependency("openmp"), "libgomp".to_string());
+        assert_eq!(
+            map_build_dependency("javafx-sdk"),
+            "java-11-openjdk".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("ruby"),
+            "ruby ruby-devel rubygems".to_string()
+        );
         assert_eq!(
             map_build_dependency("libboost-devel"),
             "boost-devel".to_string()
@@ -17794,6 +17835,8 @@ requirements:
         assert!(spec.contains("patch_origfix_tmp=\"\""));
         assert!(spec.contains("patch_referenced_paths=0"));
         assert!(spec.contains("patch_target_seen=0"));
+        assert!(spec.contains("patch_exact_target_seen=0"));
+        assert!(spec.contains("patch_exact_target_seen=1"));
         assert!(spec.contains("awk 'BEGIN{emit=0}"));
         assert!(spec.contains("grep -Eq '^(diff --git |\\*\\*\\* |--- |\\+\\+\\+ )'"));
         assert!(spec.contains(
@@ -18477,6 +18520,29 @@ requirements:
         assert!(block.contains("--pip-args \"--no-build-isolation\""));
         assert!(block.contains("\"$PIP\" install \"cython<3\" \"numpy<2\" \"scipy<2\""));
         assert!(block.contains("install --no-build-isolation --require-hashes"));
+    }
+
+    #[test]
+    fn python_venv_setup_sanitizes_conda_only_lock_inputs() {
+        let block = render_python_venv_setup_block(
+            true,
+            &[
+                "seaborn>=0.11.*".to_string(),
+                "openblas".to_string(),
+                "pytorch>=2.*".to_string(),
+                "nvidia-cublas>=13".to_string(),
+            ],
+        );
+        assert!(block.contains("PYREQSAN"));
+        assert!(block.contains("line = re.sub"));
+        assert!(block.contains("'openblas'"));
+        assert!(block.contains("name.startswith('nvidia-')"));
+        assert!(block.contains(
+            "pip-compile --generate-hashes requirements.in --output-file requirements.lock --pip-args \"--no-build-isolation\""
+        ));
+        assert!(block.contains(
+            "\"$PIP\" install --no-build-isolation --require-hashes -r requirements.lock"
+        ));
     }
 
     #[test]
