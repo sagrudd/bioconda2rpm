@@ -6931,9 +6931,11 @@ fn compute_minimal_build_scope(
             && command_runs_make_install_with_prefix_env(
                 &interpreted_build_plan.install_commands,
             ))
-            || (command_configures_install_prefix_from_prefix(
+            || ((command_configures_install_prefix_from_prefix(
                 &interpreted_build_plan.build_commands,
-            ) && command_installs_configured_prefix(
+            ) || command_configures_install_prefix_from_prefix(
+                &interpreted_build_plan.install_commands,
+            )) && command_installs_configured_prefix(
                 &interpreted_build_plan.install_commands,
             ))))
         || native_vendored_prefix_required
@@ -13659,6 +13661,10 @@ fi\n\
 if [[ \"$source0_url\" =~ ^ftp:// ]]; then\n\
   source_candidates+=(\"${{source0_url/#ftp:/https:}}\")\n\
 fi\n\
+if [[ \"$source0_url\" =~ ^ftp://emboss\\.open-bio\\.org/pub/EMBOSS/(EMBOSS-[0-9][0-9A-Za-z\\._-]*\\.tar\\.gz)$ ]]; then\n\
+  emboss_file=\"${{BASH_REMATCH[1]}}\"\n\
+  source_candidates+=(\"https://downloads.sourceforge.net/project/sboppetrov/EMBOSS/${{emboss_file}}\")\n\
+fi\n\
 if [[ \"$source0_url\" =~ ^https?://(www\\.)?genetics\\.ucla\\.edu/software/admixture/binaries/(admixture_[^/?#]+\\.tar\\.gz)$ ]]; then\n\
   admixture_file=\"${{BASH_REMATCH[2]}}\"\n\
   source_candidates+=(\"https://dalexander.github.io/admixture/binaries/${{admixture_file}}\")\n\
@@ -13876,9 +13882,9 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
     if [[ -n \"$ftp_file\" ]]; then\n\
       echo \"Attempting FTP prefetch fallback: $source0_url\"\n\
       if command -v wget >/dev/null 2>&1; then\n\
-        wget --tries=5 --timeout=30 --read-timeout=120 -O \"$build_sourcedir/$ftp_file\" \"$source0_url\" || true\n\
+        wget --tries=2 --timeout=20 --read-timeout=60 -O \"$build_sourcedir/$ftp_file\" \"$source0_url\" || true\n\
       elif command -v curl >/dev/null 2>&1; then\n\
-        curl -L --fail --retry 5 --retry-all-errors --connect-timeout 20 --speed-time 120 --speed-limit 1024 --max-time 1800 --output \"$build_sourcedir/$ftp_file\" \"$source0_url\" || true\n\
+        curl -L --fail --retry 2 --retry-all-errors --connect-timeout 20 --speed-time 60 --speed-limit 1024 --max-time 300 --output \"$build_sourcedir/$ftp_file\" \"$source0_url\" || true\n\
       fi\n\
       if [[ -s \"$build_sourcedir/$ftp_file\" ]]; then\n\
         if validate_source_file \"$build_sourcedir/$ftp_file\"; then\n\
@@ -20986,6 +20992,9 @@ requirements:
         assert!(SOURCE.contains(r#"candidate_file=$(source_url_filename \"$candidate\")"#));
         assert!(SOURCE.contains("if ! is_remote_source \\\"$candidate\\\"; then"));
         assert!(SOURCE.contains("binspreader-recombseq.tar.gz"));
+        assert!(SOURCE.contains("downloads.sourceforge.net/project/sboppetrov/EMBOSS"));
+        assert!(SOURCE.contains("wget --tries=2 --timeout=20 --read-timeout=60"));
+        assert!(SOURCE.contains("curl -L --fail --retry 2 --retry-all-errors"));
         assert!(
             source_archive_kind(
                 "https://search.maven.org/remotecontent?filepath=x/y/tool-1.0.tar.gz"
@@ -22198,6 +22207,41 @@ install -v -m 755 build/trf "${PREFIX}/bin"
         assert!(spec.contains("BuildRequires:  chrpath"));
         assert!(spec.contains("chrpath -r \"$final_prefix/lib\" \"$elf_path\""));
         assert!(spec.contains("grep -a -q -- \"$buildroot_prefix\" \"$elf_path\""));
+    }
+
+    #[test]
+    fn minimal_payload_scope_scrubs_install_phase_configure_prefix_metadata() {
+        let parsed = ParsedMeta {
+            package_name: "emboss".to_string(),
+            version: "6.6.0".to_string(),
+            build_number: "14".to_string(),
+            source_url: "https://example.invalid/EMBOSS-6.6.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://emboss.sourceforge.net".to_string(),
+            license: "GPL-2.0-only".to_string(),
+            summary: "emboss".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let plan = InterpretedBuildPlan {
+            build_commands: vec!["autoreconf -if".to_string()],
+            install_commands: vec![
+                "./configure --prefix=\"${PREFIX}\" --without-x".to_string(),
+                "make install".to_string(),
+            ],
+            prefix_install_vars: BTreeSet::new(),
+        };
+        let scope = compute_minimal_build_scope("emboss", &parsed, &plan, false, false, false);
+
+        assert!(scope.buildroot_text_scrub_required);
+        assert!(scope.label_string().contains("buildroot-text-scrub"));
     }
 
     #[test]

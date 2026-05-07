@@ -218,3 +218,9 @@
 - This addresses payloads such as `msfragger` and SourceForge `latest/download?source=...` URLs where the transfer tool may save a generic path basename but `rpmbuild` looks for the query-derived source name.
 - Minimal build-script interpretation now treats trailing `&&`/`||` lines as shell continuations across blank/comment lines and removes a terminal semicolon before appending the tolerated `|| true` guard, preventing malformed fragments like `; || true`.
 - Regression tests cover query filename parameters, `download=...%24zip` archive detection, newline-continued command chains, and semicolon-safe rendering.
+
+### EMBOSS source-fetch bounded fallback
+- EMBOSS remains a reference package, but the Bioconda recipe points at `ftp://emboss.open-bio.org/pub/EMBOSS/EMBOSS-6.6.0.tar.gz`; current container fetch tooling rejects FTP through `spectool`, and the HTTPS rewrite is refused by the host.
+- Source candidate generation now adds a deterministic SourceForge-hosted source mirror for the exact EMBOSS tarball basename before falling back to raw FTP, so workers do not park for hours on a dead origin.
+- Raw FTP fallback remains available but is bounded to short retry windows (`wget --tries=2 --timeout=20 --read-timeout=60`, `curl --retry 2 --max-time 300`) to make source unavailability a visible failure instead of a long-running hidden stall.
+- Minimal build-scope detection now treats `./configure --prefix=$PREFIX` in either the interpreted build phase or install phase as a buildroot-text-scrub trigger when followed by `make install`; EMBOSS configures during `%install` and otherwise leaves buildroot-prefixed `.la` and wrapper metadata in the payload.
