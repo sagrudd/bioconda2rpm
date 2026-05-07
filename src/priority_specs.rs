@@ -296,6 +296,8 @@ const PHOREUS_NIM_SERIES: &str = "2.2";
 const PHOREUS_NIM_PACKAGE: &str = "phoreus-nim-2.2";
 static PHOREUS_NIM_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static BUILD_STABILITY_CACHE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static ARTIFACT_FILENAME_CACHE: OnceLock<Mutex<HashMap<ArtifactFilenameCacheKey, Vec<String>>>> =
+    OnceLock::new();
 type ProgressSink = Arc<dyn Fn(String) + Send + Sync + 'static>;
 static PROGRESS_SINK: OnceLock<Mutex<Option<ProgressSink>>> = OnceLock::new();
 static CANCELLATION_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -303,6 +305,12 @@ static CANCELLATION_REASON: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static ACTIVE_CONTAINERS: OnceLock<Mutex<HashMap<String, ActiveContainerRun>>> = OnceLock::new();
 const CONDA_RENDER_ADAPTER_SCRIPT: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/conda_render_ir.py");
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ArtifactFilenameCacheKey {
+    topdir: PathBuf,
+    target_root: PathBuf,
+}
 
 #[derive(Debug, Clone)]
 struct ActiveContainerRun {
@@ -13866,6 +13874,24 @@ fn payload_version_state(
     software_slug: &str,
     target_version: &str,
 ) -> Result<PayloadVersionState> {
+    if let Some(target_id) = target_root.file_name().and_then(|name| name.to_str())
+        && let Some(existing) =
+            list::latest_catalog_payload_version(topdir, target_id, software_slug)
+    {
+        if local_payload_has_known_stale_spec(topdir, software_slug) {
+            return Ok(PayloadVersionState::NotBuilt);
+        }
+        let ord = compare_version_labels(&existing, target_version);
+        if ord == Ordering::Less {
+            return Ok(PayloadVersionState::Outdated {
+                existing_version: existing,
+            });
+        }
+        return Ok(PayloadVersionState::UpToDate {
+            existing_version: existing,
+        });
+    }
+
     let Some(existing) = latest_existing_payload_version(topdir, target_root, software_slug)?
     else {
         return Ok(PayloadVersionState::NotBuilt);
@@ -13949,6 +13975,17 @@ fn next_meta_package_version(
 }
 
 fn artifact_filenames(topdir: &Path, target_root: &Path) -> Result<Vec<String>> {
+    let key = ArtifactFilenameCacheKey {
+        topdir: topdir.to_path_buf(),
+        target_root: target_root.to_path_buf(),
+    };
+    let cache = ARTIFACT_FILENAME_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache_guard) = cache.lock()
+        && let Some(names) = cache_guard.get(&key)
+    {
+        return Ok(names.clone());
+    }
+
     let mut names = Vec::new();
     let mut visited = HashSet::new();
     let candidates = [
@@ -13968,7 +14005,22 @@ fn artifact_filenames(topdir: &Path, target_root: &Path) -> Result<Vec<String>> 
         }
         collect_artifact_names(&root, &mut names)?;
     }
+    if let Ok(mut cache_guard) = cache.lock() {
+        cache_guard.insert(key, names.clone());
+    }
     Ok(names)
+}
+
+fn invalidate_artifact_filename_cache(topdir: &Path, target_root: &Path) {
+    let Some(cache) = ARTIFACT_FILENAME_CACHE.get() else {
+        return;
+    };
+    if let Ok(mut cache_guard) = cache.lock() {
+        cache_guard.remove(&ArtifactFilenameCacheKey {
+            topdir: topdir.to_path_buf(),
+            target_root: target_root.to_path_buf(),
+        });
+    }
 }
 
 fn collect_artifact_names(dir: &Path, names: &mut Vec<String>) -> Result<()> {
@@ -15280,6 +15332,7 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n\
         spec_name,
         format_elapsed(stage_started.elapsed())
     ));
+    invalidate_artifact_filename_cache(&build_config.topdir, &build_config.target_root);
     Ok(())
 }
 

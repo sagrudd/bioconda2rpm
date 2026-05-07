@@ -2,12 +2,13 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +104,14 @@ pub struct CatalogBuild {
 const CATALOG_FILENAME: &str = ".catalog.json";
 const CATALOG_SCHEMA_VERSION: u32 = 2;
 
+#[derive(Debug, Clone)]
+struct CachedCatalog {
+    modified: Option<SystemTime>,
+    catalog: Catalog,
+}
+
+static CATALOG_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedCatalog>>> = OnceLock::new();
+
 fn current_catalog_schema_version() -> u32 {
     CATALOG_SCHEMA_VERSION
 }
@@ -113,13 +122,36 @@ fn catalog_path(topdir: &Path) -> std::path::PathBuf {
 
 fn read_catalog(topdir: &Path) -> Catalog {
     let path = catalog_path(topdir);
-    if let Ok(raw) = fs::read_to_string(&path) {
+    let modified = fs::metadata(&path).and_then(|meta| meta.modified()).ok();
+    let cache = CATALOG_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache_guard) = cache.lock()
+        && let Some(cached) = cache_guard.get(&path)
+        && cached.modified == modified
+    {
+        return cached.catalog.clone();
+    }
+
+    let catalog = if let Ok(raw) = fs::read_to_string(&path) {
         if let Ok(mut cat) = serde_json::from_str::<Catalog>(&raw) {
             migrate_catalog(topdir, &path, &mut cat);
-            return cat;
+            cat
+        } else {
+            Catalog::default()
         }
+    } else {
+        Catalog::default()
+    };
+
+    if let Ok(mut cache_guard) = cache.lock() {
+        cache_guard.insert(
+            path,
+            CachedCatalog {
+                modified,
+                catalog: catalog.clone(),
+            },
+        );
     }
-    Catalog::default()
+    catalog
 }
 
 fn write_catalog(topdir: &Path, catalog: &Catalog) -> Result<()> {
@@ -132,6 +164,18 @@ fn write_catalog(topdir: &Path, catalog: &Catalog) -> Result<()> {
         .with_context(|| format!("writing catalogue tmp {}", tmp.to_string_lossy()))?;
     fs::rename(&tmp, &path)
         .with_context(|| format!("committing catalogue {}", path.to_string_lossy()))?;
+    let modified = fs::metadata(&path).and_then(|meta| meta.modified()).ok();
+    if let Some(cache) = CATALOG_CACHE.get()
+        && let Ok(mut cache_guard) = cache.lock()
+    {
+        cache_guard.insert(
+            path,
+            CachedCatalog {
+                modified,
+                catalog: normalized,
+            },
+        );
+    }
     Ok(())
 }
 
@@ -471,6 +515,36 @@ fn authoritative_srpm_for_request(
             })
             .map(|candidate| candidate.path)
     })
+}
+
+pub fn latest_catalog_payload_version(
+    topdir: &Path,
+    target_id: &str,
+    software: &str,
+) -> Option<String> {
+    let catalog = read_catalog(topdir);
+    let software_key = normalize_package_slug(software);
+    catalog
+        .packages
+        .iter()
+        .find(|package| normalize_package_slug(&package.software) == software_key)
+        .and_then(|package| {
+            package
+                .versions
+                .iter()
+                .filter(|version| {
+                    version.builds.iter().any(|build| {
+                        build.target_id == target_id
+                            && is_success_status(&build.status)
+                            && build
+                                .binary_rpms
+                                .iter()
+                                .all(|rpm| rpm.is_empty() || Path::new(rpm).exists())
+                    })
+                })
+                .max_by(|a, b| compare_catalog_version_labels(&a.version, &b.version))
+        })
+        .map(|version| version.version.clone())
 }
 
 fn inject_srpm_artifacts(topdir: &Path, catalog: &mut Catalog) -> usize {
@@ -873,6 +947,91 @@ fn is_failure_status(status: &str) -> bool {
 
 fn is_success_status(status: &str) -> bool {
     matches!(status, "generated" | "up-to-date")
+}
+
+fn compare_catalog_version_labels(a: &str, b: &str) -> std::cmp::Ordering {
+    let a_parts = catalog_version_parts(a);
+    let b_parts = catalog_version_parts(b);
+
+    let max_len = a_parts.len().max(b_parts.len());
+    for idx in 0..max_len {
+        match (a_parts.get(idx), b_parts.get(idx)) {
+            (Some(CatalogVersionPart::Num(x)), Some(CatalogVersionPart::Num(y))) => {
+                let ord = x.cmp(y);
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            (Some(CatalogVersionPart::Text(x)), Some(CatalogVersionPart::Text(y))) => {
+                let ord = x.cmp(y);
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            (Some(CatalogVersionPart::Num(_)), Some(CatalogVersionPart::Text(_))) => {
+                return std::cmp::Ordering::Greater;
+            }
+            (Some(CatalogVersionPart::Text(_)), Some(CatalogVersionPart::Num(_))) => {
+                return std::cmp::Ordering::Less;
+            }
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (None, None) => return std::cmp::Ordering::Equal,
+        }
+    }
+
+    std::cmp::Ordering::Equal
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CatalogVersionPart {
+    Num(u64),
+    Text(String),
+}
+
+fn catalog_version_parts(label: &str) -> Vec<CatalogVersionPart> {
+    let mut parts = Vec::new();
+    let mut buf = String::new();
+    let mut current_is_num: Option<bool> = None;
+
+    for ch in label.chars() {
+        if ch.is_ascii_alphanumeric() {
+            let is_num = ch.is_ascii_digit();
+            match current_is_num {
+                Some(prev) if prev == is_num => {
+                    buf.push(ch);
+                }
+                Some(_) => {
+                    push_catalog_version_part(&mut parts, &buf, current_is_num.unwrap_or(false));
+                    buf.clear();
+                    buf.push(ch);
+                    current_is_num = Some(is_num);
+                }
+                None => {
+                    buf.push(ch);
+                    current_is_num = Some(is_num);
+                }
+            }
+        } else if !buf.is_empty() {
+            push_catalog_version_part(&mut parts, &buf, current_is_num.unwrap_or(false));
+            buf.clear();
+            current_is_num = None;
+        }
+    }
+
+    if !buf.is_empty() {
+        push_catalog_version_part(&mut parts, &buf, current_is_num.unwrap_or(false));
+    }
+
+    parts
+}
+
+fn push_catalog_version_part(parts: &mut Vec<CatalogVersionPart>, piece: &str, is_num: bool) {
+    if is_num && let Ok(v) = piece.parse::<u64>() {
+        parts.push(CatalogVersionPart::Num(v));
+        return;
+    }
+    parts.push(CatalogVersionPart::Text(piece.to_lowercase()));
 }
 
 fn is_direct_build_failure(status: &str, reason: &str) -> bool {
@@ -1492,6 +1651,68 @@ mod tests {
         let arches: BTreeSet<_> = samtools_entries.iter().map(|e| e.arch.as_str()).collect();
         assert!(arches.contains("x86_64"));
         assert!(arches.contains("aarch64"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn latest_catalog_payload_version_uses_cached_catalog_and_updates_after_write() {
+        let tmp = std::env::temp_dir().join(format!(
+            "bioconda2rpm-catalog-cache-test-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        fs::create_dir_all(&tmp).expect("create temp catalog dir");
+        let target_id = "phoreus-bioconda2rpm-build-almalinux-9.7-x86_64";
+        let rpm_118 = tmp.join("phoreus-samtools-1.18-1.18-1.el9.x86_64.rpm");
+        let rpm_119 = tmp.join("phoreus-samtools-1.19-1.19-1.el9.x86_64.rpm");
+        fs::write(&rpm_118, b"rpm").expect("write rpm 1.18");
+        fs::write(&rpm_119, b"rpm").expect("write rpm 1.19");
+
+        let mut catalog = Catalog::default();
+        let version = package_version_mut(&mut catalog.packages, "samtools", "1.18");
+        merge_build(
+            version,
+            CatalogBuild {
+                os: "almalinux-9.7".to_string(),
+                arch: "x86_64".to_string(),
+                target_id: target_id.to_string(),
+                build_host: "host".to_string(),
+                build_user: "user".to_string(),
+                built_at: "2026-05-07T00:00:00Z".to_string(),
+                status: "generated".to_string(),
+                srpm: None,
+                binary_rpms: vec![rpm_118.display().to_string()],
+                report_path: String::new(),
+            },
+        );
+        write_catalog(&tmp, &catalog).expect("write initial catalog");
+        assert_eq!(
+            latest_catalog_payload_version(&tmp, target_id, "samtools").as_deref(),
+            Some("1.18")
+        );
+
+        let version = package_version_mut(&mut catalog.packages, "samtools", "1.19");
+        merge_build(
+            version,
+            CatalogBuild {
+                os: "almalinux-9.7".to_string(),
+                arch: "x86_64".to_string(),
+                target_id: target_id.to_string(),
+                build_host: "host".to_string(),
+                build_user: "user".to_string(),
+                built_at: "2026-05-07T00:01:00Z".to_string(),
+                status: "generated".to_string(),
+                srpm: None,
+                binary_rpms: vec![rpm_119.display().to_string()],
+                report_path: String::new(),
+            },
+        );
+        write_catalog(&tmp, &catalog).expect("write updated catalog");
+        assert_eq!(
+            latest_catalog_payload_version(&tmp, target_id, "samtools").as_deref(),
+            Some("1.19")
+        );
 
         let _ = fs::remove_dir_all(&tmp);
     }
