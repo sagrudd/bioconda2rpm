@@ -7,6 +7,7 @@ mod ui;
 
 use clap::Parser;
 use std::fs;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -58,13 +59,13 @@ fn collect_initial_server_packages(args: &cli::BuildArgs) -> anyhow::Result<Vec<
 
 fn update_server_status_packages(
     status: &Arc<Mutex<(Vec<String>, Vec<String>)>>,
-    pending: &[(String, bool, bool)],
+    pending: &[(String, bool, bool, Vec<PathBuf>)],
     current: &[String],
 ) {
     if let Ok(mut guard) = status.lock() {
         guard.0 = pending
             .iter()
-            .map(|(package, _, _)| package.clone())
+            .map(|(package, _, _, _)| package.clone())
             .collect();
         guard.1 = current.to_vec();
     }
@@ -107,25 +108,14 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let acquire_outcome = if args.files.is_empty() {
-                build_lock::BuildSessionGuard::acquire_or_forward_build(
-                    &topdir,
-                    &args.effective_target_id(),
-                    &requested_packages,
-                    args.force,
-                    args.refresh_files,
-                )
-            } else {
-                build_lock::BuildSessionGuard::acquire(
-                    &topdir,
-                    &args.effective_target_id(),
-                    &requested_packages,
-                    build_lock::BuildSessionKind::Build,
-                    args.force,
-                    args.refresh_files,
-                )
-                .map(build_lock::BuildAcquireOutcome::Owner)
-            };
+            let acquire_outcome = build_lock::BuildSessionGuard::acquire_or_forward_build(
+                &topdir,
+                &args.effective_target_id(),
+                &requested_packages,
+                args.force,
+                args.refresh_files,
+                &args.files,
+            );
             let _build_session = match acquire_outcome {
                 Ok(build_lock::BuildAcquireOutcome::Owner(guard)) => {
                     priority_specs::log_external_progress(format!(
@@ -138,11 +128,12 @@ fn main() -> ExitCode {
                 }
                 Ok(build_lock::BuildAcquireOutcome::Forwarded(forwarded)) => {
                     priority_specs::log_external_progress(format!(
-                        "phase=workspace-lock status=forwarded owner_pid={} target_id={} owner_force={} owner_refresh_files={} packages={}",
+                        "phase=workspace-lock status=forwarded owner_pid={} target_id={} owner_force={} owner_refresh_files={} manual_source_files={} packages={}",
                         forwarded.owner_pid,
                         forwarded.owner_target_id,
                         forwarded.owner_force_rebuild,
                         forwarded.owner_refresh_files,
+                        forwarded.manual_source_files.len(),
                         package_list_summary(&forwarded.queued_packages)
                     ));
                     priority_specs::clear_progress_sink();
@@ -410,7 +401,7 @@ fn main() -> ExitCode {
             let mut pending_packages = initial_packages
                 .iter()
                 .cloned()
-                .map(|package| (package, owner_force, false))
+                .map(|package| (package, owner_force, false, Vec::<PathBuf>::new()))
                 .collect::<Vec<_>>();
             update_server_status_packages(&server_status_packages, &pending_packages, &[]);
 
@@ -485,6 +476,7 @@ fn main() -> ExitCode {
                                     request.package,
                                     request.force_rebuild,
                                     request.refresh_files,
+                                    request.manual_source_files,
                                 ));
                             }
                             update_server_status_packages(
@@ -580,16 +572,28 @@ fn main() -> ExitCode {
                 }
 
                 pending_packages.sort_by(|a, b| a.0.cmp(&b.0));
-                let mut merged_packages: Vec<(String, bool, bool)> = Vec::new();
-                for (package, force, refresh_files) in std::mem::take(&mut pending_packages) {
-                    if let Some((_, existing_force, existing_refresh_files)) = merged_packages
+                let mut merged_packages: Vec<(String, bool, bool, Vec<PathBuf>)> = Vec::new();
+                for (package, force, refresh_files, manual_source_files) in
+                    std::mem::take(&mut pending_packages)
+                {
+                    if let Some((
+                        _,
+                        existing_force,
+                        existing_refresh_files,
+                        existing_manual_source_files,
+                    )) = merged_packages
                         .iter_mut()
-                        .find(|(existing, _, _)| existing == &package)
+                        .find(|(existing, _, _, _)| existing == &package)
                     {
                         *existing_force |= force;
                         *existing_refresh_files |= refresh_files;
+                        for file in manual_source_files {
+                            if !existing_manual_source_files.contains(&file) {
+                                existing_manual_source_files.push(file);
+                            }
+                        }
                     } else {
-                        merged_packages.push((package, force, refresh_files));
+                        merged_packages.push((package, force, refresh_files, manual_source_files));
                     }
                 }
                 pending_packages = merged_packages;
@@ -610,73 +614,52 @@ fn main() -> ExitCode {
                     continue;
                 }
 
-                let batch_items = std::mem::take(&mut pending_packages);
-                let mut normal_packages = batch_items
-                    .iter()
-                    .filter_map(|(package, force, refresh_files)| {
-                        if *force || *refresh_files {
-                            None
-                        } else {
-                            Some(package.clone())
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                let mut forced_packages = batch_items
-                    .iter()
-                    .filter_map(|(package, force, refresh_files)| {
-                        if *force && !*refresh_files {
-                            Some(package.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                let mut refresh_packages = batch_items
-                    .iter()
-                    .filter_map(|(package, force, refresh_files)| {
-                        if !*force && *refresh_files {
-                            Some(package.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                let mut forced_refresh_packages = batch_items
-                    .into_iter()
-                    .filter_map(|(package, force, refresh_files)| {
-                        if force && refresh_files {
-                            Some(package)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                for (force, refresh_files, packages) in [
-                    (false, false, &mut normal_packages),
-                    (true, false, &mut forced_packages),
-                    (false, true, &mut refresh_packages),
-                    (true, true, &mut forced_refresh_packages),
-                ] {
+                let mut build_groups: Vec<(bool, bool, Vec<PathBuf>, Vec<String>)> = Vec::new();
+                for (package, force, refresh_files, manual_source_files) in
+                    std::mem::take(&mut pending_packages)
+                {
+                    if let Some((_, _, _, packages)) = build_groups.iter_mut().find(
+                        |(existing_force, existing_refresh_files, existing_files, _)| {
+                            *existing_force == force
+                                && *existing_refresh_files == refresh_files
+                                && *existing_files == manual_source_files
+                        },
+                    ) {
+                        packages.push(package);
+                    } else {
+                        build_groups.push((
+                            force,
+                            refresh_files,
+                            manual_source_files,
+                            vec![package],
+                        ));
+                    }
+                }
+
+                for (force, refresh_files, manual_source_files, packages) in &mut build_groups {
                     if packages.is_empty() {
                         continue;
                     }
                     packages.sort();
                     packages.dedup();
                     args.packages = packages.clone();
-                    args.force = force;
-                    args.refresh_files = refresh_files;
+                    args.force = *force;
+                    args.refresh_files = *refresh_files;
+                    args.files = manual_source_files.clone();
                     update_server_status_packages(&server_status_packages, &[], packages);
                     priority_specs::log_external_progress(format!(
-                        "phase=server status=build-start target_id={} force={} refresh_files={} packages={}",
+                        "phase=server status=build-start target_id={} force={} refresh_files={} manual_source_files={} packages={}",
                         args.effective_target_id(),
                         args.force,
                         args.refresh_files,
+                        args.files.len(),
                         package_list_summary(&args.packages)
                     ));
                     let outcome = priority_specs::run_build(&args);
                     update_server_status_packages(&server_status_packages, &[], &[]);
                     args.force = false;
                     args.refresh_files = false;
+                    args.files.clear();
                     match outcome {
                         Ok(summary) => {
                             priority_specs::log_external_progress(format!(

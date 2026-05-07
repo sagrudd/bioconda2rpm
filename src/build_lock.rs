@@ -40,6 +40,7 @@ pub struct ForwardedBuildRequest {
     pub owner_force_rebuild: bool,
     pub owner_refresh_files: bool,
     pub queued_packages: Vec<String>,
+    pub manual_source_files: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +48,7 @@ pub struct ForwardedQueuedPackage {
     pub package: String,
     pub force_rebuild: bool,
     pub refresh_files: bool,
+    pub manual_source_files: Vec<PathBuf>,
     pub submitted_host: String,
     pub submitted_pid: u32,
     pub submitted_at_utc: String,
@@ -71,6 +73,7 @@ pub struct LookupQueuedBuildRequest {
     pub packages: Vec<String>,
     pub force_rebuild: bool,
     pub refresh_files: bool,
+    pub manual_source_files: Vec<String>,
     pub submitted_host: String,
     pub submitted_at_utc: String,
 }
@@ -189,6 +192,8 @@ struct BuildQueueRequest {
     force_rebuild: bool,
     #[serde(default)]
     refresh_files: bool,
+    #[serde(default)]
+    manual_source_files: Vec<String>,
     #[serde(default = "default_host_name")]
     submitted_host: String,
     submitted_at_utc: String,
@@ -373,6 +378,7 @@ impl BuildSessionGuard {
         packages: &[String],
         force_rebuild: bool,
         refresh_files: bool,
+        manual_source_files: &[PathBuf],
     ) -> Result<BuildAcquireOutcome> {
         fs::create_dir_all(topdir)
             .with_context(|| format!("creating topdir {}", topdir.to_string_lossy()))?;
@@ -448,6 +454,7 @@ impl BuildSessionGuard {
                     &queued_packages,
                     force_rebuild,
                     refresh_files,
+                    manual_source_files,
                 )?;
                 Ok(BuildAcquireOutcome::Forwarded(ForwardedBuildRequest {
                     owner_pid: owner.pid,
@@ -455,6 +462,7 @@ impl BuildSessionGuard {
                     owner_force_rebuild: owner.force_rebuild,
                     owner_refresh_files: owner.refresh_files,
                     queued_packages,
+                    manual_source_files: manual_source_files.to_vec(),
                 }))
             }
             Err(err) => Err(err).with_context(|| {
@@ -579,6 +587,11 @@ pub fn drain_forwarded_build_requests(
             continue;
         };
         if req.target_id == target_id {
+            let manual_source_files = req
+                .manual_source_files
+                .iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>();
             for package in req.packages {
                 let package = package.trim().to_string();
                 if package.is_empty() {
@@ -588,6 +601,7 @@ pub fn drain_forwarded_build_requests(
                     package,
                     force_rebuild: req.force_rebuild,
                     refresh_files: req.refresh_files,
+                    manual_source_files: manual_source_files.clone(),
                     submitted_host: req.submitted_host.clone(),
                     submitted_pid: req.pid,
                     submitted_at_utc: req.submitted_at_utc.clone(),
@@ -1168,6 +1182,7 @@ fn load_queued_requests(path: &Path) -> Result<Vec<LookupQueuedBuildRequest>> {
             packages: req.packages,
             force_rebuild: req.force_rebuild,
             refresh_files: req.refresh_files,
+            manual_source_files: req.manual_source_files,
             submitted_host: req.submitted_host,
             submitted_at_utc: req.submitted_at_utc,
         });
@@ -1468,6 +1483,7 @@ fn append_build_request(
     packages: &[String],
     force_rebuild: bool,
     refresh_files: bool,
+    manual_source_files: &[PathBuf],
 ) -> Result<()> {
     let requests_file = topdir.join(REQUESTS_FILE_NAME);
     let mut file = fs::OpenOptions::new()
@@ -1485,6 +1501,10 @@ fn append_build_request(
         packages: packages.to_vec(),
         force_rebuild,
         refresh_files,
+        manual_source_files: manual_source_files
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
         submitted_host: current_host_name(),
         submitted_at_utc: chrono::Utc::now().to_rfc3339(),
     };
@@ -1523,6 +1543,7 @@ mod tests {
             packages: vec!["samtools".to_string(), "bcftools".to_string()],
             force_rebuild: true,
             refresh_files: true,
+            manual_source_files: vec!["/tmp/cap3.tar.gz".to_string()],
             submitted_host: "host-a".to_string(),
             submitted_at_utc: "2026-03-01T00:00:00Z".to_string(),
         };
@@ -1532,6 +1553,7 @@ mod tests {
             packages: vec!["blast".to_string()],
             force_rebuild: false,
             refresh_files: false,
+            manual_source_files: Vec::new(),
             submitted_host: "host-b".to_string(),
             submitted_at_utc: "2026-03-01T00:00:01Z".to_string(),
         };
@@ -1547,10 +1569,18 @@ mod tests {
         assert_eq!(drained[0].package, "samtools");
         assert!(drained[0].force_rebuild);
         assert!(drained[0].refresh_files);
+        assert_eq!(
+            drained[0].manual_source_files,
+            vec![PathBuf::from("/tmp/cap3.tar.gz")]
+        );
         assert_eq!(drained[0].submitted_host, "host-a");
         assert_eq!(drained[1].package, "bcftools");
         assert!(drained[1].force_rebuild);
         assert!(drained[1].refresh_files);
+        assert_eq!(
+            drained[1].manual_source_files,
+            vec![PathBuf::from("/tmp/cap3.tar.gz")]
+        );
         assert_eq!(drained[1].submitted_host, "host-a");
 
         let remainder = fs::read_to_string(&requests).expect("read remaining requests");
@@ -1598,6 +1628,7 @@ mod tests {
         assert_eq!(drained[0].package, "blast");
         assert!(!drained[0].force_rebuild);
         assert!(!drained[0].refresh_files);
+        assert!(drained[0].manual_source_files.is_empty());
         assert!(!drained[0].submitted_host.is_empty());
 
         let _ = fs::remove_dir_all(&topdir);
@@ -1617,6 +1648,7 @@ mod tests {
             ],
             force_rebuild: false,
             refresh_files: false,
+            manual_source_files: Vec::new(),
             submitted_host: "host-a".to_string(),
             submitted_at_utc: "2026-05-07T00:00:00Z".to_string(),
         };
@@ -1626,6 +1658,7 @@ mod tests {
             packages: vec!["emboss".to_string()],
             force_rebuild: false,
             refresh_files: false,
+            manual_source_files: Vec::new(),
             submitted_host: "host-b".to_string(),
             submitted_at_utc: "2026-05-07T00:00:01Z".to_string(),
         };
@@ -1766,6 +1799,7 @@ mod tests {
             &["blast".to_string()],
             false,
             false,
+            &[],
         ) {
             Ok(_) => panic!("closing server should reject forwarded builds"),
             Err(err) => err,
@@ -1855,6 +1889,48 @@ mod tests {
             snapshot.queued_requests[0].packages,
             vec!["pplacer".to_string(), "mothur".to_string()]
         );
+
+        let _ = fs::remove_dir_all(&topdir);
+    }
+
+    #[test]
+    fn acquire_or_forward_build_preserves_manual_source_files() {
+        let topdir = tempdir("forward-files");
+        let _owner = BuildSessionGuard::acquire(
+            &topdir,
+            "target-a",
+            &["server-root".to_string()],
+            BuildSessionKind::Build,
+            false,
+            false,
+        )
+        .expect("acquire owner");
+
+        let manual_files = vec![
+            PathBuf::from("/home/stephen/Downloads/cap3.tar.gz"),
+            PathBuf::from("/data/manual/special.zip"),
+        ];
+        let forwarded = match BuildSessionGuard::acquire_or_forward_build(
+            &topdir,
+            "target-a",
+            &["cap3".to_string()],
+            true,
+            false,
+            &manual_files,
+        )
+        .expect("forward build")
+        {
+            BuildAcquireOutcome::Forwarded(forwarded) => forwarded,
+            BuildAcquireOutcome::Owner(_) => panic!("request should be forwarded"),
+        };
+        assert_eq!(forwarded.queued_packages, vec!["cap3".to_string()]);
+        assert_eq!(forwarded.manual_source_files, manual_files);
+
+        let drained = drain_forwarded_build_requests(&topdir, "target-a").expect("drain");
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].package, "cap3");
+        assert!(drained[0].force_rebuild);
+        assert_eq!(drained[0].manual_source_files, manual_files);
 
         let _ = fs::remove_dir_all(&topdir);
     }
