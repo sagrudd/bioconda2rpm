@@ -139,8 +139,15 @@ fn todo_json_emits_manual_source_file_task() {
         serde_json::to_string(&catalog).expect("catalog json"),
     )
     .expect("write catalog");
+    let blacklist_path = topdir.path().join("empty-blacklist.txt");
+    std::fs::write(&blacklist_path, "package,problem_url,justification\n")
+        .expect("write blacklist");
 
-    let output = run(&["todo", "--json", "--topdir", &topdir_arg]);
+    let output = Command::new(env!("CARGO_BIN_EXE_bioconda2rpm"))
+        .env("BIOCONDA2RPM_BLACKLIST", &blacklist_path)
+        .args(["todo", "--json", "--topdir", &topdir_arg])
+        .output()
+        .expect("run todo");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: Value = serde_json::from_str(stdout.trim()).expect("todo json");
@@ -242,6 +249,58 @@ fn blacklist_updates_csv_and_clears_catalogue_failures() {
     assert!(refreshed.status.success());
     let parsed: Value = serde_json::from_str(String::from_utf8_lossy(&refreshed.stdout).trim())
         .expect("refreshed failures json");
+    assert_eq!(parsed.as_array().expect("array").len(), 0);
+}
+
+#[test]
+fn todo_and_failures_hide_packages_already_in_blacklist() {
+    let topdir = tempdir().expect("tempdir");
+    let topdir_arg = topdir.path().to_string_lossy().to_string();
+    let blacklist_path = topdir.path().join("blacklist.txt");
+    std::fs::write(
+        &blacklist_path,
+        "package,problem_url,justification\nbam2fasta,https://example.invalid/bam2fasta.tar.gz,withdrawn\n",
+    )
+    .expect("write blacklist");
+    let catalog = serde_json::json!({
+        "entries": [],
+        "failures": [
+            {
+                "software": "bam2fasta",
+                "version": "1.0.8",
+                "arch": "x86_64",
+                "target_id": "test-target",
+                "status": "quarantined",
+                "reason": "source download failed after retries",
+                "report_path": "/tmp/missing-report.json",
+                "failed_at": "2026-05-07T10:00:00Z"
+            }
+        ]
+    });
+    std::fs::write(
+        topdir.path().join(".catalog.json"),
+        serde_json::to_string(&catalog).expect("catalog json"),
+    )
+    .expect("write catalog");
+
+    let failures = Command::new(env!("CARGO_BIN_EXE_bioconda2rpm"))
+        .env("BIOCONDA2RPM_BLACKLIST", &blacklist_path)
+        .args(["failures", "--json", "--topdir", &topdir_arg])
+        .output()
+        .expect("run failures");
+    assert!(failures.status.success());
+    let parsed: Value = serde_json::from_str(String::from_utf8_lossy(&failures.stdout).trim())
+        .expect("failures json");
+    assert_eq!(parsed.as_array().expect("array").len(), 0);
+
+    let todo = Command::new(env!("CARGO_BIN_EXE_bioconda2rpm"))
+        .env("BIOCONDA2RPM_BLACKLIST", &blacklist_path)
+        .args(["todo", "--json", "--topdir", &topdir_arg])
+        .output()
+        .expect("run todo");
+    assert!(todo.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&todo.stdout).trim()).expect("todo json");
     assert_eq!(parsed.as_array().expect("array").len(), 0);
 }
 

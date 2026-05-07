@@ -1488,10 +1488,14 @@ fn filter_failures<'a>(
     name_pat: Option<&Pattern>,
     version_pat: Option<&Pattern>,
     arch: Option<&str>,
+    blacklisted_packages: &BTreeSet<String>,
 ) -> Vec<&'a FailureEntry> {
     failures
         .iter()
         .filter(|e| {
+            if blacklisted_packages.contains(&normalize_blacklist_package(&e.software)) {
+                return false;
+            }
             if let Some(pat) = name_pat {
                 if !pat.matches(&e.software) {
                     return false;
@@ -1842,12 +1846,14 @@ pub fn run_failures(topdir: &Path, args: &crate::cli::FailuresArgs) -> Result<()
         .map(Pattern::new)
         .transpose()
         .with_context(|| "invalid --version glob pattern")?;
+    let blacklisted_packages = blacklisted_packages_from_default_path();
 
     let filtered = filter_failures(
         &catalog.failures,
         name_pat.as_ref(),
         version_pat.as_ref(),
         args.arch.as_deref(),
+        &blacklisted_packages,
     );
 
     if args.json {
@@ -1882,12 +1888,14 @@ pub fn run_todo(topdir: &Path, args: &crate::cli::TodoArgs) -> Result<()> {
         .map(Pattern::new)
         .transpose()
         .with_context(|| "invalid --version glob pattern")?;
+    let blacklisted_packages = blacklisted_packages_from_default_path();
 
     let filtered = filter_failures(
         &catalog.failures,
         name_pat.as_ref(),
         version_pat.as_ref(),
         args.arch.as_deref(),
+        &blacklisted_packages,
     );
     let actionable: Vec<TodoTask> = filtered
         .into_iter()
