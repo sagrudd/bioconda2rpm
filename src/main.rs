@@ -8,7 +8,7 @@ mod ui;
 use clap::Parser;
 use std::fs;
 use std::process::ExitCode;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -40,6 +40,20 @@ fn collect_initial_server_packages(args: &cli::BuildArgs) -> anyhow::Result<Vec<
         return Ok(Vec::new());
     }
     priority_specs::collect_requested_build_packages(args)
+}
+
+fn update_server_status_packages(
+    status: &Arc<Mutex<(Vec<String>, Vec<String>)>>,
+    pending: &[(String, bool, bool)],
+    current: &[String],
+) {
+    if let Ok(mut guard) = status.lock() {
+        guard.0 = pending
+            .iter()
+            .map(|(package, _, _)| package.clone())
+            .collect();
+        guard.1 = current.to_vec();
+    }
 }
 
 fn main() -> ExitCode {
@@ -218,6 +232,29 @@ fn main() -> ExitCode {
             let mut args = server_args.build;
             let topdir = args.effective_topdir();
             let target_id = args.effective_target_id();
+            if server_args.status {
+                match build_lock::lookup_build_runtime(&topdir) {
+                    Ok(snapshot) => {
+                        let rendered = if server_args.compact {
+                            serde_json::to_string(&snapshot)
+                        } else {
+                            serde_json::to_string_pretty(&snapshot)
+                        };
+                        match rendered {
+                            Ok(body) => println!("{body}"),
+                            Err(err) => {
+                                eprintln!("server status serialization failed: {err:#}");
+                                return ExitCode::FAILURE;
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("server status failed: {err:#}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+                return ExitCode::SUCCESS;
+            }
             if server_args.close {
                 if let Err(err) = ensure_workspace_paths(
                     &topdir,
@@ -292,10 +329,36 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
 
+            let server_status_packages =
+                Arc::new(Mutex::new((Vec::<String>::new(), Vec::<String>::new())));
             let mut progress_ui = {
                 let title = format!("bioconda2rpm server ({})", args.effective_target_id());
                 let ui = ui::ProgressUi::start(title);
-                priority_specs::install_progress_sink(ui.sink());
+                let ui_sink = ui.sink();
+                let status_topdir = topdir.clone();
+                let status_target_id = target_id.clone();
+                let status_packages_for_sink = Arc::clone(&server_status_packages);
+                priority_specs::install_progress_sink(Arc::new(move |line: String| {
+                    let (pending, current) = status_packages_for_sink
+                        .lock()
+                        .map(|guard| (guard.0.clone(), guard.1.clone()))
+                        .unwrap_or_default();
+                    let _ = build_lock::record_server_progress(
+                        &status_topdir,
+                        &status_target_id,
+                        &pending,
+                        &current,
+                        &line,
+                    );
+                    ui_sink(line);
+                }));
+                let _ = build_lock::record_server_progress(
+                    &topdir,
+                    &target_id,
+                    &[],
+                    &[],
+                    "phase=server status=starting",
+                );
                 Some(ui)
             };
 
@@ -316,6 +379,7 @@ fn main() -> ExitCode {
                 .cloned()
                 .map(|package| (package, owner_force, false))
                 .collect::<Vec<_>>();
+            update_server_status_packages(&server_status_packages, &pending_packages, &[]);
 
             let _server_session = match build_lock::BuildSessionGuard::acquire(
                 &topdir,
@@ -390,6 +454,11 @@ fn main() -> ExitCode {
                                     request.refresh_files,
                                 ));
                             }
+                            update_server_status_packages(
+                                &server_status_packages,
+                                &pending_packages,
+                                &[],
+                            );
                         }
                         Err(err) => {
                             priority_specs::log_external_progress(format!(
@@ -491,6 +560,7 @@ fn main() -> ExitCode {
                     }
                 }
                 pending_packages = merged_packages;
+                update_server_status_packages(&server_status_packages, &pending_packages, &[]);
                 if pending_packages.is_empty() {
                     if closing {
                         priority_specs::log_external_progress(format!(
@@ -562,6 +632,7 @@ fn main() -> ExitCode {
                     args.packages = packages.clone();
                     args.force = force;
                     args.refresh_files = refresh_files;
+                    update_server_status_packages(&server_status_packages, &[], packages);
                     priority_specs::log_external_progress(format!(
                         "phase=server status=build-start target_id={} force={} refresh_files={} packages={}",
                         args.effective_target_id(),
@@ -570,6 +641,7 @@ fn main() -> ExitCode {
                         args.packages.join(",")
                     ));
                     let outcome = priority_specs::run_build(&args);
+                    update_server_status_packages(&server_status_packages, &[], &[]);
                     args.force = false;
                     args.refresh_files = false;
                     match outcome {

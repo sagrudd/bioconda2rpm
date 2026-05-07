@@ -15,6 +15,7 @@ Production expectation:
 
 ```bash
 bioconda2rpm server [build-options] [<initial-package...>]
+bioconda2rpm server --status [--compact] [build-options]
 bioconda2rpm server --close [build-options]
 bioconda2rpm server --kill [build-options]
 ```
@@ -24,6 +25,7 @@ Production expectation:
 - It launches the progress TUI and remains alive after each build batch completes.
 - It drains forwarded requests from secondary `build` invocations until Ctrl-C is provided by the user.
 - Initial packages are optional; without them the server starts idle and waits for forwarded work.
+- `server --status` is read-only and reports the active lock owner, forwarded queue, server progress phase/status, accepted/current packages, active build containers, and recent build logs.
 - `server --close` submits a close request to the active server for the selected target id. The server stops accepting newly forwarded work, drains queue items it already accepted, and exits when the queue is empty.
 - `server --kill` submits an immediate kill request to the active server for the selected target id and force-removes active `bioconda2rpm-*` build containers. No queue drain is expected.
 - Once an active server has observed close or kill, later `build` invocations for that target id shall fail instead of being forwarded into a queue that will not be serviced.
@@ -190,6 +192,7 @@ Regression-only options:
 - The persistent `server` process does not own or broadcast `--force` or `--refresh-files`; submit `bioconda2rpm build --force <package>` or `bioconda2rpm build --refresh-files <package>` to route those policies through a running server.
 - `--force` bypasses blacklist quarantine only for the requested package and its dependency closure; recipe-declared `build.skip=true` still records a skipped result because the active render context has no buildable recipe output.
 - Persistent `server` ownership keeps the queue interface available between batches and exits only on user Ctrl-C.
+- `server --status` and `lookup` expose `server_status` for pre-container visibility, including phases such as recipe sync, dependency indexing, spec generation, queue dispatch, and container build heartbeats.
 - Operator removals are explicit queue events; removed package nodes are reported as skipped and their dependents are blocked by normal dependency-gate handling.
 - Recipes with `outputs:` are expanded into discrete package outputs.
 - Highest versioned recipe subdirectory is selected when present.

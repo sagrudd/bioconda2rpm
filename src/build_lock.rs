@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Utc};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -12,6 +14,7 @@ const REQUESTS_FILE_NAME: &str = ".bioconda2rpm-build-requests.jsonl";
 const REMOVE_REQUESTS_FILE_NAME: &str = ".bioconda2rpm-remove-requests.jsonl";
 const SERVER_CONTROL_REQUESTS_FILE_NAME: &str = ".bioconda2rpm-server-control.jsonl";
 const SERVER_STATUS_FILE_NAME: &str = ".bioconda2rpm-server-status.json";
+const SERVER_PROGRESS_FILE_NAME: &str = ".bioconda2rpm-server-progress.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildSessionKind {
@@ -72,6 +75,40 @@ pub struct LookupQueuedBuildRequest {
     pub submitted_at_utc: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct LookupServerStatus {
+    pub target_id: String,
+    pub pid: u32,
+    pub closing: bool,
+    pub current_phase: String,
+    pub current_status: String,
+    pub current_packages: Vec<String>,
+    pub pending_packages: Vec<String>,
+    pub last_progress: Option<String>,
+    pub recent_progress: Vec<String>,
+    pub active_containers: Vec<LookupBuildContainer>,
+    pub recent_logs: Vec<LookupBuildLog>,
+    pub updated_at_utc: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LookupBuildContainer {
+    pub name: String,
+    pub package: String,
+    pub spec: String,
+    pub attempt: Option<usize>,
+    pub pid: Option<u32>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LookupBuildLog {
+    pub package: String,
+    pub path: String,
+    pub size_bytes: u64,
+    pub modified_at_utc: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct RemovedQueuedPackage {
     pub package: String,
@@ -113,6 +150,7 @@ pub struct BuildLookupSnapshot {
     pub queued_requests: Vec<LookupQueuedBuildRequest>,
     pub running_containers: Vec<String>,
     pub container_probe_error: Option<String>,
+    pub server_status: Option<LookupServerStatus>,
     pub updated_at_utc: String,
 }
 
@@ -189,6 +227,23 @@ struct BuildServerStatus {
     updated_at_utc: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct BuildServerProgressState {
+    target_id: String,
+    pid: u32,
+    #[serde(default)]
+    current_phase: String,
+    #[serde(default)]
+    current_status: String,
+    #[serde(default)]
+    current_packages: Vec<String>,
+    #[serde(default)]
+    pending_packages: Vec<String>,
+    #[serde(default)]
+    recent_progress: Vec<String>,
+    updated_at_utc: String,
+}
+
 pub struct BuildSessionGuard {
     lock_file: fs::File,
     state_file: PathBuf,
@@ -215,6 +270,7 @@ pub fn lookup_build_runtime(topdir: &Path) -> Result<BuildLookupSnapshot> {
     let lock_path = topdir.join(LOCK_FILE_NAME);
     let state_file = topdir.join(STATE_FILE_NAME);
     let requests_file = topdir.join(REQUESTS_FILE_NAME);
+    let progress_file = topdir.join(SERVER_PROGRESS_FILE_NAME);
     let lock_held = detect_lock_held(&lock_path)?;
     let active_state = load_state(&state_file).unwrap_or_default();
     let active_entries = active_state
@@ -233,6 +289,8 @@ pub fn lookup_build_runtime(topdir: &Path) -> Result<BuildLookupSnapshot> {
         .collect::<Vec<_>>();
     let queued_requests = load_queued_requests(&requests_file)?;
     let (running_containers, container_probe_error) = probe_running_containers();
+    let server_status =
+        load_lookup_server_status(topdir, &progress_file, &active_entries, &queued_requests)?;
 
     Ok(BuildLookupSnapshot {
         topdir: topdir.to_string_lossy().to_string(),
@@ -241,6 +299,7 @@ pub fn lookup_build_runtime(topdir: &Path) -> Result<BuildLookupSnapshot> {
         queued_requests,
         running_containers,
         container_probe_error,
+        server_status,
         updated_at_utc: chrono::Utc::now().to_rfc3339(),
     })
 }
@@ -418,6 +477,7 @@ impl BuildSessionGuard {
     ) -> Result<Self> {
         if let Some(topdir) = lock_path.parent() {
             let _ = fs::remove_file(topdir.join(SERVER_STATUS_FILE_NAME));
+            let _ = fs::remove_file(topdir.join(SERVER_PROGRESS_FILE_NAME));
         }
         let pid = std::process::id();
         let entry = ActiveBuildEntry {
@@ -466,6 +526,7 @@ impl Drop for BuildSessionGuard {
                     let _ = fs::remove_file(topdir.join(REMOVE_REQUESTS_FILE_NAME));
                     let _ = fs::remove_file(topdir.join(SERVER_CONTROL_REQUESTS_FILE_NAME));
                     let _ = fs::remove_file(topdir.join(SERVER_STATUS_FILE_NAME));
+                    let _ = fs::remove_file(topdir.join(SERVER_PROGRESS_FILE_NAME));
                 }
             }
         } else {
@@ -703,6 +764,65 @@ pub fn append_server_control_request(
     file.unlock()
         .with_context(|| format!("unlocking server control file {}", control_file.display()))?;
     Ok(())
+}
+
+pub fn record_server_progress(
+    topdir: &Path,
+    target_id: &str,
+    pending_packages: &[String],
+    current_packages: &[String],
+    progress_line: &str,
+) -> Result<()> {
+    let progress_file = topdir.join(SERVER_PROGRESS_FILE_NAME);
+    let mut state = load_server_progress_state(&progress_file).unwrap_or_default();
+    if state.target_id != target_id {
+        state = BuildServerProgressState {
+            target_id: target_id.to_string(),
+            pid: std::process::id(),
+            ..BuildServerProgressState::default()
+        };
+    }
+    state.pid = std::process::id();
+    state.target_id = target_id.to_string();
+    state.pending_packages = pending_packages.to_vec();
+    state.current_packages = current_packages.to_vec();
+    let cleaned = progress_line
+        .strip_prefix("progress ")
+        .unwrap_or(progress_line)
+        .trim()
+        .to_string();
+    if !cleaned.is_empty() {
+        let kv = parse_progress_kv(&cleaned);
+        if let Some(phase) = kv.get("phase") {
+            state.current_phase = phase.clone();
+        }
+        if let Some(status) = kv.get("status") {
+            state.current_status = status.clone();
+        }
+        if let Some(package) = kv.get("package") {
+            state.current_packages = vec![package.clone()];
+        } else if let Some(label) = kv.get("label") {
+            state.current_packages = vec![label.clone()];
+        }
+        if let Some(packages) = kv.get("packages") {
+            let parsed = packages
+                .split(',')
+                .map(str::trim)
+                .filter(|pkg| !pkg.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if !parsed.is_empty() {
+                state.current_packages = parsed;
+            }
+        }
+        state.recent_progress.push(cleaned);
+        let keep_from = state.recent_progress.len().saturating_sub(24);
+        if keep_from > 0 {
+            state.recent_progress.drain(0..keep_from);
+        }
+    }
+    state.updated_at_utc = chrono::Utc::now().to_rfc3339();
+    write_server_progress_state(&progress_file, &state)
 }
 
 pub fn mark_server_closing(topdir: &Path, target_id: &str) -> Result<()> {
@@ -1055,6 +1175,258 @@ fn load_queued_requests(path: &Path) -> Result<Vec<LookupQueuedBuildRequest>> {
     Ok(out)
 }
 
+fn load_server_progress_state(path: &Path) -> Result<BuildServerProgressState> {
+    if !path.exists() {
+        return Ok(BuildServerProgressState::default());
+    }
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("reading server progress file {}", path.display()))?;
+    if raw.trim().is_empty() {
+        return Ok(BuildServerProgressState::default());
+    }
+    serde_json::from_str(&raw)
+        .with_context(|| format!("parsing server progress file {}", path.display()))
+}
+
+fn write_server_progress_state(path: &Path, state: &BuildServerProgressState) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    let payload = serde_json::to_vec_pretty(state).context("serializing server progress state")?;
+    fs::write(&tmp, payload)
+        .with_context(|| format!("writing server progress temp file {}", tmp.display()))?;
+    fs::rename(&tmp, path)
+        .with_context(|| format!("committing server progress file {}", path.display()))?;
+    Ok(())
+}
+
+fn load_lookup_server_status(
+    topdir: &Path,
+    progress_file: &Path,
+    active_entries: &[LookupActiveBuildEntry],
+    queued_requests: &[LookupQueuedBuildRequest],
+) -> Result<Option<LookupServerStatus>> {
+    let progress = load_server_progress_state(progress_file).unwrap_or_default();
+    let target_id = progress
+        .target_id
+        .clone()
+        .into_empty_none()
+        .or_else(|| active_entries.first().map(|entry| entry.target_id.clone()))
+        .or_else(|| queued_requests.first().map(|entry| entry.target_id.clone()));
+    let Some(target_id) = target_id else {
+        return Ok(None);
+    };
+    let pid = if progress.pid != 0 {
+        progress.pid
+    } else {
+        active_entries.first().map(|entry| entry.pid).unwrap_or(0)
+    };
+    let closing = server_is_closing(topdir, &target_id).unwrap_or(false);
+    let active_containers = lookup_build_containers(topdir)?;
+    let recent_logs = lookup_recent_build_logs(topdir, 8)?;
+    let mut pending_packages = progress.pending_packages;
+    if pending_packages.is_empty() {
+        for req in queued_requests
+            .iter()
+            .filter(|req| req.target_id == target_id)
+        {
+            pending_packages.extend(req.packages.clone());
+        }
+        pending_packages.sort();
+        pending_packages.dedup();
+    }
+    let last_progress = progress.recent_progress.last().cloned();
+    Ok(Some(LookupServerStatus {
+        target_id,
+        pid,
+        closing,
+        current_phase: progress.current_phase,
+        current_status: progress.current_status,
+        current_packages: progress.current_packages,
+        pending_packages,
+        last_progress,
+        recent_progress: progress.recent_progress,
+        active_containers,
+        recent_logs,
+        updated_at_utc: if progress.updated_at_utc.is_empty() {
+            chrono::Utc::now().to_rfc3339()
+        } else {
+            progress.updated_at_utc
+        },
+    }))
+}
+
+trait EmptyNone {
+    fn into_empty_none(self) -> Option<String>;
+}
+
+impl EmptyNone for String {
+    fn into_empty_none(self) -> Option<String> {
+        if self.trim().is_empty() {
+            None
+        } else {
+            Some(self)
+        }
+    }
+}
+
+fn parse_progress_kv(line: &str) -> BTreeMap<String, String> {
+    line.split_whitespace()
+        .filter_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            Some((key.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+fn lookup_build_containers(topdir: &Path) -> Result<Vec<LookupBuildContainer>> {
+    let output = Command::new("docker")
+        .args(["ps", "--format", "{{.Names}}\t{{.ID}}\t{{.Status}}"])
+        .output();
+    let Ok(output) = output else {
+        return Ok(Vec::new());
+    };
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+    let topdir_pid = active_state_pid(topdir).unwrap_or_default();
+    let mut out = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut fields = line.split('\t');
+        let name = fields.next().unwrap_or_default().trim();
+        let _id = fields.next().unwrap_or_default().trim();
+        let status = fields.next().unwrap_or_default().trim();
+        if !name.starts_with("bioconda2rpm-") {
+            continue;
+        }
+        let parsed = parse_build_container_name(name);
+        if topdir_pid != 0 && parsed.pid.is_some() && parsed.pid != Some(topdir_pid) {
+            continue;
+        }
+        out.push(LookupBuildContainer {
+            name: name.to_string(),
+            package: parsed.package,
+            spec: parsed.spec,
+            attempt: parsed.attempt,
+            pid: parsed.pid,
+            status: status.to_string(),
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+struct ParsedContainerName {
+    package: String,
+    spec: String,
+    attempt: Option<usize>,
+    pid: Option<u32>,
+}
+
+fn parse_build_container_name(name: &str) -> ParsedContainerName {
+    let stripped = name.strip_prefix("bioconda2rpm-").unwrap_or(name);
+    let mut parts = stripped.rsplitn(4, '-');
+    let _millis = parts.next();
+    let pid = parts
+        .next()
+        .and_then(|part| part.strip_prefix('p'))
+        .and_then(|part| part.parse::<u32>().ok());
+    let attempt = parts
+        .next()
+        .and_then(|part| part.strip_prefix('a'))
+        .and_then(|part| part.parse::<usize>().ok());
+    let label_spec = parts.next().unwrap_or(stripped);
+    let spec_marker = "-phoreus-";
+    let (package, spec) = if let Some(idx) = label_spec.find(spec_marker) {
+        (
+            label_spec[..idx].to_string(),
+            label_spec[idx + 1..].to_string(),
+        )
+    } else {
+        (label_spec.to_string(), String::new())
+    };
+    ParsedContainerName {
+        package,
+        spec,
+        attempt,
+        pid,
+    }
+}
+
+fn active_state_pid(topdir: &Path) -> Option<u32> {
+    load_state(&topdir.join(STATE_FILE_NAME))
+        .ok()
+        .and_then(|state| state.entries.first().map(|entry| entry.pid))
+}
+
+fn lookup_recent_build_logs(topdir: &Path, limit: usize) -> Result<Vec<LookupBuildLog>> {
+    let reports_root = topdir.join("targets");
+    if !reports_root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut logs = Vec::new();
+    collect_build_logs(&reports_root, &mut logs)?;
+    logs.sort_by(|a, b| a.modified_at_utc.cmp(&b.modified_at_utc));
+    let keep_from = logs.len().saturating_sub(limit);
+    if keep_from > 0 {
+        logs.drain(0..keep_from);
+    }
+    Ok(logs)
+}
+
+fn collect_build_logs(dir: &Path, out: &mut Vec<LookupBuildLog>) -> Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("reading entry under {}", dir.display()))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("reading file type for {}", path.display()))?;
+        if file_type.is_dir() {
+            if path.file_name().and_then(|v| v.to_str()) == Some("build_logs")
+                || path.components().any(|c| c.as_os_str() == "build_logs")
+                || path.file_name().and_then(|v| v.to_str()) == Some("reports")
+                || path.file_name().and_then(|v| v.to_str()) == Some("targets")
+                || path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|v| v.to_str())
+                    == Some("targets")
+            {
+                collect_build_logs(&path, out)?;
+            }
+            continue;
+        }
+        if path.extension().and_then(|v| v.to_str()) != Some("log") {
+            continue;
+        }
+        if !path.components().any(|c| c.as_os_str() == "build_logs") {
+            continue;
+        }
+        let metadata = entry
+            .metadata()
+            .with_context(|| format!("reading metadata for {}", path.display()))?;
+        let modified = metadata
+            .modified()
+            .ok()
+            .map(DateTime::<Utc>::from)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default();
+        let package = path
+            .file_stem()
+            .and_then(|v| v.to_str())
+            .unwrap_or_default()
+            .split(".attempt")
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        out.push(LookupBuildLog {
+            package,
+            path: path.to_string_lossy().to_string(),
+            size_bytes: metadata.len(),
+            modified_at_utc: modified,
+        });
+    }
+    Ok(())
+}
+
 fn probe_running_containers() -> (Vec<String>, Option<String>) {
     let output = Command::new("docker")
         .args(["ps", "--format", "{{.Names}}"])
@@ -1404,6 +1776,45 @@ mod tests {
         );
 
         drop(owner);
+        let _ = fs::remove_dir_all(&topdir);
+    }
+
+    #[test]
+    fn lookup_build_runtime_reports_server_progress() {
+        let topdir = tempdir("server-progress");
+        let _owner = BuildSessionGuard::acquire(
+            &topdir,
+            "target-a",
+            &[],
+            BuildSessionKind::Build,
+            false,
+            false,
+        )
+        .expect("acquire owner");
+        record_server_progress(
+            &topdir,
+            "target-a",
+            &["blast".to_string()],
+            &["emboss".to_string()],
+            "progress phase=dependency-index status=running package=emboss roots_done=1/1",
+        )
+        .expect("record progress");
+
+        let snapshot = lookup_build_runtime(&topdir).expect("lookup runtime");
+        let status = snapshot.server_status.expect("server status");
+        assert_eq!(status.target_id, "target-a");
+        assert_eq!(status.current_phase, "dependency-index");
+        assert_eq!(status.current_status, "running");
+        assert_eq!(status.current_packages, vec!["emboss"]);
+        assert_eq!(status.pending_packages, vec!["blast"]);
+        assert!(
+            status
+                .last_progress
+                .as_deref()
+                .unwrap_or_default()
+                .contains("dependency-index")
+        );
+
         let _ = fs::remove_dir_all(&topdir);
     }
 

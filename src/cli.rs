@@ -304,6 +304,14 @@ pub struct ServerArgs {
     #[arg(long)]
     pub kill: bool,
 
+    /// Report active server state without changing the queue or running containers.
+    #[arg(long, conflicts_with_all = ["close", "kill"])]
+    pub status: bool,
+
+    /// Emit compact single-line JSON for `server --status`.
+    #[arg(long)]
+    pub compact: bool,
+
     /// Build/server options and optional initial package queue for a newly started server.
     #[command(flatten)]
     pub build: BuildArgs,
@@ -1197,6 +1205,7 @@ mod tests {
         };
         assert!(close_args.close);
         assert!(!close_args.kill);
+        assert!(!close_args.status);
         assert!(close_args.build.packages.is_empty());
 
         let kill_cli =
@@ -1206,8 +1215,20 @@ mod tests {
         };
         assert!(!kill_args.close);
         assert!(kill_args.kill);
+        assert!(!kill_args.status);
+
+        let status_cli = Cli::try_parse_from(["bioconda2rpm", "server", "--status", "--compact"])
+            .expect("status parses");
+        let Command::Server(status_args) = status_cli.command else {
+            panic!("expected server command")
+        };
+        assert!(status_args.status);
+        assert!(status_args.compact);
+        assert!(!status_args.close);
+        assert!(!status_args.kill);
 
         assert!(Cli::try_parse_from(["bioconda2rpm", "server", "--close", "--kill"]).is_err());
+        assert!(Cli::try_parse_from(["bioconda2rpm", "server", "--status", "--close"]).is_err());
     }
 
     #[test]

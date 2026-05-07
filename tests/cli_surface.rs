@@ -93,6 +93,20 @@ fn server_help_exposes_lifecycle_controls() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--close"));
     assert!(stdout.contains("--kill"));
+    assert!(stdout.contains("--status"));
+}
+
+#[test]
+fn server_status_compact_emits_runtime_snapshot() {
+    let topdir = tempdir().expect("tempdir");
+    let topdir_arg = topdir.path().to_string_lossy().to_string();
+
+    let output = run(&["server", "--status", "--compact", "--topdir", &topdir_arg]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Value = serde_json::from_str(stdout.trim()).expect("server status json");
+    assert!(parsed.get("topdir").is_some());
+    assert!(parsed.get("server_status").is_some());
 }
 
 #[test]

@@ -56,6 +56,8 @@ FR-003 Dependency closure control
 - While a build session holds the workspace lock, concurrent `build` invocations on the same `--topdir` shall forward package names into the authoritative queue instead of failing lock acquisition.
 - Forwarded package requests shall carry their own `--force` and `--refresh-files` intent into the authoritative build queue while otherwise inheriting the owning session's scheduler/container policy.
 - A persistent `server` session shall not enforce `--force` or `--refresh-files` globally; force rebuild and source refresh scope shall come only from `build` requests.
+- A persistent `server` session shall persist read-only status evidence covering the active phase, status, current packages, pending packages, recent progress lines, active containers, and recent build logs.
+- The CLI shall expose this evidence through `bioconda2rpm server --status` without modifying queue, lock, control, or container state.
 - A persistent `server` session shall accept an operator close request that stops ingestion of new forwarded build work, drains already accepted queue items normally, and exits after the queue is empty.
 - A persistent `server` session shall accept an operator kill request that cancels active work as quickly as possible and force-removes active bioconda2rpm build containers without waiting for queue drain.
 - After a persistent `server` session has observed close or kill, concurrent `build` invocations for the same target shall not report successful queue forwarding.

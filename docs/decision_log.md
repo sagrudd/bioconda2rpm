@@ -252,3 +252,8 @@
 - `bioconda2rpm server --close` is an operator control request, not a second server instance. It records a close request in the workspace control queue for the selected target id.
 - The active server drains build requests it already accepted, stops ingesting newly forwarded requests after close is observed, marks the target as closing so later `build` submissions fail instead of being falsely accepted, and exits when its in-memory queue is empty.
 - `bioconda2rpm server --kill` records an immediate kill request and force-removes active `bioconda2rpm-*` containers. Active batch execution also polls for kill requests so a server can interrupt long-running package containers instead of waiting for the outer server loop.
+
+### Server status visibility
+- The TUI progress stream is now mirrored into `.bioconda2rpm-server-progress.json` while a persistent server runs.
+- `bioconda2rpm server --status` reuses the read-only runtime lookup path and reports the active server phase, status, current/accepted packages, pending queue, active containers, recent progress, and recent build logs.
+- This closes the pre-container observability gap where a forwarded package could be accepted and spend time in dependency planning or SPEC preparation without appearing as a running container.

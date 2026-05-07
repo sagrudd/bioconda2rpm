@@ -85,6 +85,14 @@ cargo run -- server \
 
 `server` owns the workspace build lock, launches the same progress TUI, and remains alive after each batch completes. Additional `bioconda2rpm build <package>` invocations with the same target id are forwarded into the server queue. The server exits only when the user sends Ctrl-C.
 
+Inspect what a running server is doing:
+
+```bash
+cargo run -- server --status --compact
+```
+
+`server --status` is read-only. It reports the lock owner, queued requests, persisted server phase/status, accepted/current packages, active build containers, and recent build logs. This is the operator view to use when a forwarded package has been accepted but has not yet reached container execution.
+
 Drain and close a running server without wasting accepted build work:
 
 ```bash
