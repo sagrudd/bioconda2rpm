@@ -25,6 +25,7 @@ fn help_lists_primary_commands() {
         "list",
         "failures",
         "todo",
+        "blacklist",
         "catalog",
     ] {
         assert!(
@@ -153,6 +154,95 @@ fn todo_json_emits_manual_source_file_task() {
         items[0]["command"],
         "bioconda2rpm build cap3 --files cap3.tar.gz"
     );
+}
+
+#[test]
+fn blacklist_updates_csv_and_clears_catalogue_failures() {
+    let topdir = tempdir().expect("tempdir");
+    let topdir_arg = topdir.path().to_string_lossy().to_string();
+    let blacklist_path = topdir.path().join("blacklist.txt");
+    let blacklist_arg = blacklist_path.to_string_lossy().to_string();
+    let report_path = topdir.path().join("targets/test-target/reports/build_bam2fasta.json");
+    std::fs::create_dir_all(report_path.parent().expect("report parent")).expect("reports dir");
+    let report = serde_json::json!([
+        {
+            "software": "bam2fasta",
+            "priority": 0,
+            "status": "quarantined",
+            "reason": "source download failed after retries",
+            "overlap_recipe": "bam2fasta",
+            "overlap_reason": "exact",
+            "variant_dir": "/recipes/bam2fasta",
+            "package_name": "bam2fasta",
+            "version": "1.0.8",
+            "payload_spec_path": "",
+            "meta_spec_path": "",
+            "staged_build_sh": ""
+        }
+    ]);
+    std::fs::write(
+        &report_path,
+        serde_json::to_string(&report).expect("report json"),
+    )
+    .expect("write report");
+    let catalog = serde_json::json!({
+        "entries": [],
+        "failures": [
+            {
+                "software": "bam2fasta",
+                "version": "1.0.8",
+                "arch": "x86_64",
+                "target_id": "test-target",
+                "status": "quarantined",
+                "reason": "source download failed after retries",
+                "report_path": report_path.display().to_string(),
+                "failed_at": "2026-05-07T10:00:00Z"
+            }
+        ]
+    });
+    std::fs::write(
+        topdir.path().join(".catalog.json"),
+        serde_json::to_string(&catalog).expect("catalog json"),
+    )
+    .expect("write catalog");
+
+    let output = run(&[
+        "blacklist",
+        "bam2fasta",
+        "--reason",
+        "withdrawn upstream",
+        "--url",
+        "https://example.invalid/bam2fasta-1.0.8.tar.gz",
+        "--topdir",
+        &topdir_arg,
+        "--blacklist",
+        &blacklist_arg,
+        "--json",
+    ]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Value = serde_json::from_str(stdout.trim()).expect("blacklist json");
+    assert_eq!(parsed["action"], "added");
+    assert_eq!(parsed["removed_failures"], 1);
+    let blacklist = std::fs::read_to_string(&blacklist_path).expect("read blacklist");
+    assert!(blacklist.contains("bam2fasta"));
+    assert!(blacklist.contains("withdrawn upstream"));
+
+    let failures = run(&["failures", "--json", "--topdir", &topdir_arg]);
+    assert!(failures.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&failures.stdout).trim()).expect("failures json");
+    assert_eq!(parsed.as_array().expect("array").len(), 0);
+
+    let refreshed = Command::new(env!("CARGO_BIN_EXE_bioconda2rpm"))
+        .env("BIOCONDA2RPM_BLACKLIST", &blacklist_path)
+        .args(["failures", "--refresh", "--json", "--topdir", &topdir_arg])
+        .output()
+        .expect("run failures refresh");
+    assert!(refreshed.status.success());
+    let parsed: Value = serde_json::from_str(String::from_utf8_lossy(&refreshed.stdout).trim())
+        .expect("refreshed failures json");
+    assert_eq!(parsed.as_array().expect("array").len(), 0);
 }
 
 #[test]

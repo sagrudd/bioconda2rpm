@@ -36,6 +36,8 @@ pub enum Command {
     Failures(FailuresArgs),
     /// Show the next actionable human task for clearing build failures.
     Todo(TodoArgs),
+    /// Add or update a package entry in blacklist.txt.
+    Blacklist(BlacklistArgs),
     /// Manage and migrate the internal build catalogue.
     Catalog(CatalogArgs),
 }
@@ -602,6 +604,36 @@ pub struct TodoArgs {
 }
 
 #[derive(Debug, clap::Args)]
+pub struct BlacklistArgs {
+    /// Bioconda package name to blacklist.
+    pub package: String,
+
+    /// Human justification for why this package should be skipped.
+    #[arg(long)]
+    pub reason: String,
+
+    /// Problem URL to record. When omitted, preserves an existing URL or infers one from failures.
+    #[arg(long)]
+    pub url: Option<String>,
+
+    /// Explicit blacklist CSV path. Defaults to BIOCONDA2RPM_BLACKLIST or ./blacklist.txt.
+    #[arg(long)]
+    pub blacklist: Option<PathBuf>,
+
+    /// Workspace topdir used for URL inference from current failures. Defaults to ~/bioconda2rpm.
+    #[arg(long)]
+    pub topdir: Option<PathBuf>,
+
+    /// Refresh failure state by rescanning build reports before URL inference.
+    #[arg(long)]
+    pub refresh: bool,
+
+    /// Emit JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
 pub struct CatalogArgs {
     #[command(subcommand)]
     pub command: CatalogCommand,
@@ -1091,6 +1123,12 @@ impl FailuresArgs {
 }
 
 impl TodoArgs {
+    pub fn effective_topdir(&self) -> PathBuf {
+        self.topdir.clone().unwrap_or_else(default_topdir)
+    }
+}
+
+impl BlacklistArgs {
     pub fn effective_topdir(&self) -> PathBuf {
         self.topdir.clone().unwrap_or_else(default_topdir)
     }

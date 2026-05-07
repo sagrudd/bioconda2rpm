@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use csv::{ReaderBuilder, WriterBuilder};
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -1084,10 +1085,111 @@ fn is_direct_build_failure(status: &str, reason: &str) -> bool {
         && !lower.contains("build cancelled")
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BlacklistCsvRow {
+    package: String,
+    problem_url: String,
+    justification: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BlacklistUpdateSummary {
+    pub blacklist_path: String,
+    pub package: String,
+    pub problem_url: String,
+    pub justification: String,
+    pub action: String,
+    pub removed_failures: usize,
+}
+
+fn normalize_blacklist_package(name: &str) -> String {
+    let mut input = name.trim().to_lowercase();
+    input = input.replace('+', "-plus-");
+    let mut out = String::new();
+    let mut last_dash = false;
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            last_dash = false;
+        } else if !last_dash && !out.is_empty() {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+fn default_blacklist_path() -> Result<PathBuf> {
+    if let Ok(path) = std::env::var("BIOCONDA2RPM_BLACKLIST") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+    Ok(std::env::current_dir()
+        .context("resolving current directory for blacklist.txt")?
+        .join("blacklist.txt"))
+}
+
+fn blacklist_path_arg(path: Option<&PathBuf>) -> Result<PathBuf> {
+    match path {
+        Some(path) => Ok(path.clone()),
+        None => default_blacklist_path(),
+    }
+}
+
+fn read_blacklist_rows(path: &Path) -> Result<Vec<BlacklistCsvRow>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let mut reader = ReaderBuilder::new()
+        .has_headers(true)
+        .trim(csv::Trim::All)
+        .from_path(path)
+        .with_context(|| format!("opening blacklist {}", path.display()))?;
+    reader
+        .deserialize::<BlacklistCsvRow>()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| format!("parsing blacklist {}", path.display()))
+}
+
+fn write_blacklist_rows(path: &Path, rows: &[BlacklistCsvRow]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating blacklist parent {}", parent.display()))?;
+    }
+    let mut writer = WriterBuilder::new()
+        .has_headers(true)
+        .from_writer(Vec::new());
+    for row in rows {
+        writer
+            .serialize(row)
+            .with_context(|| format!("serializing blacklist row for {}", row.package))?;
+    }
+    let payload = writer
+        .into_inner()
+        .context("finalizing blacklist CSV")?;
+    fs::write(path, payload).with_context(|| format!("writing blacklist {}", path.display()))?;
+    Ok(())
+}
+
+fn blacklisted_packages_from_default_path() -> BTreeSet<String> {
+    let Ok(path) = default_blacklist_path() else {
+        return BTreeSet::new();
+    };
+    read_blacklist_rows(&path)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| normalize_blacklist_package(&row.package))
+        .filter(|row| !row.is_empty())
+        .collect()
+}
+
 fn scan_report_file_for_failures(
     path: &Path,
     target_id: &str,
     arch: &str,
+    blacklisted_packages: &BTreeSet<String>,
     failures: &mut BTreeMap<(String, String), FailureEntry>,
 ) {
     let Ok(payload) = fs::read_to_string(path) else {
@@ -1106,6 +1208,10 @@ fn scan_report_file_for_failures(
             continue;
         }
         let key = failure_key(software, target_id);
+        if blacklisted_packages.contains(&normalize_blacklist_package(software)) {
+            failures.remove(&key);
+            continue;
+        }
         if is_success_status(status) {
             failures.remove(&key);
             continue;
@@ -1147,6 +1253,7 @@ fn scan_build_failures(topdir: &Path) -> Vec<FailureEntry> {
     }
 
     let mut failures: BTreeMap<(String, String), FailureEntry> = BTreeMap::new();
+    let blacklisted_packages = blacklisted_packages_from_default_path();
 
     let mut target_dirs: Vec<_> = fs::read_dir(&targets)
         .ok()
@@ -1162,7 +1269,13 @@ fn scan_build_failures(topdir: &Path) -> Vec<FailureEntry> {
         let reports_dir = entry.path().join("reports");
         let arch = target_id.rsplit('-').next().unwrap_or("").to_string();
         for report_path in collect_report_paths(&reports_dir) {
-            scan_report_file_for_failures(&report_path, &target_id, &arch, &mut failures);
+            scan_report_file_for_failures(
+                &report_path,
+                &target_id,
+                &arch,
+                &blacklisted_packages,
+                &mut failures,
+            );
         }
     }
 
@@ -1791,6 +1904,108 @@ pub fn run_todo(topdir: &Path, args: &crate::cli::TodoArgs) -> Result<()> {
         println!("{json}");
     } else {
         print!("{}", render_todo_text(&visible, actionable.len(), &cat_path));
+    }
+
+    Ok(())
+}
+
+fn infer_problem_url_from_failures(topdir: &Path, package: &str, refresh: bool) -> Option<String> {
+    let key = normalize_blacklist_package(package);
+    let catalog = if refresh {
+        update_catalog(topdir)
+    } else {
+        read_catalog(topdir)
+    };
+    catalog
+        .failures
+        .iter()
+        .filter(|failure| normalize_blacklist_package(&failure.software) == key)
+        .filter_map(|failure| todo_task_for_failure(topdir, failure))
+        .map(|task| task.source_url)
+        .next()
+}
+
+fn remove_catalog_failures_for_package(topdir: &Path, package: &str) -> Result<usize> {
+    let key = normalize_blacklist_package(package);
+    let mut catalog = read_catalog(topdir);
+    let before = catalog.failures.len();
+    catalog
+        .failures
+        .retain(|failure| normalize_blacklist_package(&failure.software) != key);
+    let removed = before.saturating_sub(catalog.failures.len());
+    if removed > 0 {
+        write_catalog(topdir, &catalog)?;
+    }
+    Ok(removed)
+}
+
+pub fn run_blacklist(topdir: &Path, args: &crate::cli::BlacklistArgs) -> Result<()> {
+    let package = args.package.trim();
+    if package.is_empty() {
+        anyhow::bail!("blacklist package name cannot be empty");
+    }
+    let justification = args.reason.trim();
+    if justification.is_empty() {
+        anyhow::bail!("--reason cannot be empty");
+    }
+
+    let path = blacklist_path_arg(args.blacklist.as_ref())?;
+    let mut rows = read_blacklist_rows(&path)?;
+    let key = normalize_blacklist_package(package);
+    let existing_idx = rows
+        .iter()
+        .position(|row| normalize_blacklist_package(&row.package) == key);
+    let existing_url = existing_idx
+        .and_then(|idx| rows.get(idx))
+        .map(|row| row.problem_url.clone())
+        .filter(|url| !url.trim().is_empty() && url != "unknown");
+    let problem_url = args
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(str::to_string)
+        .or(existing_url)
+        .or_else(|| infer_problem_url_from_failures(topdir, package, args.refresh))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let row = BlacklistCsvRow {
+        package: package.to_string(),
+        problem_url,
+        justification: justification.to_string(),
+    };
+    let action = if let Some(idx) = existing_idx {
+        rows[idx] = row.clone();
+        "updated"
+    } else {
+        rows.push(row.clone());
+        "added"
+    };
+    write_blacklist_rows(&path, &rows)?;
+    let removed_failures = remove_catalog_failures_for_package(topdir, package)?;
+    let summary = BlacklistUpdateSummary {
+        blacklist_path: path.display().to_string(),
+        package: row.package,
+        problem_url: row.problem_url,
+        justification: row.justification,
+        action: action.to_string(),
+        removed_failures,
+    };
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&summary).context("serializing blacklist summary")?
+        );
+    } else {
+        println!(
+            "blacklist {}: package={} url={} removed_failures={} path={}",
+            summary.action,
+            summary.package,
+            summary.problem_url,
+            summary.removed_failures,
+            summary.blacklist_path
+        );
     }
 
     Ok(())
