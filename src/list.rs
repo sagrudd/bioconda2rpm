@@ -376,6 +376,18 @@ fn scan_srpm_candidates(topdir: &Path) -> Vec<SrpmCandidate> {
 }
 
 fn best_srpm_for(topdir: &Path, software: &str, version: &str) -> Option<SrpmCandidate> {
+    best_srpm_for_request(topdir, software, Some(version))
+}
+
+fn latest_srpm_for(topdir: &Path, software: &str) -> Option<SrpmCandidate> {
+    best_srpm_for_request(topdir, software, None)
+}
+
+fn best_srpm_for_request(
+    topdir: &Path,
+    software: &str,
+    version: Option<&str>,
+) -> Option<SrpmCandidate> {
     let software_key = normalize_package_slug(software);
     let prefix = format!("phoreus-{software_key}-");
     let mut candidates = Vec::new();
@@ -398,7 +410,9 @@ fn best_srpm_for(topdir: &Path, software: &str, version: &str) -> Option<SrpmCan
             }
             if let Some(candidate) = srpm_candidate_from_path(path).filter(|candidate| {
                 normalize_package_slug(&candidate.software) == software_key
-                    && candidate.version == version
+                    && version
+                        .map(|version| candidate.version == version)
+                        .unwrap_or(true)
             }) {
                 candidates.push(candidate);
             }
@@ -410,22 +424,53 @@ fn best_srpm_for(topdir: &Path, software: &str, version: &str) -> Option<SrpmCan
 }
 
 pub fn authoritative_srpm_for(topdir: &Path, software: &str, version: &str) -> Option<PathBuf> {
+    authoritative_srpm_for_request(topdir, software, Some(version))
+}
+
+fn authoritative_srpm_for_request(
+    topdir: &Path,
+    software: &str,
+    version: Option<&str>,
+) -> Option<PathBuf> {
     let catalog = read_catalog(topdir);
     let software_key = normalize_package_slug(software);
-    catalog
+    let from_catalog = catalog
         .packages
         .iter()
         .find(|package| normalize_package_slug(&package.software) == software_key)
-        .and_then(|package| {
-            package
+        .and_then(|package| match version {
+            Some(version) => package
                 .versions
                 .iter()
-                .find(|entry| entry.version == version)
+                .find(|entry| entry.version == version),
+            None => package.versions.iter().max_by_key(|entry| {
+                entry
+                    .authoritative_srpm
+                    .as_ref()
+                    .map(|artifact| {
+                        (
+                            report_modified_at(Path::new(&artifact.path)),
+                            artifact.recorded_at.clone(),
+                        )
+                    })
+                    .unwrap_or((SystemTime::UNIX_EPOCH, String::new()))
+            }),
         })
         .and_then(|entry| entry.authoritative_srpm.as_ref())
         .map(|artifact| PathBuf::from(&artifact.path))
-        .filter(|path| path.exists())
-        .or_else(|| best_srpm_for(topdir, software, version).map(|candidate| candidate.path))
+        .filter(|path| path.exists());
+    from_catalog.or_else(|| {
+        version
+            .and_then(|version| best_srpm_for(topdir, software, version))
+            .or_else(|| {
+                if version.is_none() {
+                    latest_srpm_for(topdir, software)
+                } else {
+                    None
+                }
+            })
+            .map(|candidate| candidate.path)
+    })
 }
 
 fn inject_srpm_artifacts(topdir: &Path, catalog: &mut Catalog) -> usize {
@@ -1057,7 +1102,6 @@ pub fn record_build_results(
     });
 
     existing.failures = failures;
-    inject_srpm_artifacts(topdir, &mut existing);
     write_catalog(topdir, &existing)?;
     Ok(())
 }
@@ -1639,6 +1683,30 @@ mod tests {
         assert_eq!(candidate.path, treeswirl);
         assert_eq!(candidate.software, "treeswirl");
         assert_eq!(candidate.version, "2.0.0");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn latest_authoritative_srpm_for_unbounded_dependency_uses_most_recent() {
+        let tmp = std::env::temp_dir().join(format!(
+            "bioconda2rpm-srpm-latest-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let target_id = "phoreus-bioconda2rpm-build-almalinux-9.7-x86_64";
+        let srpms = tmp.join("targets").join(target_id).join("SRPMS");
+        fs::create_dir_all(&srpms).expect("create srpms dir");
+        let older = srpms.join("phoreus-samtools-0.1.19-0.1.19-1.el9.src.rpm");
+        let newer = srpms.join("phoreus-samtools-1.20-1.20-1.el9.src.rpm");
+        fs::write(&older, b"older srpm").expect("write older srpm");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&newer, b"newer srpm").expect("write newer srpm");
+
+        assert_eq!(
+            authoritative_srpm_for_request(&tmp, "samtools", None),
+            Some(newer)
+        );
 
         let _ = fs::remove_dir_all(&tmp);
     }

@@ -711,6 +711,7 @@ struct KpiSummary {
 #[derive(Debug, Clone)]
 struct BuildPlanNode {
     name: String,
+    version_constraints: Vec<VersionRequirement>,
     direct_bioconda_deps: BTreeSet<String>,
 }
 
@@ -1009,6 +1010,7 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
             .map(|(idx, tool)| {
                 let entry = process_tool(
                     tool,
+                    &[],
                     &recipe_root,
                     &recipe_dirs,
                     &specs_dir,
@@ -1757,6 +1759,11 @@ fn run_build_batch_queue(
                     global_nodes
                         .entry(key)
                         .and_modify(|existing| {
+                            if existing.version_constraints.is_empty()
+                                && !node.version_constraints.is_empty()
+                            {
+                                existing.version_constraints = node.version_constraints.clone();
+                            }
                             existing
                                 .direct_bioconda_deps
                                 .extend(node.direct_bioconda_deps.clone());
@@ -2284,6 +2291,7 @@ fn run_build_batch_queue(
             package_build_config.refresh_files =
                 package_build_config.refresh_files || refresh_keys.contains(&key_for_thread);
             let metadata_adapter_c = Arc::clone(&metadata_adapter);
+            let version_constraints = node.version_constraints.clone();
             running += 1;
             running_keys.insert(key_for_thread.clone());
             log_progress(format!(
@@ -2297,6 +2305,7 @@ fn run_build_batch_queue(
                 let package_started = Instant::now();
                 let entry = process_tool(
                     &tool,
+                    &version_constraints,
                     recipe_root_c.as_path(),
                     recipe_dirs_c.as_slice(),
                     specs_dir_c.as_path(),
@@ -3032,6 +3041,7 @@ fn visit_build_plan_node(
         canonical.clone(),
         BuildPlanNode {
             name: resolved.recipe_name.clone(),
+            version_constraints: version_constraints.to_vec(),
             direct_bioconda_deps: bioconda_deps,
         },
     );
@@ -3759,6 +3769,7 @@ fn discover_recipe_dirs(recipe_root: &Path) -> Result<Vec<RecipeDir>> {
 
 fn process_tool(
     tool: &PriorityTool,
+    version_constraints: &[VersionRequirement],
     recipe_root: &Path,
     recipe_dirs: &[RecipeDir],
     specs_dir: &Path,
@@ -3769,7 +3780,19 @@ fn process_tool(
 ) -> ReportEntry {
     let software_slug = normalize_name(&tool.software);
 
-    let resolved = match resolve_recipe_for_tool(&tool.software, recipe_root, recipe_dirs) {
+    let resolved_result = if version_constraints.is_empty() {
+        resolve_recipe_for_tool(&tool.software, recipe_root, recipe_dirs)
+    } else {
+        resolve_recipe_for_tool_mode_with_constraints(
+            &tool.software,
+            version_constraints,
+            recipe_root,
+            recipe_dirs,
+            true,
+        )
+    };
+
+    let resolved = match resolved_result {
         Ok(Some(v)) => v,
         Ok(None) => {
             let reason = "no overlapping recipe found in bioconda metadata".to_string();
@@ -21233,6 +21256,72 @@ error: build stopped\n";
     }
 
     #[test]
+    fn unbounded_dependency_selection_uses_latest_variant() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let recipe = tmp.path().join("samtools");
+        fs::create_dir_all(recipe.join("0.1.19")).expect("create old variant");
+        fs::create_dir_all(recipe.join("1.20")).expect("create new variant");
+        fs::write(
+            recipe.join("0.1.19/meta.yaml"),
+            "package: {name: samtools, version: 0.1.19}",
+        )
+        .expect("write old meta");
+        fs::write(
+            recipe.join("1.20/meta.yaml"),
+            "package: {name: samtools, version: 1.20}",
+        )
+        .expect("write new meta");
+
+        let picked = select_recipe_variant_dir_with_constraints(&recipe, &[])
+            .unwrap()
+            .unwrap();
+        assert!(picked.ends_with("1.20"));
+    }
+
+    #[test]
+    fn build_plan_preserves_bounded_dependency_version_for_execution() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let root = tmp.path().join("root");
+        let samtools = tmp.path().join("samtools");
+        fs::create_dir_all(&root).expect("create root recipe");
+        fs::create_dir_all(samtools.join("0.1.19")).expect("create old samtools variant");
+        fs::create_dir_all(samtools.join("1.20")).expect("create new samtools variant");
+        fs::write(
+            root.join("meta.yaml"),
+            "package:\n  name: root\n  version: 1.0\nsource:\n  url: https://example.invalid/root-1.0.tar.gz\nbuild:\n  script: echo build\nrequirements:\n  run:\n    - samtools =0.1.19\n",
+        )
+        .expect("write root meta");
+        fs::write(
+            samtools.join("0.1.19/meta.yaml"),
+            "package:\n  name: samtools\n  version: 0.1.19\nsource:\n  url: https://example.invalid/samtools-0.1.19.tar.gz\nbuild:\n  script: echo build\n",
+        )
+        .expect("write old samtools meta");
+        fs::write(
+            samtools.join("1.20/meta.yaml"),
+            "package:\n  name: samtools\n  version: 1.20\nsource:\n  url: https://example.invalid/samtools-1.20.tar.gz\nbuild:\n  script: echo build\n",
+        )
+        .expect("write new samtools meta");
+
+        let recipe_dirs = discover_recipe_dirs(tmp.path()).expect("discover recipes");
+        let mut context =
+            BuildPlanContext::new(tmp.path(), &recipe_dirs, &MetadataAdapter::Native, "x86_64");
+        let (_, nodes) = collect_build_plan_with_context(
+            "root",
+            true,
+            &DependencyPolicy::BuildHostRun,
+            &mut context,
+        )
+        .expect("collect plan");
+        let samtools_node = nodes.get("samtools").expect("samtools node");
+        assert_eq!(
+            samtools_node.version_constraints,
+            parse_dependency_spec("samtools =0.1.19")
+                .unwrap()
+                .constraints
+        );
+    }
+
+    #[test]
     fn variant_selection_prefers_newer_root_meta_version() {
         let tmp = TempDir::new().expect("create temp dir");
         let recipe = tmp.path().join("blast");
@@ -21563,6 +21652,7 @@ about:
             "root".to_string(),
             BuildPlanNode {
                 name: "root".to_string(),
+                version_constraints: Vec::new(),
                 direct_bioconda_deps: BTreeSet::from(["dep-a".to_string()]),
             },
         );
@@ -21570,6 +21660,7 @@ about:
             "dep-a".to_string(),
             BuildPlanNode {
                 name: "dep-a".to_string(),
+                version_constraints: Vec::new(),
                 direct_bioconda_deps: BTreeSet::from(["dep-b".to_string()]),
             },
         );
@@ -21577,6 +21668,7 @@ about:
             "unrelated".to_string(),
             BuildPlanNode {
                 name: "unrelated".to_string(),
+                version_constraints: Vec::new(),
                 direct_bioconda_deps: BTreeSet::new(),
             },
         );
