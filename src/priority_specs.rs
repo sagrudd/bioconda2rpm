@@ -7891,6 +7891,18 @@ fn command_mentions_buildroot_text_risk_with_aliases(
     })
 }
 
+fn command_runs_prefix_installer_with_aliases(
+    commands: &[String],
+    prefix_install_vars: &BTreeSet<String>,
+) -> bool {
+    commands.iter().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        let mentions_prefix = command_line_mentions_prefix_like_path(line)
+            || line_mentions_prefix_install_alias(line, prefix_install_vars);
+        mentions_prefix && lower.contains(".sh")
+    })
+}
+
 fn command_line_mentions_prefix_like_path(line: &str) -> bool {
     line.contains("$PREFIX")
         || line.contains("${PREFIX}")
@@ -8069,6 +8081,9 @@ fn compute_minimal_build_scope(
     let buildroot_text_scrub_required = python_recipe
         || (!recipe_build_sh_required
             && (command_mentions_buildroot_text_risk_with_aliases(
+                &interpreted_build_plan.install_commands,
+                &interpreted_build_plan.prefix_install_vars,
+            ) || command_runs_prefix_installer_with_aliases(
                 &interpreted_build_plan.install_commands,
                 &interpreted_build_plan.prefix_install_vars,
             ) || (package_requires_make_install_buildroot_scrub(software_slug)
@@ -12773,6 +12788,8 @@ if grep -Eq '^(\\*\\*\\*|---)[[:space:]]+[^[:space:]]+\\.orig([[:space:]]|$)' \"
   fi\n\
 fi\n\
 patch_applied=0\n\
+patch_referenced_paths=0\n\
+patch_target_seen=0\n\
 patch_dirs=(.)\n\
 while IFS= read -r patch_rel; do\n\
   patch_rel=\"${{patch_rel%%$'\\r'}}\"\n\
@@ -12782,7 +12799,9 @@ while IFS= read -r patch_rel; do\n\
   if [[ -z \"$patch_rel\" || \"$patch_rel\" == \"/dev/null\" ]]; then\n\
     continue\n\
   fi\n\
+  patch_referenced_paths=$((patch_referenced_paths + 1))\n\
   while IFS= read -r hit; do\n\
+    patch_target_seen=1\n\
     candidate=\"${{hit%/$patch_rel}}\"\n\
     if [[ \"$candidate\" == \"$hit\" ]]; then\n\
       continue\n\
@@ -12851,9 +12870,14 @@ if [[ -n \"$patch_origfix_tmp\" ]]; then\n\
   rm -f \"$patch_origfix_tmp\"\n\
 fi\n\
 if [[ \"$patch_applied\" -ne 1 ]]; then\n\
+  if [[ \"$patch_referenced_paths\" -gt 0 && \"$patch_target_seen\" -eq 0 ]]; then\n\
+    echo \"bioconda2rpm: skipping obsolete patch %{{SOURCE{}}}; none of its referenced target paths exist in the selected source tree\" >&2\n\
+    continue\n\
+  fi\n\
   echo \"failed to apply patch %{{SOURCE{}}} with supported strip levels (1,0,2,3,4,5,6,7,8) and candidate dirs: ${{patch_dirs[*]}}\" >&2\n\
   exit 1\n\
 fi\n",
+                idx + 2,
                 idx + 2,
                 idx + 2,
             ));
@@ -17611,6 +17635,8 @@ requirements:
         assert!(!spec.contains("tr -d '\\r' < \"$patch_source\" > \"$patch_tmp\""));
         assert!(spec.contains("patch_trim_tmp=\"\""));
         assert!(spec.contains("patch_origfix_tmp=\"\""));
+        assert!(spec.contains("patch_referenced_paths=0"));
+        assert!(spec.contains("patch_target_seen=0"));
         assert!(spec.contains("awk 'BEGIN{emit=0}"));
         assert!(spec.contains("grep -Eq '^(diff --git |\\*\\*\\* |--- |\\+\\+\\+ )'"));
         assert!(spec.contains(
@@ -17629,6 +17655,7 @@ requirements:
         assert!(spec.contains(
             "patch -l --binary --forward --batch -p\"$patch_strip\" -i \"$patch_input\""
         ));
+        assert!(spec.contains("bioconda2rpm: skipping obsolete patch"));
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(spec.contains("retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\""));
         assert!(spec.contains("export CPU_COUNT=\"${BIOCONDA2RPM_CPU_COUNT:-1}\""));
@@ -24495,6 +24522,46 @@ install -v -m 755 build/trf "${PREFIX}/bin"
             prefix_install_vars: BTreeSet::new(),
         };
         let scope = compute_minimal_build_scope("emboss", &parsed, &plan, false, false, false);
+
+        assert!(scope.buildroot_text_scrub_required);
+        assert!(scope.label_string().contains("buildroot-text-scrub"));
+    }
+
+    #[test]
+    fn minimal_payload_scope_scrubs_prefix_installer_script_outputs() {
+        let parsed = ParsedMeta {
+            package_name: "malt".to_string(),
+            version: "0.62".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/MALT_unix_0_6_2.sh".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/malt".to_string(),
+            license: "GPLv3".to_string(),
+            summary: "malt".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let mut prefix_install_vars = BTreeSet::new();
+        prefix_install_vars.insert("MALT".to_string());
+        let plan = InterpretedBuildPlan {
+            build_commands: vec![
+                "chmod u+x MALT_unix_0_6_2.sh".to_string(),
+                "MALT=\"$PREFIX/opt/$PKG_NAME-$PKG_VERSION\"".to_string(),
+            ],
+            install_commands: vec![
+                "MALT=\"$PREFIX/opt/$PKG_NAME-$PKG_VERSION\"".to_string(),
+                "./MALT_unix_0_6_2.sh -q -dir \"$MALT\"".to_string(),
+            ],
+            prefix_install_vars,
+        };
+        let scope = compute_minimal_build_scope("malt", &parsed, &plan, false, false, false);
 
         assert!(scope.buildroot_text_scrub_required);
         assert!(scope.label_string().contains("buildroot-text-scrub"));
