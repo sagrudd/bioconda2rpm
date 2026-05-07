@@ -84,6 +84,7 @@ fn main() -> ExitCode {
                 &args.effective_target_id(),
                 &requested_packages,
                 args.force,
+                args.refresh_files,
             ) {
                 Ok(build_lock::BuildAcquireOutcome::Owner(guard)) => {
                     priority_specs::log_external_progress(format!(
@@ -96,10 +97,11 @@ fn main() -> ExitCode {
                 }
                 Ok(build_lock::BuildAcquireOutcome::Forwarded(forwarded)) => {
                     priority_specs::log_external_progress(format!(
-                        "phase=workspace-lock status=forwarded owner_pid={} target_id={} owner_force={} packages={}",
+                        "phase=workspace-lock status=forwarded owner_pid={} target_id={} owner_force={} owner_refresh_files={} packages={}",
                         forwarded.owner_pid,
                         forwarded.owner_target_id,
                         forwarded.owner_force_rebuild,
+                        forwarded.owner_refresh_files,
                         forwarded.queued_packages.join(",")
                     ));
                     priority_specs::clear_progress_sink();
@@ -111,10 +113,11 @@ fn main() -> ExitCode {
                         ));
                     }
                     println!(
-                        "forwarded build request to active session owner_pid={} target_id={} owner_force={} packages={}",
+                        "forwarded build request to active session owner_pid={} target_id={} owner_force={} owner_refresh_files={} packages={}",
                         forwarded.owner_pid,
                         forwarded.owner_target_id,
                         forwarded.owner_force_rebuild,
+                        forwarded.owner_refresh_files,
                         forwarded.queued_packages.join(",")
                     );
                     return ExitCode::SUCCESS;
@@ -218,6 +221,12 @@ fn main() -> ExitCode {
                 );
                 return ExitCode::FAILURE;
             }
+            if args.refresh_files {
+                eprintln!(
+                    "server does not accept --refresh-files; start the server without --refresh-files and submit refreshed work with `bioconda2rpm build --refresh-files <package>`"
+                );
+                return ExitCode::FAILURE;
+            }
             let topdir = args.effective_topdir();
             let bad_spec = args.effective_bad_spec_dir();
             let reports = args.effective_reports_dir();
@@ -248,7 +257,7 @@ fn main() -> ExitCode {
             let mut pending_packages = initial_packages
                 .iter()
                 .cloned()
-                .map(|package| (package, owner_force))
+                .map(|package| (package, owner_force, false))
                 .collect::<Vec<_>>();
 
             let _server_session = match build_lock::BuildSessionGuard::acquire(
@@ -256,6 +265,7 @@ fn main() -> ExitCode {
                 &args.effective_target_id(),
                 &initial_packages,
                 build_lock::BuildSessionKind::Build,
+                false,
                 false,
             ) {
                 Ok(guard) => {
@@ -314,7 +324,11 @@ fn main() -> ExitCode {
                 ) {
                     Ok(forwarded) => {
                         for request in forwarded {
-                            pending_packages.push((request.package, request.force_rebuild));
+                            pending_packages.push((
+                                request.package,
+                                request.force_rebuild,
+                                request.refresh_files,
+                            ));
                         }
                     }
                     Err(err) => {
@@ -327,15 +341,16 @@ fn main() -> ExitCode {
                 }
 
                 pending_packages.sort_by(|a, b| a.0.cmp(&b.0));
-                let mut merged_packages: Vec<(String, bool)> = Vec::new();
-                for (package, force) in std::mem::take(&mut pending_packages) {
-                    if let Some((_, existing_force)) = merged_packages
+                let mut merged_packages: Vec<(String, bool, bool)> = Vec::new();
+                for (package, force, refresh_files) in std::mem::take(&mut pending_packages) {
+                    if let Some((_, existing_force, existing_refresh_files)) = merged_packages
                         .iter_mut()
-                        .find(|(existing, _)| existing == &package)
+                        .find(|(existing, _, _)| existing == &package)
                     {
                         *existing_force |= force;
+                        *existing_refresh_files |= refresh_files;
                     } else {
-                        merged_packages.push((package, force));
+                        merged_packages.push((package, force, refresh_files));
                     }
                 }
                 pending_packages = merged_packages;
@@ -351,17 +366,50 @@ fn main() -> ExitCode {
                 let batch_items = std::mem::take(&mut pending_packages);
                 let mut normal_packages = batch_items
                     .iter()
-                    .filter_map(
-                        |(package, force)| if *force { None } else { Some(package.clone()) },
-                    )
+                    .filter_map(|(package, force, refresh_files)| {
+                        if *force || *refresh_files {
+                            None
+                        } else {
+                            Some(package.clone())
+                        }
+                    })
                     .collect::<Vec<_>>();
                 let mut forced_packages = batch_items
-                    .into_iter()
-                    .filter_map(|(package, force)| if force { Some(package) } else { None })
+                    .iter()
+                    .filter_map(|(package, force, refresh_files)| {
+                        if *force && !*refresh_files {
+                            Some(package.clone())
+                        } else {
+                            None
+                        }
+                    })
                     .collect::<Vec<_>>();
-                for (force, packages) in
-                    [(false, &mut normal_packages), (true, &mut forced_packages)]
-                {
+                let mut refresh_packages = batch_items
+                    .iter()
+                    .filter_map(|(package, force, refresh_files)| {
+                        if !*force && *refresh_files {
+                            Some(package.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let mut forced_refresh_packages = batch_items
+                    .into_iter()
+                    .filter_map(|(package, force, refresh_files)| {
+                        if force && refresh_files {
+                            Some(package)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                for (force, refresh_files, packages) in [
+                    (false, false, &mut normal_packages),
+                    (true, false, &mut forced_packages),
+                    (false, true, &mut refresh_packages),
+                    (true, true, &mut forced_refresh_packages),
+                ] {
                     if packages.is_empty() {
                         continue;
                     }
@@ -369,14 +417,17 @@ fn main() -> ExitCode {
                     packages.dedup();
                     args.packages = packages.clone();
                     args.force = force;
+                    args.refresh_files = refresh_files;
                     priority_specs::log_external_progress(format!(
-                        "phase=server status=build-start target_id={} force={} packages={}",
+                        "phase=server status=build-start target_id={} force={} refresh_files={} packages={}",
                         args.effective_target_id(),
                         args.force,
+                        args.refresh_files,
                         args.packages.join(",")
                     ));
                     let outcome = priority_specs::run_build(&args);
                     args.force = false;
+                    args.refresh_files = false;
                     match outcome {
                         Ok(summary) => {
                             priority_specs::log_external_progress(format!(
@@ -394,9 +445,10 @@ fn main() -> ExitCode {
                                 break;
                             }
                             priority_specs::log_external_progress(format!(
-                                "phase=server status=build-error target_id={} force={} detail={}",
+                                "phase=server status=build-error target_id={} force={} refresh_files={} detail={}",
                                 args.effective_target_id(),
                                 force,
+                                refresh_files,
                                 err
                             ));
                         }
@@ -470,6 +522,7 @@ fn main() -> ExitCode {
                 )],
                 build_lock::BuildSessionKind::GeneratePrioritySpecs,
                 false,
+                false,
             ) {
                 Ok(guard) => guard,
                 Err(err) => {
@@ -533,6 +586,7 @@ fn main() -> ExitCode {
                 &args.effective_target_id(),
                 &[format!("regression:{:?}", args.mode)],
                 build_lock::BuildSessionKind::Regression,
+                false,
                 false,
             ) {
                 Ok(guard) => guard,

@@ -33,6 +33,7 @@ pub struct ForwardedBuildRequest {
     pub owner_pid: u32,
     pub owner_target_id: String,
     pub owner_force_rebuild: bool,
+    pub owner_refresh_files: bool,
     pub queued_packages: Vec<String>,
 }
 
@@ -40,6 +41,7 @@ pub struct ForwardedBuildRequest {
 pub struct ForwardedQueuedPackage {
     pub package: String,
     pub force_rebuild: bool,
+    pub refresh_files: bool,
     pub submitted_host: String,
     pub submitted_pid: u32,
     pub submitted_at_utc: String,
@@ -52,6 +54,7 @@ pub struct LookupActiveBuildEntry {
     pub packages: Vec<String>,
     pub session_kind: String,
     pub force_rebuild: bool,
+    pub refresh_files: bool,
     pub host: String,
     pub started_at_utc: String,
 }
@@ -62,6 +65,7 @@ pub struct LookupQueuedBuildRequest {
     pub target_id: String,
     pub packages: Vec<String>,
     pub force_rebuild: bool,
+    pub refresh_files: bool,
     pub submitted_host: String,
     pub submitted_at_utc: String,
 }
@@ -107,6 +111,8 @@ struct ActiveBuildEntry {
     session_kind: String,
     #[serde(default)]
     force_rebuild: bool,
+    #[serde(default)]
+    refresh_files: bool,
     #[serde(default = "default_host_name")]
     host: String,
     started_at_utc: String,
@@ -124,6 +130,8 @@ struct BuildQueueRequest {
     packages: Vec<String>,
     #[serde(default)]
     force_rebuild: bool,
+    #[serde(default)]
+    refresh_files: bool,
     #[serde(default = "default_host_name")]
     submitted_host: String,
     submitted_at_utc: String,
@@ -178,6 +186,7 @@ pub fn lookup_build_runtime(topdir: &Path) -> Result<BuildLookupSnapshot> {
             packages: entry.packages,
             session_kind: entry.session_kind,
             force_rebuild: entry.force_rebuild,
+            refresh_files: entry.refresh_files,
             host: entry.host,
             started_at_utc: entry.started_at_utc,
         })
@@ -203,6 +212,7 @@ impl BuildSessionGuard {
         packages: &[String],
         session_kind: BuildSessionKind,
         force_rebuild: bool,
+        refresh_files: bool,
     ) -> Result<Self> {
         fs::create_dir_all(topdir)
             .with_context(|| format!("creating topdir {}", topdir.to_string_lossy()))?;
@@ -225,11 +235,12 @@ impl BuildSessionGuard {
                     .first()
                     .map(|entry| {
                         format!(
-                            "pid={} target={} kind={} force={} packages={}",
+                            "pid={} target={} kind={} force={} refresh_files={} packages={}",
                             entry.pid,
                             entry.target_id,
                             entry.session_kind,
                             entry.force_rebuild,
+                            entry.refresh_files,
                             entry.packages.join(",")
                         )
                     })
@@ -253,6 +264,7 @@ impl BuildSessionGuard {
             packages,
             session_kind,
             force_rebuild,
+            refresh_files,
         )
     }
 
@@ -261,6 +273,7 @@ impl BuildSessionGuard {
         target_id: &str,
         packages: &[String],
         force_rebuild: bool,
+        refresh_files: bool,
     ) -> Result<BuildAcquireOutcome> {
         fs::create_dir_all(topdir)
             .with_context(|| format!("creating topdir {}", topdir.to_string_lossy()))?;
@@ -286,6 +299,7 @@ impl BuildSessionGuard {
                     packages,
                     BuildSessionKind::Build,
                     force_rebuild,
+                    refresh_files,
                 )?;
                 Ok(BuildAcquireOutcome::Owner(guard))
             }
@@ -323,11 +337,18 @@ impl BuildSessionGuard {
                 if queued_packages.is_empty() {
                     bail!("no package names to submit to active build queue");
                 }
-                append_build_request(topdir, target_id, &queued_packages, force_rebuild)?;
+                append_build_request(
+                    topdir,
+                    target_id,
+                    &queued_packages,
+                    force_rebuild,
+                    refresh_files,
+                )?;
                 Ok(BuildAcquireOutcome::Forwarded(ForwardedBuildRequest {
                     owner_pid: owner.pid,
                     owner_target_id: owner.target_id.clone(),
                     owner_force_rebuild: owner.force_rebuild,
+                    owner_refresh_files: owner.refresh_files,
                     queued_packages,
                 }))
             }
@@ -347,6 +368,7 @@ impl BuildSessionGuard {
         packages: &[String],
         session_kind: BuildSessionKind,
         force_rebuild: bool,
+        refresh_files: bool,
     ) -> Result<Self> {
         let pid = std::process::id();
         let entry = ActiveBuildEntry {
@@ -355,6 +377,7 @@ impl BuildSessionGuard {
             packages: packages.to_vec(),
             session_kind: session_kind.as_str().to_string(),
             force_rebuild,
+            refresh_files,
             host: current_host_name(),
             started_at_utc: chrono::Utc::now().to_rfc3339(),
         };
@@ -452,6 +475,7 @@ pub fn drain_forwarded_build_requests(
                 queued.push(ForwardedQueuedPackage {
                     package,
                     force_rebuild: req.force_rebuild,
+                    refresh_files: req.refresh_files,
                     submitted_host: req.submitted_host.clone(),
                     submitted_pid: req.pid,
                     submitted_at_utc: req.submitted_at_utc.clone(),
@@ -806,6 +830,7 @@ fn load_queued_requests(path: &Path) -> Result<Vec<LookupQueuedBuildRequest>> {
             target_id: req.target_id,
             packages: req.packages,
             force_rebuild: req.force_rebuild,
+            refresh_files: req.refresh_files,
             submitted_host: req.submitted_host,
             submitted_at_utc: req.submitted_at_utc,
         });
@@ -853,6 +878,7 @@ fn append_build_request(
     target_id: &str,
     packages: &[String],
     force_rebuild: bool,
+    refresh_files: bool,
 ) -> Result<()> {
     let requests_file = topdir.join(REQUESTS_FILE_NAME);
     let mut file = fs::OpenOptions::new()
@@ -869,6 +895,7 @@ fn append_build_request(
         target_id: target_id.to_string(),
         packages: packages.to_vec(),
         force_rebuild,
+        refresh_files,
         submitted_host: current_host_name(),
         submitted_at_utc: chrono::Utc::now().to_rfc3339(),
     };
@@ -906,6 +933,7 @@ mod tests {
             target_id: "target-a".to_string(),
             packages: vec!["samtools".to_string(), "bcftools".to_string()],
             force_rebuild: true,
+            refresh_files: true,
             submitted_host: "host-a".to_string(),
             submitted_at_utc: "2026-03-01T00:00:00Z".to_string(),
         };
@@ -914,6 +942,7 @@ mod tests {
             target_id: "target-b".to_string(),
             packages: vec!["blast".to_string()],
             force_rebuild: false,
+            refresh_files: false,
             submitted_host: "host-b".to_string(),
             submitted_at_utc: "2026-03-01T00:00:01Z".to_string(),
         };
@@ -928,9 +957,11 @@ mod tests {
         assert_eq!(drained.len(), 2);
         assert_eq!(drained[0].package, "samtools");
         assert!(drained[0].force_rebuild);
+        assert!(drained[0].refresh_files);
         assert_eq!(drained[0].submitted_host, "host-a");
         assert_eq!(drained[1].package, "bcftools");
         assert!(drained[1].force_rebuild);
+        assert!(drained[1].refresh_files);
         assert_eq!(drained[1].submitted_host, "host-a");
 
         let remainder = fs::read_to_string(&requests).expect("read remaining requests");
@@ -958,6 +989,7 @@ mod tests {
         let entry = &loaded.entries[0];
         assert_eq!(entry.session_kind, "build");
         assert!(!entry.force_rebuild);
+        assert!(!entry.refresh_files);
 
         let _ = fs::remove_dir_all(&topdir);
     }
@@ -976,6 +1008,7 @@ mod tests {
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].package, "blast");
         assert!(!drained[0].force_rebuild);
+        assert!(!drained[0].refresh_files);
         assert!(!drained[0].submitted_host.is_empty());
 
         let _ = fs::remove_dir_all(&topdir);
@@ -994,6 +1027,7 @@ mod tests {
                 "samtools".to_string(),
             ],
             force_rebuild: false,
+            refresh_files: false,
             submitted_host: "host-a".to_string(),
             submitted_at_utc: "2026-05-07T00:00:00Z".to_string(),
         };
@@ -1002,6 +1036,7 @@ mod tests {
             target_id: "target-b".to_string(),
             packages: vec!["emboss".to_string()],
             force_rebuild: false,
+            refresh_files: false,
             submitted_host: "host-b".to_string(),
             submitted_at_utc: "2026-05-07T00:00:01Z".to_string(),
         };
@@ -1086,6 +1121,7 @@ mod tests {
                     packages: vec!["trinity".to_string()],
                     session_kind: BuildSessionKind::Build.as_str().to_string(),
                     force_rebuild: false,
+                    refresh_files: false,
                     host: "host-a".to_string(),
                     started_at_utc: "2026-03-02T00:00:00Z".to_string(),
                 }],

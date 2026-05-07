@@ -95,6 +95,12 @@ Production expectation:
   - Default: `build-host-run`
 - `--no-deps`
   - Disables dependency closure for the requested package.
+- `--force`
+  - Forces rebuild even when local binary artifacts already match the Bioconda version.
+  - Does not redownload original upstream source files when an authoritative SRPM for the same package version is available.
+- `--refresh-files`
+  - Forces original source-file download and preparation of a new authoritative SRPM.
+  - Also bypasses the up-to-date skip for matching local binary artifacts.
 - `--recipe-root <path>`
   - Optional override for recipes root.
 - `--sync-recipes`
@@ -175,8 +181,8 @@ Regression-only options:
 - Multiple requested roots are supported in one build invocation.
 - Multi-package queue mode enforces dependency gates: a package is dispatched only after its Bioconda dependency nodes succeed.
 - Workspace-lock ownership is authoritative: secondary `build` invocations submit package names into the active session queue instead of failing lock-acquisition.
-- Forwarded packages carry `--force` into the authoritative queue for that request and otherwise inherit the owning session scheduler/container settings.
-- The persistent `server` process does not own or broadcast `--force`; submit `bioconda2rpm build --force <package>` to force a package through a running server.
+- Forwarded packages carry `--force` and `--refresh-files` into the authoritative queue for that request and otherwise inherit the owning session scheduler/container settings.
+- The persistent `server` process does not own or broadcast `--force` or `--refresh-files`; submit `bioconda2rpm build --force <package>` or `bioconda2rpm build --refresh-files <package>` to route those policies through a running server.
 - `--force` bypasses blacklist quarantine only for the requested package and its dependency closure; recipe-declared `build.skip=true` still records a skipped result because the active render context has no buildable recipe output.
 - Persistent `server` ownership keeps the queue interface available between batches and exits only on user Ctrl-C.
 - Operator removals are explicit queue events; removed package nodes are reported as skipped and their dependents are blocked by normal dependency-gate handling.
@@ -192,6 +198,8 @@ Regression-only options:
 - For each generated SPEC, build order is always `SPEC -> SRPM -> RPM` in the selected controlled container profile image.
 - RPM stage is executed as SRPM rebuild (`rpmbuild --rebuild <src.rpm>`).
 - SRPMs are copied to `<topdir>/targets/<target-id>/SRPMS` as soon as `rpmbuild -bs` succeeds so the catalog can record an SRPM-prepared state independently of later binary RPM success.
+- Existing authoritative SRPMs for the same package version are reused as the rebuild source unless `--refresh-files` is set.
+- When the generated SPEC has changed, the existing authoritative SRPM is used as the source-asset cache and a new SRPM is prepared from the current SPEC without upstream downloads.
 - Adaptive mode records package-level `parallel_unstable` outcomes in `<topdir>/targets/<target-id>/reports/build_stability.json` and forces serial first pass on subsequent runs for those specs.
 - Successful package builds clear stale `<topdir>/targets/<target-id>/BAD_SPEC/<tool>.txt` quarantine notes.
 - If local payload artifacts already match the requested Bioconda version, `build` exits with `up-to-date` status.

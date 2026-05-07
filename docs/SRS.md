@@ -54,8 +54,8 @@ FR-003 Dependency closure control
 - Default dependency policy shall include `build + host + run`.
 - Multi-root queue execution shall enforce dependency gates: a package job shall start only after required Bioconda dependency jobs complete successfully.
 - While a build session holds the workspace lock, concurrent `build` invocations on the same `--topdir` shall forward package names into the authoritative queue instead of failing lock acquisition.
-- Forwarded package requests shall carry their own `--force` intent into the authoritative build queue while otherwise inheriting the owning session's scheduler/container policy.
-- A persistent `server` session shall not enforce `--force` globally; force rebuild scope shall come only from `build --force` requests.
+- Forwarded package requests shall carry their own `--force` and `--refresh-files` intent into the authoritative build queue while otherwise inheriting the owning session's scheduler/container policy.
+- A persistent `server` session shall not enforce `--force` or `--refresh-files` globally; force rebuild and source refresh scope shall come only from `build` requests.
 
 FR-004 Recipe rendering
 - `meta.yaml` rendering shall use full Jinja support.
@@ -132,6 +132,9 @@ FR-015 Containerized build chain
 - SRPM generation shall execute inside a selected controlled container profile image.
 - RPM generation shall rebuild from the generated SRPM (not direct SPEC-to-RPM).
 - Generated SRPMs shall be copied into the target-scoped SRPM artifact directory immediately after `rpmbuild -bs` succeeds, before dependency preflight or binary RPM rebuild begins.
+- When an authoritative SRPM exists for the requested package version and `--refresh-files` is not set, the RPM rebuild shall use that SRPM instead of redownloading original upstream source assets.
+- If the current generated SPEC differs from the SPEC embedded in the authoritative SRPM, the system shall extract source assets from the authoritative SRPM and prepare a new SRPM from the current SPEC without redownloading upstream assets.
+- `--refresh-files` shall force original source-file downloads and preparation of a new authoritative SRPM.
 - The CLI shall expose a container profile flag for this selection.
 - If the selected container image is missing locally, the system shall build it automatically from the repository-controlled Dockerfile for that profile before build execution continues.
 
@@ -157,6 +160,8 @@ FR-017 Build dependency tolerance and sourcing policy
 
 FR-018 Version freshness and metapackage update policy
 - For `build <tool>`, if the requested Bioconda payload version is already present in local artifacts, the command shall report the package as up-to-date and skip rebuild.
+- `build --force <tool>` shall force binary rebuild work but shall still prefer an existing authoritative SRPM for the same package version and shall not redownload original upstream source files when that SRPM is available.
+- `build --refresh-files <tool>` shall bypass up-to-date source reuse, redownload original upstream source files, and record the resulting SRPM as the authoritative SRPM for that package version.
 - If the requested Bioconda payload version is newer than the latest local payload artifact, the payload shall be rebuilt.
 - When a newer payload is rebuilt, the corresponding default/meta package version shall be incremented and rewired to the new payload version.
 - Successful/up-to-date outcomes shall clear stale package-specific quarantine notes in `<topdir>/targets/<target-id>/BAD_SPEC`.

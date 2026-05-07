@@ -83,6 +83,7 @@ fn build_help_exposes_public_package_selection_flags() {
     assert!(stdout.contains("[PACKAGE]..."));
     assert!(stdout.contains("--packages-file <PACKAGES_FILE>"));
     assert!(stdout.contains("--recipe-root <RECIPE_ROOT>"));
+    assert!(stdout.contains("--refresh-files"));
 }
 
 #[test]

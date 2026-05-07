@@ -241,3 +241,9 @@
 - Build records capture OS profile, architecture, target id, host, user, timestamp, status, SRPM path, binary RPM paths, and report path when known.
 - `bioconda2rpm catalog migrate` upgrades legacy catalogs and injects authoritative SRPMs discovered under `<topdir>/targets/*/SRPMS`.
 - Container builds copy the SRPM into the target SRPM directory immediately after `rpmbuild -bs` succeeds so an SRPM-prepared package version can be recorded before binary RPM rebuild completion.
+
+### Authoritative SRPM reuse and explicit source refresh
+- Builds now prefer an existing authoritative SRPM for the same package version unless `--refresh-files` is set, so forced rebuilds and cross-OS rebuilds do not redownload upstream source assets unnecessarily.
+- If the generated SPEC differs from the SPEC embedded in the authoritative SRPM, the container extracts source assets from the old SRPM and prepares a new SRPM from the current SPEC without external source fetches.
+- `build --refresh-files` is the explicit source-refresh path: it bypasses authoritative SRPM reuse, redownloads original sources, and records the newly prepared SRPM as authoritative.
+- Forwarded build requests carry request-scoped `--refresh-files`; persistent `server` rejects startup-level `--refresh-files` for the same reason it rejects startup-level `--force`.

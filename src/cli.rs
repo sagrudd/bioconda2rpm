@@ -205,6 +205,10 @@ pub struct BuildArgs {
     #[arg(long)]
     pub force: bool,
 
+    /// Redownload original source files and prepare a new authoritative SRPM.
+    #[arg(long)]
+    pub refresh_files: bool,
+
     /// Container execution model.
     #[arg(long, value_enum, default_value_t = ContainerMode::Ephemeral)]
     pub container_mode: ContainerMode,
@@ -797,11 +801,12 @@ impl BuildArgs {
 
     pub fn execution_summary(&self) -> String {
         format!(
-            "build requested_packages={requested_packages} stage={stage:?} with_deps={deps} force={force} policy={policy:?} recipe_root={recipes} recipe_repo_root={recipe_repo_root} recipe_sync={recipe_sync} recipe_ref={recipe_ref} topdir={topdir} target_id={target_id} target_root={target_root} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_profile={container_profile:?} container_image={container_image} container_engine={container_engine} parallel_policy={parallel_policy:?} build_jobs={build_jobs} effective_build_jobs={effective_build_jobs} queue_workers={queue_workers} effective_queue_workers={effective_queue_workers} ui={ui:?} effective_ui={effective_ui:?} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
+            "build requested_packages={requested_packages} stage={stage:?} with_deps={deps} force={force} refresh_files={refresh_files} policy={policy:?} recipe_root={recipes} recipe_repo_root={recipe_repo_root} recipe_sync={recipe_sync} recipe_ref={recipe_ref} topdir={topdir} target_id={target_id} target_root={target_root} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_profile={container_profile:?} container_image={container_image} container_engine={container_engine} parallel_policy={parallel_policy:?} build_jobs={build_jobs} effective_build_jobs={effective_build_jobs} queue_workers={queue_workers} effective_queue_workers={effective_queue_workers} ui={ui:?} effective_ui={effective_ui:?} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
             requested_packages = self.packages.len(),
             stage = self.stage,
             deps = self.with_deps(),
             force = self.force,
+            refresh_files = self.refresh_files,
             policy = self.dependency_policy,
             recipes = self.effective_recipe_root().display(),
             recipe_repo_root = self.effective_recipe_repo_root().display(),
@@ -1070,6 +1075,7 @@ mod tests {
         assert_eq!(args.dependency_policy, DependencyPolicy::BuildHostRun);
         assert!(args.with_deps());
         assert!(!args.force);
+        assert!(!args.refresh_files);
         assert_eq!(args.container_mode, ContainerMode::Ephemeral);
         assert_eq!(args.container_profile, BuildContainerProfile::Almalinux97);
         assert_eq!(
@@ -1210,6 +1216,7 @@ mod tests {
             "run-only",
             "--no-deps",
             "--force",
+            "--refresh-files",
             "--container-mode",
             "auto",
             "--container-profile",
@@ -1245,6 +1252,7 @@ mod tests {
         assert_eq!(args.dependency_policy, DependencyPolicy::RunOnly);
         assert!(!args.with_deps());
         assert!(args.force);
+        assert!(args.refresh_files);
         assert_eq!(args.container_mode, ContainerMode::Auto);
         assert_eq!(args.container_profile, BuildContainerProfile::Fedora43);
         assert_eq!(args.parallel_policy, ParallelPolicy::Serial);

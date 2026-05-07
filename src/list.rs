@@ -383,6 +383,26 @@ fn best_srpm_for(topdir: &Path, software: &str, version: &str) -> Option<SrpmCan
         .max_by_key(|candidate| report_modified_at(&candidate.path))
 }
 
+pub fn authoritative_srpm_for(topdir: &Path, software: &str, version: &str) -> Option<PathBuf> {
+    let mut catalog = read_catalog(topdir);
+    inject_srpm_artifacts(topdir, &mut catalog);
+    let software_key = normalize_package_slug(software);
+    catalog
+        .packages
+        .iter()
+        .find(|package| normalize_package_slug(&package.software) == software_key)
+        .and_then(|package| {
+            package
+                .versions
+                .iter()
+                .find(|entry| entry.version == version)
+        })
+        .and_then(|entry| entry.authoritative_srpm.as_ref())
+        .map(|artifact| PathBuf::from(&artifact.path))
+        .filter(|path| path.exists())
+        .or_else(|| best_srpm_for(topdir, software, version).map(|candidate| candidate.path))
+}
+
 fn inject_srpm_artifacts(topdir: &Path, catalog: &mut Catalog) -> usize {
     let mut injected = 0usize;
     for candidate in scan_srpm_candidates(topdir) {

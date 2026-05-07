@@ -117,6 +117,8 @@ struct BuildConfig {
     parallel_policy: ParallelPolicy,
     build_jobs: usize,
     force_rebuild: bool,
+    refresh_files: bool,
+    source_srpm_path: Option<PathBuf>,
 }
 
 const BUILD_BLACKLIST_CSV: &str = include_str!("../blacklist.txt");
@@ -993,6 +995,8 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
         parallel_policy: args.parallel_policy.clone(),
         build_jobs: args.effective_build_jobs(),
         force_rebuild: false,
+        refresh_files: false,
+        source_srpm_path: None,
     };
     ensure_phoreus_python_bootstrap(&build_config, &specs_dir, PHOREUS_PYTHON_RUNTIME_311)
         .context("bootstrapping Phoreus Python runtime")?;
@@ -1117,10 +1121,11 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     let bad_spec_dir = args.effective_bad_spec_dir();
     let effective_metadata_adapter = args.effective_metadata_adapter();
     log_progress(format!(
-        "phase=build-start requested_packages={} deps_enabled={} force_rebuild={} dependency_policy={:?} recipe_root={} topdir={} target_id={} target_root={} target_arch={} deployment_profile={:?} metadata_adapter={:?} parallel_policy={:?} build_jobs={} effective_build_jobs={} queue_workers={} effective_queue_workers={}",
+        "phase=build-start requested_packages={} deps_enabled={} force_rebuild={} refresh_files={} dependency_policy={:?} recipe_root={} topdir={} target_id={} target_root={} target_arch={} deployment_profile={:?} metadata_adapter={:?} parallel_policy={:?} build_jobs={} effective_build_jobs={} queue_workers={} effective_queue_workers={}",
         requested_packages.len(),
         args.with_deps(),
         args.force,
+        args.refresh_files,
         args.dependency_policy,
         recipe_root.display(),
         topdir.display(),
@@ -1176,6 +1181,8 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         parallel_policy: args.parallel_policy.clone(),
         build_jobs: args.effective_build_jobs(),
         force_rebuild: args.force,
+        refresh_files: args.refresh_files,
+        source_srpm_path: None,
     };
     ensure_phoreus_python_bootstrap(&build_config, &specs_dir, PHOREUS_PYTHON_RUNTIME_311)
         .context("bootstrapping Phoreus Python runtime")?;
@@ -1273,6 +1280,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
 
     let root_slug = normalize_name(&root_recipe.resolved.recipe_name);
     if !args.force
+        && !args.refresh_files
         && let PayloadVersionState::UpToDate { existing_version } = payload_version_state(
             &topdir,
             &build_config.target_root,
@@ -1334,6 +1342,12 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     if args.force {
         log_progress(format!(
             "phase=build status=force-rebuild package={} version={} reason=explicit-force-flag",
+            root_recipe.resolved.recipe_name, root_recipe.parsed.version
+        ));
+    }
+    if args.refresh_files {
+        log_progress(format!(
+            "phase=build status=refresh-files package={} version={} reason=explicit-refresh-files-flag",
             root_recipe.resolved.recipe_name, root_recipe.parsed.version
         ));
     }
@@ -1861,6 +1875,7 @@ fn run_build_batch_queue(
     let mut build_order = Vec::new();
     let mut removed_keys: HashMap<String, String> = HashMap::new();
     let mut forced_keys: HashSet<String> = HashSet::new();
+    let mut refresh_keys: HashSet<String> = HashSet::new();
 
     while !ready.is_empty() || running > 0 || !pending_fail_queue.is_empty() {
         if !cancellation_requested() {
@@ -1944,7 +1959,7 @@ fn run_build_batch_queue(
                         if !requested_root_keys.insert(key.clone()) {
                             match classify_duplicate_forwarded_request(
                                 &key,
-                                forwarded.force_rebuild,
+                                forwarded.force_rebuild || forwarded.refresh_files,
                                 global_nodes.contains_key(&key),
                                 &finalized,
                                 &succeeded,
@@ -1973,11 +1988,19 @@ fn run_build_batch_queue(
                                                 &mut forced_keys,
                                             );
                                         }
+                                        if forwarded.refresh_files {
+                                            mark_force_dependency_closure(
+                                                &key,
+                                                &global_nodes,
+                                                &mut refresh_keys,
+                                            );
+                                        }
                                         log_progress(format!(
-                                            "phase=workspace-lock status=forwarded-request-rerun package={} key={} force={} submit_host={} submit_pid={} submit_ts={} queued={} reason=previous-attempt-not-successful",
+                                            "phase=workspace-lock status=forwarded-request-rerun package={} key={} force={} refresh_files={} submit_host={} submit_pid={} submit_ts={} queued={} reason=previous-attempt-not-successful",
                                             root,
                                             key,
                                             forwarded.force_rebuild,
+                                            forwarded.refresh_files,
                                             forwarded.submitted_host,
                                             forwarded.submitted_pid,
                                             forwarded.submitted_at_utc,
@@ -2018,11 +2041,15 @@ fn run_build_batch_queue(
                         if forwarded.force_rebuild {
                             forced_keys.insert(key.clone());
                         }
+                        if forwarded.refresh_files {
+                            refresh_keys.insert(key.clone());
+                        }
                         log_progress(format!(
-                            "phase=workspace-lock status=forwarded-request-received package={} target_id={} force={} submit_host={} submit_pid={} submit_ts={}",
+                            "phase=workspace-lock status=forwarded-request-received package={} target_id={} force={} refresh_files={} submit_host={} submit_pid={} submit_ts={}",
                             root,
                             build_config.target_id,
                             forwarded.force_rebuild,
+                            forwarded.refresh_files,
                             forwarded.submitted_host,
                             forwarded.submitted_pid,
                             forwarded.submitted_at_utc
@@ -2056,6 +2083,13 @@ fn run_build_batch_queue(
                                         &key,
                                         &global_nodes,
                                         &mut forced_keys,
+                                    );
+                                }
+                                if forwarded.refresh_files {
+                                    mark_force_dependency_closure(
+                                        &key,
+                                        &global_nodes,
+                                        &mut refresh_keys,
                                     );
                                 }
                                 log_progress(format!(
@@ -2204,6 +2238,8 @@ fn run_build_batch_queue(
             let mut package_build_config = (*build_config_c).clone();
             package_build_config.force_rebuild =
                 package_build_config.force_rebuild || forced_keys.contains(&key_for_thread);
+            package_build_config.refresh_files =
+                package_build_config.refresh_files || refresh_keys.contains(&key_for_thread);
             let metadata_adapter_c = Arc::clone(&metadata_adapter);
             running += 1;
             running_keys.insert(key_for_thread.clone());
@@ -2573,6 +2609,7 @@ pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
             dependency_policy: args.dependency_policy.clone(),
             no_deps: args.no_deps,
             force: false,
+            refresh_files: false,
             container_mode: ContainerMode::Ephemeral,
             container_profile: args.container_profile,
             container_engine: args.container_engine.clone(),
@@ -3852,6 +3889,7 @@ fn process_tool(
         }
     };
     if !build_config.force_rebuild
+        && !build_config.refresh_files
         && let PayloadVersionState::UpToDate { existing_version } = &version_state
     {
         clear_quarantine_note(bad_spec_dir, &software_slug);
@@ -3880,6 +3918,12 @@ fn process_tool(
     if build_config.force_rebuild {
         log_progress(format!(
             "phase=package status=force-rebuild package={} version={} reason=explicit-force-flag",
+            tool.software, parsed.version
+        ));
+    }
+    if build_config.refresh_files {
+        log_progress(format!(
+            "phase=package status=refresh-files package={} version={} reason=explicit-refresh-files-flag",
             tool.software, parsed.version
         ));
     }
@@ -4281,8 +4325,24 @@ fn process_tool(
         }
     }
 
+    let mut package_build_config = build_config.clone();
+    if package_build_config.refresh_files {
+        package_build_config.source_srpm_path = None;
+    } else {
+        package_build_config.source_srpm_path =
+            list::authoritative_srpm_for(&build_config.topdir, &software_slug, &parsed.version);
+        if let Some(path) = package_build_config.source_srpm_path.as_ref() {
+            log_progress(format!(
+                "phase=srpm-reuse status=selected package={} version={} srpm={}",
+                software_slug,
+                parsed.version,
+                path.display()
+            ));
+        }
+    }
+
     if let Err(err) = build_spec_pair_chain_in_container(
-        build_config,
+        &package_build_config,
         &payload_spec_path,
         &meta_spec_path,
         &software_slug,
@@ -13896,12 +13956,27 @@ fn build_spec_chain_in_container_inner(
     let target_srpms_in_container = format!("/work/targets/{}/SRPMS", build_config.target_id);
     let legacy_rpms_in_container = "/work/RPMS";
     let work_mount = format!("{}:/work", build_config.topdir.display());
+    let reuse_srpm_in_container = build_config
+        .source_srpm_path
+        .as_ref()
+        .and_then(|path| path.strip_prefix(&build_config.topdir).ok())
+        .map(|rel| format!("/work/{}", rel.display()))
+        .unwrap_or_default();
     let container_platform = container_platform_for_arch(&build_config.target_arch);
     let build_label = label.replace('\'', "_");
     let stage_started = Instant::now();
     log_progress(format!(
-        "phase=container-build status=queued label={} spec={} image={} target_id={}",
-        build_label, spec_name, build_config.container_image, build_config.target_id
+        "phase=container-build status=queued label={} spec={} image={} target_id={} reuse_srpm={} refresh_files={}",
+        build_label,
+        spec_name,
+        build_config.container_image,
+        build_config.target_id,
+        if reuse_srpm_in_container.is_empty() {
+            "none"
+        } else {
+            &reuse_srpm_in_container
+        },
+        build_config.refresh_files
     ));
     let logs_dir = build_config.reports_dir.join("build_logs");
     fs::create_dir_all(&logs_dir)
@@ -14094,6 +14169,34 @@ source_url_filename() {{\n\
   no_fragment=\"${{no_fragment//%20/ }}\"\n\
   printf '%s\\n' \"$no_fragment\"\n\
 }}\n\
+source_fetch_required=1\n\
+srpm_path=''\n\
+reuse_srpm='{reuse_srpm}'\n\
+if [[ '{refresh_files}' != '1' && -n \"$reuse_srpm\" && -s \"$reuse_srpm\" ]]; then\n\
+  echo \"BIOCONDA2RPM_SRPM_REUSE_CANDIDATE label={label} path=$reuse_srpm\"\n\
+  if ! command -v rpm2cpio >/dev/null 2>&1; then\n\
+    echo 'rpm2cpio unavailable for SRPM source reuse' >&2\n\
+    exit 9\n\
+  fi\n\
+  if ! command -v cpio >/dev/null 2>&1; then\n\
+    if command -v dnf >/dev/null 2>&1; then dnf -y install cpio >/dev/null; \\\n\
+    elif command -v microdnf >/dev/null 2>&1; then microdnf -y install cpio >/dev/null; \\\n\
+    elif command -v yum >/dev/null 2>&1; then yum -y install cpio >/dev/null; \\\n\
+    else echo 'cpio unavailable and cannot be installed for SRPM source reuse' >&2; exit 9; fi\n\
+  fi\n\
+  rm -rf \"$build_sourcedir\"\n\
+  mkdir -p \"$build_sourcedir\"\n\
+  (cd \"$build_sourcedir\" && rpm2cpio \"$reuse_srpm\" | cpio -idm --quiet)\n\
+  source_fetch_required=0\n\
+  extracted_spec=$(find \"$build_sourcedir\" -maxdepth 1 -type f -name '*.spec' | sort | head -n 1 || true)\n\
+  if [[ -n \"$extracted_spec\" ]] && cmp -s \"$extracted_spec\" '{spec}'; then\n\
+    srpm_path=\"$reuse_srpm\"\n\
+    echo \"BIOCONDA2RPM_SRPM_REUSE label={label} mode=rebuild-existing path=$srpm_path\"\n\
+  else\n\
+    echo \"BIOCONDA2RPM_SRPM_REUSE label={label} mode=extracted-sources-for-current-spec path=$reuse_srpm\"\n\
+  fi\n\
+fi\n\
+if [[ \"$source_fetch_required\" -eq 1 ]]; then\n\
 mapfile -t declared_sources < <(rpmspec -P --define \"_topdir $build_root\" --define '_sourcedir /work/SOURCES' '{spec}' 2>/dev/null | awk '/^Source[0-9]+:[[:space:]]+/ {{print $2}}')\n\
 for declared in \"${{declared_sources[@]:-}}\"; do\n\
   declared=\"${{declared%%$'\\r'}}\"\n\
@@ -14114,6 +14217,7 @@ for declared in \"${{declared_sources[@]:-}}\"; do\n\
     exit 8\n\
   fi\n\
 done\n\
+fi\n\
 source0_url=$(rpmspec -q --srpm --qf '%{{SOURCE0}}\\n' --define \"_topdir $build_root\" --define \"_sourcedir $build_sourcedir\" '{spec}' 2>/dev/null | head -n 1 | tr -d '\\r' || true)\n\
 if [[ -z \"$source0_url\" || \"$source0_url\" == '(none)' ]]; then\n\
   source0_url=$(rpmspec -P --define \"_topdir $build_root\" --define \"_sourcedir $build_sourcedir\" '{spec}' 2>/dev/null | awk '/^Source0:[[:space:]]+/ {{print $2; exit}}' || true)\n\
@@ -14214,7 +14318,9 @@ if [[ \"$source0_url\" =~ ^https?://cab\\.spbu\\.ru/files/binspreader/BinSPreade
 fi\n\
 {source_validation}\
 spectool_ok=0\n\
-if [[ -z \"$source0_url\" ]]; then\n\
+if [[ \"$source_fetch_required\" -eq 0 ]]; then\n\
+  spectool_ok=1\n\
+elif [[ -z \"$source0_url\" ]]; then\n\
   spectool_ok=1\n\
 else\n\
   dedup_source_candidates=()\n\
@@ -14373,6 +14479,7 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
 fi\n\
 find /work/SPECS -type f -name '*.spec' -exec chmod 0644 {{}} + || true\n\
 find \"$build_sourcedir\" -type f -exec chmod 0644 {{}} + || true\n\
+if [[ -z \"$srpm_path\" ]]; then\n\
 rpmbuild -bs --define \"_topdir $build_root\" --define \"_sourcedir $build_sourcedir\" \"${{rpm_smp_flags[@]}}\" '{spec}'\n\
 srpm_path=$(find \"$build_root/SRPMS\" -type f -name '*.src.rpm' | sort | tail -n 1)\n\
 if [[ -z \"${{srpm_path}}\" ]]; then\n\
@@ -14381,6 +14488,7 @@ if [[ -z \"${{srpm_path}}\" ]]; then\n\
 fi\n\
 cp -f \"$srpm_path\" '{target_srpms_dir}'/\n\
 echo \"BIOCONDA2RPM_SRPM_READY label={label} path={target_srpms_dir}/$(basename \"$srpm_path\")\"\n\
+fi\n\
 \n\
 pm=''\n\
 if command -v dnf >/dev/null 2>&1; then\n\
@@ -14634,6 +14742,8 @@ done < <(find \"$build_root/RPMS\" -type f -name '*.rpm')\n\
         companion_build = companion_build,
         label = build_label,
         spec = sh_single_quote(&spec_in_container),
+        reuse_srpm = sh_single_quote(&reuse_srpm_in_container),
+        refresh_files = if build_config.refresh_files { 1 } else { 0 },
         target_rpms_dir = target_rpms_in_container,
         target_srpms_dir = target_srpms_in_container,
         legacy_rpms_dir = legacy_rpms_in_container,
@@ -20878,6 +20988,16 @@ error: build stopped\n";
         let source = include_str!("priority_specs.rs");
         assert!(source.contains("if !build_config.force_rebuild"));
         assert!(source.contains("status=blacklist-bypassed"));
+    }
+
+    #[test]
+    fn container_build_reuses_authoritative_srpm_without_refreshing_sources() {
+        let source = include_str!("priority_specs.rs");
+        assert!(source.contains("BIOCONDA2RPM_SRPM_REUSE_CANDIDATE"));
+        assert!(source.contains("rpm2cpio \\\"$reuse_srpm\\\" | cpio -idm --quiet"));
+        assert!(source.contains("mode=rebuild-existing"));
+        assert!(source.contains("mode=extracted-sources-for-current-spec"));
+        assert!(source.contains("if [[ '{refresh_files}' != '1'"));
     }
 
     #[test]

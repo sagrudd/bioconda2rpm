@@ -246,7 +246,8 @@ Per `build <tool>` run:
    - blocked descendants are quarantined/skipped according to missing-dependency policy
    - if another local `bioconda2rpm build ...` process starts while this run owns the workspace lock, that secondary request is forwarded into this queue as additional root package(s)
    - forwarded requests contribute package names and their `--force` intent; queue/scheduler/container configuration remains authoritative from the owning process
-   - `bioconda2rpm server` itself does not enforce `--force`; submit `bioconda2rpm build --force <package>` to force a package through a running server
+   - forwarded requests also carry `--refresh-files` intent for that request
+   - `bioconda2rpm server` itself does not enforce `--force` or `--refresh-files`; submit `bioconda2rpm build --force <package>` or `bioconda2rpm build --refresh-files <package>` to apply those policies through a running server
    - when `--force` is used directly or on a forwarded request, blacklist quarantine is bypassed only for the requested package and its dependency closure
    - `bioconda2rpm server` uses the same queue but keeps ownership after a batch completes, draining future forwarded requests until Ctrl-C
    - `bioconda2rpm remove <package...>` records operator removals so pending nodes are skipped and matching active package containers can be stopped
@@ -332,6 +333,16 @@ This layout keeps one canonical SPEC set while isolating binary artifacts by bui
 When a package builds successfully (or is confirmed up-to-date), stale `<topdir>/targets/<target-id>/BAD_SPEC/<tool>.txt` notes are removed for that package.
 
 Source RPMs are copied into `targets/<target-id>/SRPMS/` immediately after the SRPM build step succeeds. This means `.catalog.json` can show a package version as `srpm-prepared` even if the later binary RPM rebuild fails.
+
+When an authoritative SRPM already exists for the same package version, later builds reuse it as the source for `rpmbuild --rebuild` and avoid upstream downloads. `--force` still follows this reuse path: it forces rebuild work, but it does not refresh original source files when the authoritative SRPM is available.
+
+Use `--refresh-files` when you explicitly want the original sources fetched again:
+
+```bash
+bioconda2rpm build --refresh-files blast
+```
+
+If the generated SPEC has changed but `--refresh-files` is not set, bioconda2rpm extracts source assets from the authoritative SRPM and prepares a new SRPM from the current SPEC without contacting upstream. That new SRPM becomes the authoritative SRPM for the package version.
 
 The internal `.catalog.json` is schema-versioned. The current structure groups package entries as package name -> version -> target build records, while retaining a flat `entries` compatibility list for `bioconda2rpm list` and automation already consuming the old shape. Build records include OS profile, architecture, target id, build host, build user, timestamp, status, SRPM path, binary RPM paths, and report path when known. Each package version may also carry one authoritative SRPM.
 

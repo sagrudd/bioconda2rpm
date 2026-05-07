@@ -93,11 +93,13 @@ The product is structured as layered components:
   - node dispatch waits for successful completion of dependency nodes
   - one authoritative process owns a workspace lock for each `--topdir`
   - secondary local `build` invocations submit package names into the authoritative queue through a lock-coordinated request file
-  - forwarded package requests inherit authoritative force-rebuild policy
+  - forwarded package requests carry request-scoped `--force` and `--refresh-files` policy
 - For generated priority specs, execution is strictly ordered per spec as:
   - SPEC generation
   - SRPM build (`rpmbuild -bs`) in container
   - RPM rebuild from SRPM (`rpmbuild --rebuild`) in container
+- When an authoritative SRPM exists for the same package version, the SRPM is reused as the rebuild source unless `--refresh-files` is set. If the current SPEC has changed, source files are extracted from the authoritative SRPM and repacked into a new SRPM without contacting upstream.
+- `--refresh-files` is the only build flag that forces redownload of original upstream source assets and definition of a new authoritative SRPM.
 - Container image is provided at runtime via CLI flag.
 - Build concurrency is policy-driven:
   - `serial`: initial single-core execution
