@@ -4774,10 +4774,7 @@ fn parse_single_version_requirement(raw: &str) -> Option<VersionRequirement> {
     ] {
         if let Some(version) = cleaned.strip_prefix(prefix) {
             let version = normalize_conda_requirement_version(version)?;
-            return Some(VersionRequirement {
-                op,
-                version,
-            });
+            return Some(VersionRequirement { op, version });
         }
     }
     if cleaned.chars().any(|ch| ch.is_ascii_digit()) {
@@ -4803,10 +4800,7 @@ fn normalize_conda_requirement_version(raw: &str) -> Option<String> {
     if let Some((base, _)) = version.split_once('*') {
         version = base.trim_end_matches('.').to_string();
     }
-    version = version
-        .trim_end_matches(['.', '-', '_'])
-        .trim()
-        .to_string();
+    version = version.trim_end_matches(['.', '-', '_']).trim().to_string();
     if version.is_empty() || version == "*" || version.starts_with('*') || version.contains('|') {
         None
     } else {
@@ -6419,16 +6413,26 @@ fn collect_logical_script_lines(script: &str) -> Vec<String> {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             if !current.is_empty() {
-                out.push(current.trim().to_string());
-                current.clear();
+                if shell_line_has_trailing_control_operator(current.trim()) {
+                    continue;
+                } else {
+                    out.push(current.trim().to_string());
+                    current.clear();
+                }
             }
+            continue;
+        }
+        if trimmed.starts_with('#')
+            && !current.is_empty()
+            && shell_line_has_trailing_control_operator(current.trim())
+        {
             continue;
         }
 
         let continued = !in_single_quote
             && !in_double_quote
-            && trimmed.ends_with('\\')
-            && !trimmed.ends_with("\\\\");
+            && ((trimmed.ends_with('\\') && !trimmed.ends_with("\\\\"))
+                || shell_line_has_trailing_control_operator(trimmed));
         let content = if continued {
             trimmed.trim_end_matches('\\').trim_end()
         } else {
@@ -6456,6 +6460,12 @@ fn collect_logical_script_lines(script: &str) -> Vec<String> {
     }
 
     out
+}
+
+fn shell_line_has_trailing_control_operator(line: &str) -> bool {
+    let trimmed = line.trim_end();
+    (trimmed.ends_with("&&") && !trimmed.ends_with("&&&"))
+        || (trimmed.ends_with("||") && !trimmed.ends_with("|||"))
 }
 
 fn update_shell_quote_state(line: &str, in_single_quote: &mut bool, in_double_quote: &mut bool) {
@@ -6586,9 +6596,9 @@ fn line_targets_prefix_install(line: &str) -> bool {
 }
 
 fn line_mentions_prefix_install_alias(line: &str, prefix_install_vars: &BTreeSet<String>) -> bool {
-    prefix_install_vars.iter().any(|var| {
-        line.contains(&format!("${var}")) || line.contains(&format!("${{{var}}}"))
-    })
+    prefix_install_vars
+        .iter()
+        .any(|var| line.contains(&format!("${var}")) || line.contains(&format!("${{{var}}}")))
 }
 
 fn line_is_install_command(line: &str) -> bool {
@@ -6913,21 +6923,21 @@ fn compute_minimal_build_scope(
     ) || software_slug == "mash";
     let recipe_build_sh_required =
         package_requires_original_build_script(software_slug, parsed, interpreted_build_plan);
-    let buildroot_text_scrub_required =
-        (!recipe_build_sh_required
-            && (command_mentions_buildroot_text_risk_with_aliases(
+    let buildroot_text_scrub_required = (!recipe_build_sh_required
+        && (command_mentions_buildroot_text_risk_with_aliases(
+            &interpreted_build_plan.install_commands,
+            &interpreted_build_plan.prefix_install_vars,
+        ) || (package_requires_make_install_buildroot_scrub(software_slug)
+            && command_runs_make_install_with_prefix_env(
                 &interpreted_build_plan.install_commands,
-                &interpreted_build_plan.prefix_install_vars,
-            )
-                || (package_requires_make_install_buildroot_scrub(software_slug)
-                    && command_runs_make_install_with_prefix_env(
-                        &interpreted_build_plan.install_commands,
-                    ))
-                || (command_configures_install_prefix_from_prefix(
-                    &interpreted_build_plan.build_commands,
-                ) && command_installs_configured_prefix(&interpreted_build_plan.install_commands))))
-            || native_vendored_prefix_required
-            || core_c_bootstrap_prefix_required;
+            ))
+            || (command_configures_install_prefix_from_prefix(
+                &interpreted_build_plan.build_commands,
+            ) && command_installs_configured_prefix(
+                &interpreted_build_plan.install_commands,
+            ))))
+        || native_vendored_prefix_required
+        || core_c_bootstrap_prefix_required;
     let blast_compat_required = package_requires_blast_compat(software_slug);
     let arch_env_required = command_mentions_arch_env(&all_commands)
         || (recipe_build_sh_required
@@ -7153,6 +7163,11 @@ fn render_scoped_shell_lines(
             } else {
                 line.clone()
             };
+            let scoped = scoped
+                .trim_end()
+                .trim_end_matches(';')
+                .trim_end()
+                .to_string();
             format!("{scoped} || true\n")
         })
         .collect::<Vec<_>>()
@@ -10835,18 +10850,51 @@ fn source_url_effective_path(source_url: &str) -> String {
                 continue;
             };
             if matches!(key, "filepath" | "filename" | "file" | "path") {
-                let decoded = value
-                    .replace("%2F", "/")
-                    .replace("%2f", "/")
-                    .replace("%2E", ".")
-                    .replace("%2e", ".");
+                let decoded = decode_common_url_filename_hint(value);
                 if !decoded.trim().is_empty() {
+                    return decoded;
+                }
+            }
+            if matches!(key, "download" | "source") {
+                let decoded = decode_common_url_filename_hint(value);
+                if source_filename_hint_has_archive_suffix(&decoded) {
                     return decoded;
                 }
             }
         }
     }
     raw.to_string()
+}
+
+fn source_filename_hint_has_archive_suffix(value: &str) -> bool {
+    let lowered = value.trim().to_ascii_lowercase();
+    lowered.ends_with(".zip")
+        || lowered.ends_with(".jar")
+        || lowered.ends_with(".tar")
+        || lowered.ends_with(".tar.gz")
+        || lowered.ends_with(".tgz")
+        || lowered.ends_with(".tar.bz2")
+        || lowered.ends_with(".tbz")
+        || lowered.ends_with(".tbz2")
+        || lowered.ends_with(".tar.xz")
+        || lowered.ends_with(".txz")
+        || lowered.ends_with(".tar.zst")
+        || lowered.ends_with(".tzst")
+}
+
+fn decode_common_url_filename_hint(value: &str) -> String {
+    value
+        .replace("%2F", "/")
+        .replace("%2f", "/")
+        .replace("%20", " ")
+        .replace("%2B", "+")
+        .replace("%2b", "+")
+        .replace("%24", "$")
+        .replace("%2E", ".")
+        .replace("%2e", ".")
+        .replace("$zip", ".zip")
+        .replace("$tar.gz", ".tar.gz")
+        .replace("$tgz", ".tgz")
 }
 
 fn render_source_unpack_prep_block(source_kind: SourceArchiveKind) -> String {
@@ -11752,11 +11800,9 @@ fn stage_local_source_path(
             .with_context(|| format!("running tar for {}", source_root.display()))?
     } else {
         let parent = source_root.parent().unwrap_or(&resolved.variant_dir);
-        let file_name = source_root
-            .file_name()
-            .ok_or_else(|| {
-                anyhow::anyhow!("source path '{}' has no file name", source_root.display())
-            })?;
+        let file_name = source_root.file_name().ok_or_else(|| {
+            anyhow::anyhow!("source path '{}' has no file name", source_root.display())
+        })?;
         Command::new("tar")
             .arg("-czf")
             .arg(&staged_path)
@@ -13554,7 +13600,16 @@ source_url_filename() {{\n\
         decoded=\"${{decoded//%2f/\\/}}\"\n\
         decoded=\"${{decoded//%20/ }}\"\n\
         decoded=\"${{decoded//%2B/+}}\"\n\
+        decoded=\"${{decoded//%2b/+}}\"\n\
+        decoded=\"${{decoded//%24/\\$}}\"\n\
         decoded=\"${{decoded##*/}}\"\n\
+        if [[ -n \"$decoded\" ]]; then\n\
+          printf '%s\\n' \"$decoded\"\n\
+          return 0\n\
+        fi\n\
+        ;;\n\
+      download|source)\n\
+        decoded=\"${{value##*/}}\"\n\
         if [[ -n \"$decoded\" ]]; then\n\
           printf '%s\\n' \"$decoded\"\n\
           return 0\n\
@@ -15007,7 +15062,10 @@ mod tests {
     #[test]
     fn rendered_package_scalar_strips_inline_yaml_comments() {
         let rendered = "package:\n  name: malt\n  version: 0.62 # upstream version note\n";
-        assert_eq!(extract_package_scalar(rendered, "version").as_deref(), Some("0.62"));
+        assert_eq!(
+            extract_package_scalar(rendered, "version").as_deref(),
+            Some("0.62")
+        );
     }
 
     #[test]
@@ -15017,7 +15075,10 @@ mod tests {
             "https://bioconda.github.io"
         );
         assert_eq!(
-            spec_escape_url_or_default("https://example.invalid/tool", "https://bioconda.github.io"),
+            spec_escape_url_or_default(
+                "https://example.invalid/tool",
+                "https://bioconda.github.io"
+            ),
             "https://example.invalid/tool"
         );
     }
@@ -15928,6 +15989,12 @@ requirements:
             SourceArchiveKind::Zip
         );
         assert_eq!(
+            source_archive_kind(
+                "https://msfragger-upgrader.nesvilab.org/upgrader/download.php?token=0000000&download=Release%204.2%24zip"
+            ),
+            SourceArchiveKind::Zip
+        );
+        assert_eq!(
             source_archive_kind("https://example.invalid/tool-1.0.tar.gz"),
             SourceArchiveKind::Tar
         );
@@ -15940,7 +16007,9 @@ requirements:
     #[test]
     fn source_urls_encode_spaces_for_rpm_source_lines() {
         assert_eq!(
-            spec_escape_source_url("https://pypi.io/packages/source/M/MAGE-Tab-merger/MAGE-Tab merger-0.0.4.tar.gz"),
+            spec_escape_source_url(
+                "https://pypi.io/packages/source/M/MAGE-Tab-merger/MAGE-Tab merger-0.0.4.tar.gz"
+            ),
             "https://pypi.io/packages/source/M/MAGE-Tab-merger/MAGE-Tab%%20merger-0.0.4.tar.gz"
         );
     }
@@ -15957,10 +16026,14 @@ requirements:
         ));
         assert!(shell.contains("od -An -tx1 -N4 \"$source_path\""));
         assert!(shell.contains("grep -q '^#!'"));
-        assert!(shell.contains("<!doctype html|<html|<head|<body|not found|access denied|rate limit"));
-        assert!(shell.contains(
-            "file -b \"$source_path\" | grep -Eqi 'ELF|script|executable|source|text'"
-        ));
+        assert!(
+            shell.contains("<!doctype html|<html|<head|<body|not found|access denied|rate limit")
+        );
+        assert!(
+            shell.contains(
+                "file -b \"$source_path\" | grep -Eqi 'ELF|script|executable|source|text'"
+            )
+        );
         assert!(shell.contains("return 1"));
     }
 
@@ -20129,22 +20202,28 @@ cp dupsifter ${BIN}
 "#;
         let plan = interpret_build_script_minimal(script);
 
-        assert!(plan
-            .install_commands
-            .iter()
-            .any(|line| line.contains("cp -f comparem2 LICENSE")));
-        assert!(plan
-            .install_commands
-            .iter()
-            .any(|line| line.contains("cp dupsifter ${BIN}")));
-        assert!(!plan
-            .build_commands
-            .iter()
-            .any(|line| line.contains("cp -f comparem2 LICENSE")));
-        assert!(!plan
-            .build_commands
-            .iter()
-            .any(|line| line.contains("cp dupsifter ${BIN}")));
+        assert!(
+            plan.install_commands
+                .iter()
+                .any(|line| line.contains("cp -f comparem2 LICENSE"))
+        );
+        assert!(
+            plan.install_commands
+                .iter()
+                .any(|line| line.contains("cp dupsifter ${BIN}"))
+        );
+        assert!(
+            !plan
+                .build_commands
+                .iter()
+                .any(|line| line.contains("cp -f comparem2 LICENSE"))
+        );
+        assert!(
+            !plan
+                .build_commands
+                .iter()
+                .any(|line| line.contains("cp dupsifter ${BIN}"))
+        );
     }
 
     #[test]
@@ -20152,8 +20231,12 @@ cp dupsifter ${BIN}
         assert!(command_mentions_symlink_install(&[
             "ln -fs $GORPIPEDIR/bin/gorpipe $PREFIX/bin/gorpipe".to_string()
         ]));
-        assert!(command_mentions_symlink_install(&["ln -snf target link".to_string()]));
-        assert!(!command_mentions_symlink_install(&["ln target link".to_string()]));
+        assert!(command_mentions_symlink_install(&[
+            "ln -snf target link".to_string()
+        ]));
+        assert!(!command_mentions_symlink_install(&[
+            "ln target link".to_string()
+        ]));
     }
 
     #[test]
@@ -20275,11 +20358,16 @@ error: build stopped\n";
         assert!(bax2bam.justification.contains("binary repacks"));
         assert!(build_blacklist_reason(bax2bam).contains("source_unavailable"));
 
-        let skipped = build_blacklist_entry("2pg_cartesian").expect("2pg_cartesian blacklist entry");
+        let skipped =
+            build_blacklist_entry("2pg_cartesian").expect("2pg_cartesian blacklist entry");
         assert!(skipped.justification.contains("build.skip=true"));
 
         let blasr = build_blacklist_entry("blasr").expect("blasr blacklist entry");
-        assert!(blasr.justification.contains("source fetch/archive validation"));
+        assert!(
+            blasr
+                .justification
+                .contains("source fetch/archive validation")
+        );
     }
 
     #[test]
@@ -20894,6 +20982,7 @@ requirements:
         const SOURCE: &str = include_str!("priority_specs.rs");
         assert!(SOURCE.contains("source_url_filename()"));
         assert!(SOURCE.contains("filepath|filename|file|path"));
+        assert!(SOURCE.contains("download|source"));
         assert!(SOURCE.contains(r#"candidate_file=$(source_url_filename \"$candidate\")"#));
         assert!(SOURCE.contains("if ! is_remote_source \\\"$candidate\\\"; then"));
         assert!(SOURCE.contains("binspreader-recombseq.tar.gz"));
@@ -20902,6 +20991,57 @@ requirements:
                 "https://search.maven.org/remotecontent?filepath=x/y/tool-1.0.tar.gz"
             ) == SourceArchiveKind::Tar
         );
+    }
+
+    #[test]
+    fn minimal_interpreter_keeps_newline_continued_shell_operator_chains() {
+        let script = r#"
+cd RabbitSketch &&
+mkdir -p build && cd build &&
+cmake -DCMAKE_INSTALL_PREFIX=. .. &&
+make -j ${CPU_COUNT} && make install &&
+cd ../../ &&
+
+# next component
+cd RabbitFX &&
+mkdir -p build && cd build &&
+cmake -DCMAKE_INSTALL_PREFIX=. .. &&
+make -j ${CPU_COUNT} && make install
+"#;
+        let lines = collect_logical_script_lines(script);
+
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("cd RabbitSketch && mkdir -p build"));
+        assert!(lines[0].contains("cd RabbitFX && mkdir -p build"));
+        assert!(!lines[0].trim_end().ends_with("&&"));
+    }
+
+    #[test]
+    fn scoped_shell_rendering_does_not_append_true_after_semicolon() {
+        let scope = MinimalBuildScope {
+            python_runtime_required: false,
+            r_runtime_required: false,
+            rust_runtime_required: false,
+            nim_runtime_required: false,
+            perl_runtime_required: false,
+            compiler_env_required: false,
+            conda_pkg_vars_required: false,
+            arch_env_required: false,
+            parallel_env_required: false,
+            symlink_normalization_required: false,
+            buildroot_text_scrub_required: false,
+            sparsehash_configure_fallback_required: false,
+            recipe_build_sh_required: false,
+            blast_compat_required: false,
+        };
+        let rendered = render_scoped_shell_lines(
+            &["perl_version=$(perl -e 'print $^V');".to_string()],
+            "unused",
+            &scope,
+        );
+
+        assert!(rendered.contains("perl_version=$(perl -e 'print $^V') || true"));
+        assert!(!rendered.contains("; || true"));
     }
 
     #[test]
@@ -21954,7 +22094,11 @@ install -v -m 755 build/trf "${PREFIX}/bin"
         );
 
         assert!(spec.contains("buildroot-text-scrub"));
-        assert!(spec.contains("PACKAGE_HOME=$PREFIX/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM || true"));
+        assert!(
+            spec.contains(
+                "PACKAGE_HOME=$PREFIX/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM || true"
+            )
+        );
         assert!(spec.contains("sed -i \"s|$buildroot_prefix|$final_prefix|g\""));
     }
 

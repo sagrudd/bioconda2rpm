@@ -212,3 +212,9 @@
 - The minimal renderer now derives an explicit build scope from metadata, direct dependencies, and interpreted build-script commands.
 - Unrelated ecosystem setup and package-specific conditionals are forbidden in emitted minimal SPECs.
 - `abyss` is the regression example: it selects compiler/parallel/sparsehash scope without inheriting Python, R, Rust, Nim, Perl, Java, or unrelated package workaround blocks.
+
+### Large-backlog source and shell-fragment normalization
+- Query-string source downloads are normalized so RPM receives the filename it expects from URL filename parameters such as `download=` and `source=`, while archive-kind detection still ignores non-archive tracking values such as `download=1`.
+- This addresses payloads such as `msfragger` and SourceForge `latest/download?source=...` URLs where the transfer tool may save a generic path basename but `rpmbuild` looks for the query-derived source name.
+- Minimal build-script interpretation now treats trailing `&&`/`||` lines as shell continuations across blank/comment lines and removes a terminal semicolon before appending the tolerated `|| true` guard, preventing malformed fragments like `; || true`.
+- Regression tests cover query filename parameters, `download=...%24zip` archive detection, newline-continued command chains, and semicolon-safe rendering.
