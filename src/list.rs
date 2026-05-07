@@ -295,7 +295,10 @@ fn parse_srpm_filename(path: &Path) -> Option<(String, String)> {
     let name = path.file_name()?.to_str()?.strip_suffix(".src.rpm")?;
     let (without_release, _) = name.rsplit_once('-')?;
     let (rpm_name, version) = without_release.rsplit_once('-')?;
-    let software = rpm_name.strip_prefix("phoreus-").unwrap_or(rpm_name);
+    let mut software = rpm_name.strip_prefix("phoreus-").unwrap_or(rpm_name);
+    if let Some(stripped) = software.strip_suffix(&format!("-{version}")) {
+        software = stripped;
+    }
     if software.ends_with("-default") {
         return None;
     }
@@ -327,7 +330,7 @@ fn query_srpm_identity(path: &Path) -> Option<(String, String)> {
 
 fn srpm_candidate_from_path(path: PathBuf) -> Option<SrpmCandidate> {
     let target_id = srpm_target_id(&path)?;
-    let (software, version) = query_srpm_identity(&path).or_else(|| parse_srpm_filename(&path))?;
+    let (software, version) = parse_srpm_filename(&path).or_else(|| query_srpm_identity(&path))?;
     let arch = target_id.rsplit('-').next().unwrap_or("").to_string();
     Some(SrpmCandidate {
         software,
@@ -374,18 +377,40 @@ fn scan_srpm_candidates(topdir: &Path) -> Vec<SrpmCandidate> {
 
 fn best_srpm_for(topdir: &Path, software: &str, version: &str) -> Option<SrpmCandidate> {
     let software_key = normalize_package_slug(software);
-    scan_srpm_candidates(topdir)
+    let prefix = format!("phoreus-{software_key}-");
+    let mut candidates = Vec::new();
+    let targets = topdir.join("targets");
+    let Ok(target_dirs) = fs::read_dir(targets) else {
+        return None;
+    };
+    for target in target_dirs.flatten() {
+        let srpms_dir = target.path().join("SRPMS");
+        let Ok(entries) = fs::read_dir(srpms_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|v| v.to_str()) else {
+                continue;
+            };
+            if !name.starts_with(&prefix) || !name.ends_with(".src.rpm") {
+                continue;
+            }
+            if let Some(candidate) = srpm_candidate_from_path(path).filter(|candidate| {
+                normalize_package_slug(&candidate.software) == software_key
+                    && candidate.version == version
+            }) {
+                candidates.push(candidate);
+            }
+        }
+    }
+    candidates
         .into_iter()
-        .filter(|candidate| {
-            normalize_package_slug(&candidate.software) == software_key
-                && candidate.version == version
-        })
         .max_by_key(|candidate| report_modified_at(&candidate.path))
 }
 
 pub fn authoritative_srpm_for(topdir: &Path, software: &str, version: &str) -> Option<PathBuf> {
-    let mut catalog = read_catalog(topdir);
-    inject_srpm_artifacts(topdir, &mut catalog);
+    let catalog = read_catalog(topdir);
     let software_key = normalize_package_slug(software);
     catalog
         .packages
@@ -1537,6 +1562,83 @@ mod tests {
                     .unwrap_or("")
                     .ends_with(".src.rpm")
         }));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn srpm_filename_parser_handles_versioned_module_names() {
+        let path = Path::new(
+            "/tmp/targets/phoreus-bioconda2rpm-build-almalinux-9.7-x86_64/SRPMS/phoreus-treeswirl-2.0.0-2.0.0-1.el9.src.rpm",
+        );
+        assert_eq!(
+            parse_srpm_filename(path),
+            Some(("treeswirl".to_string(), "2.0.0".to_string()))
+        );
+    }
+
+    #[test]
+    fn authoritative_srpm_for_uses_catalog_without_scanning_srpms() {
+        let tmp = std::env::temp_dir().join(format!(
+            "bioconda2rpm-srpm-catalog-fast-path-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        fs::create_dir_all(&tmp).expect("create temp dir");
+        let catalog_srpm = tmp.join("catalog-phoreus-treeswirl-2.0.0-2.0.0-1.el9.src.rpm");
+        fs::write(&catalog_srpm, b"catalog srpm").expect("write catalog srpm");
+        let noisy_srpms = tmp
+            .join("targets")
+            .join("phoreus-bioconda2rpm-build-almalinux-9.7-x86_64")
+            .join("SRPMS");
+        fs::create_dir_all(&noisy_srpms).expect("create noisy srpms dir");
+        fs::write(
+            noisy_srpms.join("phoreus-other-1.0-1.0-1.el9.src.rpm"),
+            b"not a real rpm",
+        )
+        .expect("write noisy srpm");
+
+        let catalog = Catalog {
+            packages: vec![CatalogPackage {
+                software: "treeswirl".to_string(),
+                versions: vec![CatalogVersion {
+                    version: "2.0.0".to_string(),
+                    authoritative_srpm: Some(srpm_artifact_from_path(&catalog_srpm)),
+                    builds: Vec::new(),
+                }],
+            }],
+            ..Catalog::default()
+        };
+        write_catalog(&tmp, &catalog).expect("write catalog");
+
+        assert_eq!(
+            authoritative_srpm_for(&tmp, "treeswirl", "2.0.0"),
+            Some(catalog_srpm)
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn best_srpm_for_uses_targeted_filename_lookup() {
+        let tmp = std::env::temp_dir().join(format!(
+            "bioconda2rpm-srpm-targeted-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let target_id = "phoreus-bioconda2rpm-build-almalinux-9.7-x86_64";
+        let srpms = tmp.join("targets").join(target_id).join("SRPMS");
+        fs::create_dir_all(&srpms).expect("create srpms dir");
+        let treeswirl = srpms.join("phoreus-treeswirl-2.0.0-2.0.0-1.el9.src.rpm");
+        let unrelated = srpms.join("phoreus-other-1.0-1.0-1.el9.src.rpm");
+        fs::write(&treeswirl, b"placeholder srpm").expect("write treeswirl srpm");
+        fs::write(&unrelated, b"placeholder srpm").expect("write unrelated srpm");
+
+        let candidate =
+            best_srpm_for(&tmp, "treeswirl", "2.0.0").expect("find targeted treeswirl srpm");
+        assert_eq!(candidate.path, treeswirl);
+        assert_eq!(candidate.software, "treeswirl");
+        assert_eq!(candidate.version, "2.0.0");
 
         let _ = fs::remove_dir_all(&tmp);
     }
