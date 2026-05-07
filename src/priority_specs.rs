@@ -15601,6 +15601,7 @@ else\n\
     fi\n\
     echo \"Downloading: $candidate\"\n\
     for attempt in 1 2 3; do\n\
+      direct_url=\"${{candidate%%\\#*}}\"\n\
       spectool_cmd=(spectool -g -R --define \"_topdir $build_root\" --define \"_sourcedir $build_sourcedir\" '{spec}')\n\
       if command -v timeout >/dev/null 2>&1; then\n\
         spectool_cmd=(timeout --kill-after=30s 300s \"${{spectool_cmd[@]}}\")\n\
@@ -15619,6 +15620,22 @@ else\n\
         spectool_status=$?\n\
         if [[ \"$spectool_status\" -eq 124 || \"$spectool_status\" -eq 137 ]]; then\n\
           echo \"spectool source download timed out after 300s for $candidate\" >&2\n\
+        fi\n\
+      fi\n\
+      if [[ -n \"$candidate_file\" && -n \"$direct_url\" && ! -s \"$build_sourcedir/$candidate_file\" ]]; then\n\
+        echo \"Attempting direct source fetch: $direct_url\"\n\
+        if command -v curl >/dev/null 2>&1; then\n\
+          curl -L --fail --retry 2 --retry-all-errors --connect-timeout 20 --speed-time 120 --speed-limit 1024 --max-time 600 --output \"$build_sourcedir/$candidate_file\" \"$direct_url\" || true\n\
+        elif command -v wget >/dev/null 2>&1; then\n\
+          wget --tries=2 --timeout=30 --read-timeout=120 -O \"$build_sourcedir/$candidate_file\" \"$direct_url\" || true\n\
+        fi\n\
+        if [[ -s \"$build_sourcedir/$candidate_file\" ]]; then\n\
+          if validate_source_file \"$build_sourcedir/$candidate_file\" && validate_source_checksum \"$build_sourcedir/$candidate_file\"; then\n\
+            spectool_ok=1\n\
+            break 2\n\
+          fi\n\
+          echo \"direct source fetch validation failed for $build_sourcedir/$candidate_file; removing corrupt download\" >&2\n\
+          rm -f \"$build_sourcedir/$candidate_file\" || true\n\
         fi\n\
       fi\n\
       sleep $((attempt * 2))\n\
@@ -15657,6 +15674,7 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
   done\n\
   for manual_url in \"${{dedup_manual_candidates[@]:-}}\"; do\n\
     manual_file=$(source_url_filename \"$manual_url\")\n\
+    manual_fetch_url=\"${{manual_url%%\\#*}}\"\n\
     [[ -n \"$manual_file\" ]] || continue\n\
     if ! is_remote_source \"$manual_url\"; then\n\
       if [[ -s \"$build_sourcedir/$manual_file\" ]] && validate_source_file \"$build_sourcedir/$manual_file\" && validate_source_checksum \"$build_sourcedir/$manual_file\"; then\n\
@@ -15669,21 +15687,21 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
     echo \"Attempting manual prefetch fallback: $manual_url\"\n\
     if [[ \"$manual_url\" =~ ^https?://data\\.broadinstitute\\.org/ && -n \"$expected_source_sha256\" ]]; then\n\
       if command -v curl >/dev/null 2>&1; then\n\
-        curl -k -L --fail --retry 5 --retry-all-errors --connect-timeout 20 --speed-time 120 --speed-limit 1024 --max-time 1800 --output \"$build_sourcedir/$manual_file\" \"$manual_url\" || true\n\
+        curl -k -L --fail --retry 5 --retry-all-errors --connect-timeout 20 --speed-time 120 --speed-limit 1024 --max-time 1800 --output \"$build_sourcedir/$manual_file\" \"$manual_fetch_url\" || true\n\
       elif command -v wget >/dev/null 2>&1; then\n\
-        wget --no-check-certificate --tries=5 --timeout=30 --read-timeout=120 -O \"$build_sourcedir/$manual_file\" \"$manual_url\" || true\n\
+        wget --no-check-certificate --tries=5 --timeout=30 --read-timeout=120 -O \"$build_sourcedir/$manual_file\" \"$manual_fetch_url\" || true\n\
       fi\n\
     elif [[ \"$manual_url\" =~ ^https?://(www\\.)?circos\\.ca/ ]]; then\n\
       if command -v curl >/dev/null 2>&1; then\n\
-        curl -k -L --fail --retry 5 --retry-all-errors --connect-timeout 20 --speed-time 120 --speed-limit 1024 --max-time 1800 --output \"$build_sourcedir/$manual_file\" \"$manual_url\" || true\n\
+        curl -k -L --fail --retry 5 --retry-all-errors --connect-timeout 20 --speed-time 120 --speed-limit 1024 --max-time 1800 --output \"$build_sourcedir/$manual_file\" \"$manual_fetch_url\" || true\n\
       elif command -v wget >/dev/null 2>&1; then\n\
-        wget --no-check-certificate --tries=5 --timeout=30 --read-timeout=120 -O \"$build_sourcedir/$manual_file\" \"$manual_url\" || true\n\
+        wget --no-check-certificate --tries=5 --timeout=30 --read-timeout=120 -O \"$build_sourcedir/$manual_file\" \"$manual_fetch_url\" || true\n\
       fi\n\
     else\n\
       if command -v curl >/dev/null 2>&1; then\n\
-        curl -L --fail --retry 5 --retry-all-errors --connect-timeout 20 --speed-time 120 --speed-limit 1024 --max-time 1800 --output \"$build_sourcedir/$manual_file\" \"$manual_url\" || true\n\
+        curl -L --fail --retry 5 --retry-all-errors --connect-timeout 20 --speed-time 120 --speed-limit 1024 --max-time 1800 --output \"$build_sourcedir/$manual_file\" \"$manual_fetch_url\" || true\n\
       elif command -v wget >/dev/null 2>&1; then\n\
-        wget --tries=5 --timeout=30 --read-timeout=120 -O \"$build_sourcedir/$manual_file\" \"$manual_url\" || true\n\
+        wget --tries=5 --timeout=30 --read-timeout=120 -O \"$build_sourcedir/$manual_file\" \"$manual_fetch_url\" || true\n\
       fi\n\
     fi\n\
     if [[ -s \"$build_sourcedir/$manual_file\" ]]; then\n\
@@ -23540,6 +23558,9 @@ requirements:
         assert!(SOURCE.contains("download|source"));
         assert!(SOURCE.contains(r#"candidate_file=$(source_url_filename \"$candidate\")"#));
         assert!(SOURCE.contains("if ! is_remote_source \\\"$candidate\\\"; then"));
+        assert!(SOURCE.contains("direct_url=\\\"${{candidate%%\\\\#*}}\\\""));
+        assert!(SOURCE.contains("Attempting direct source fetch: $direct_url"));
+        assert!(SOURCE.contains("manual_fetch_url=\\\"${{manual_url%%\\\\#*}}\\\""));
         assert!(SOURCE.contains("binspreader-recombseq.tar.gz"));
         assert!(SOURCE.contains("downloads.sourceforge.net/project/sboppetrov/EMBOSS"));
         assert!(SOURCE.contains("wget --tries=2 --timeout=20 --read-timeout=60"));
