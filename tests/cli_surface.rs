@@ -81,7 +81,9 @@ fn failures_json_emits_catalogue_failures() {
 fn todo_json_emits_manual_source_file_task() {
     let topdir = tempdir().expect("tempdir");
     let topdir_arg = topdir.path().to_string_lossy().to_string();
-    let report_path = topdir.path().join("targets/test-target/reports/build_cap3.json");
+    let report_path = topdir
+        .path()
+        .join("targets/test-target/reports/build_cap3.json");
     let spec_path = topdir.path().join("SPECS/phoreus-cap3.spec");
     std::fs::create_dir_all(report_path.parent().expect("report parent")).expect("reports dir");
     std::fs::create_dir_all(spec_path.parent().expect("spec parent")).expect("spec dir");
@@ -155,7 +157,10 @@ fn todo_json_emits_manual_source_file_task() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["software"], "cap3");
     assert_eq!(items[0]["expected_file"], "cap3.tar.gz");
-    assert_eq!(items[0]["source_url"], "https://example.invalid/downloads/cap3.tar.gz");
+    assert_eq!(
+        items[0]["source_url"],
+        "https://example.invalid/downloads/cap3.tar.gz"
+    );
     assert_eq!(items[0]["sha256"], "abc123");
     assert_eq!(
         items[0]["command"],
@@ -169,7 +174,9 @@ fn blacklist_updates_csv_and_clears_catalogue_failures() {
     let topdir_arg = topdir.path().to_string_lossy().to_string();
     let blacklist_path = topdir.path().join("blacklist.txt");
     let blacklist_arg = blacklist_path.to_string_lossy().to_string();
-    let report_path = topdir.path().join("targets/test-target/reports/build_bam2fasta.json");
+    let report_path = topdir
+        .path()
+        .join("targets/test-target/reports/build_bam2fasta.json");
     std::fs::create_dir_all(report_path.parent().expect("report parent")).expect("reports dir");
     let report = serde_json::json!([
         {
@@ -237,8 +244,8 @@ fn blacklist_updates_csv_and_clears_catalogue_failures() {
 
     let failures = run(&["failures", "--json", "--topdir", &topdir_arg]);
     assert!(failures.status.success());
-    let parsed: Value =
-        serde_json::from_str(String::from_utf8_lossy(&failures.stdout).trim()).expect("failures json");
+    let parsed: Value = serde_json::from_str(String::from_utf8_lossy(&failures.stdout).trim())
+        .expect("failures json");
     assert_eq!(parsed.as_array().expect("array").len(), 0);
 
     let refreshed = Command::new(env!("CARGO_BIN_EXE_bioconda2rpm"))

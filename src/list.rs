@@ -1173,9 +1173,7 @@ fn write_blacklist_rows(path: &Path, rows: &[BlacklistCsvRow]) -> Result<()> {
             .serialize(row)
             .with_context(|| format!("serializing blacklist row for {}", row.package))?;
     }
-    let payload = writer
-        .into_inner()
-        .context("finalizing blacklist CSV")?;
+    let payload = writer.into_inner().context("finalizing blacklist CSV")?;
     fs::write(path, payload).with_context(|| format!("writing blacklist {}", path.display()))?;
     Ok(())
 }
@@ -1647,7 +1645,10 @@ fn source_failure_is_human_actionable(reason: &str) -> bool {
 }
 
 fn value_string<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
-    value.get(key).and_then(|v| v.as_str()).filter(|v| !v.is_empty())
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty())
 }
 
 fn report_item_for_failure(entry: &FailureEntry) -> Option<serde_json::Value> {
@@ -1687,7 +1688,11 @@ fn problem_url_from_blacklist_reason(reason: &str) -> Option<String> {
 }
 
 fn source_file_from_url(url: &str) -> Option<String> {
-    let mut value = url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/');
+    let mut value = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .trim_end_matches('/');
     if value.ends_with("/download") {
         value = value.trim_end_matches("/download").trim_end_matches('/');
     }
@@ -1728,7 +1733,10 @@ fn source_checksum_policy(topdir: &Path, software: &str) -> (Option<String>, Opt
             md5 = Some(rest.trim_matches('\'').trim_matches('"').to_string());
         }
     }
-    (sha256.filter(|v| !v.is_empty()), md5.filter(|v| !v.is_empty()))
+    (
+        sha256.filter(|v| !v.is_empty()),
+        md5.filter(|v| !v.is_empty()),
+    )
 }
 
 fn shell_quote(value: &str) -> String {
@@ -1753,7 +1761,9 @@ fn todo_task_for_failure(topdir: &Path, entry: &FailureEntry) -> Option<TodoTask
         .and_then(|path| source0_from_spec(Path::new(path)));
     let source_url = spec_source
         .or_else(|| problem_url_from_blacklist_reason(&entry.reason))
-        .filter(|url| url.starts_with("http://") || url.starts_with("https://") || url.starts_with("ftp://"))?;
+        .filter(|url| {
+            url.starts_with("http://") || url.starts_with("https://") || url.starts_with("ftp://")
+        })?;
     let expected_file = source_file_from_url(&source_url)?;
     let (sha256, md5) = source_checksum_policy(topdir, &entry.software);
     let command = format!(
@@ -1946,7 +1956,10 @@ pub fn run_todo(topdir: &Path, args: &crate::cli::TodoArgs) -> Result<()> {
         let json = serde_json::to_string_pretty(&visible).context("serializing todo entries")?;
         println!("{json}");
     } else {
-        print!("{}", render_todo_text(&visible, actionable.len(), &cat_path));
+        print!(
+            "{}",
+            render_todo_text(&visible, actionable.len(), &cat_path)
+        );
     }
 
     Ok(())
@@ -2352,8 +2365,9 @@ mod tests {
             &[
                 BlacklistCsvRow {
                     package: "python-consensuscore2".to_string(),
-                    problem_url: "recipe://bioconda-recipes/recipes/python-consensuscore2/meta.yaml"
-                        .to_string(),
+                    problem_url:
+                        "recipe://bioconda-recipes/recipes/python-consensuscore2/meta.yaml"
+                            .to_string(),
                     justification: "py27-only skip".to_string(),
                 },
                 BlacklistCsvRow {
@@ -2366,8 +2380,7 @@ mod tests {
         .expect("write blacklist");
 
         assert!(
-            remove_blacklist_row_from_path(&path, "python_consensuscore2")
-                .expect("remove row")
+            remove_blacklist_row_from_path(&path, "python_consensuscore2").expect("remove row")
         );
         let rows = read_blacklist_rows(&path).expect("read blacklist");
         assert_eq!(rows.len(), 1);

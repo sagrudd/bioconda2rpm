@@ -24,9 +24,9 @@ pub struct RecipeMetadata {
 pub fn is_valid_recipe_name(value: &str) -> bool {
     let trimmed = value.trim();
     !trimmed.is_empty()
-        && trimmed
-            .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_' | '.' | '+'))
+        && trimmed.chars().all(|ch| {
+            ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_' | '.' | '+')
+        })
 }
 
 pub fn recipe_exists(recipe_root: &Path, recipe_name: &str) -> Result<bool> {
@@ -42,8 +42,8 @@ pub fn lookup_recipe_metadata(recipe_root: &Path, recipe_name: &str) -> Result<R
     if !is_valid_recipe_name(&normalized) {
         return Err(anyhow!("invalid recipe name"));
     }
-    let recipe_dir = resolve_recipe_dir(recipe_root, &normalized)?
-        .ok_or_else(|| anyhow!("recipe not found"))?;
+    let recipe_dir =
+        resolve_recipe_dir(recipe_root, &normalized)?.ok_or_else(|| anyhow!("recipe not found"))?;
     let variant_dir = select_recipe_variant_dir(&recipe_dir)?;
     let meta_yaml_path = meta_file_path(&variant_dir)
         .or_else(|| meta_file_path(&recipe_dir))
@@ -127,7 +127,10 @@ fn infer_language(parsed: &crate::priority_specs::ParsedMeta) -> String {
         })
     };
 
-    if deps.iter().any(|dep| dep.starts_with("python")) || has_spec_prefix("python") || parsed.noarch_python {
+    if deps.iter().any(|dep| dep.starts_with("python"))
+        || has_spec_prefix("python")
+        || parsed.noarch_python
+    {
         "Python".to_string()
     } else if deps.iter().any(|dep| dep.starts_with("perl")) || has_spec_prefix("perl") {
         "Perl".to_string()
@@ -139,7 +142,10 @@ fn infer_language(parsed: &crate::priority_specs::ParsedMeta) -> String {
         "R".to_string()
     } else if deps.iter().any(|dep| dep.contains("rust")) {
         "Rust".to_string()
-    } else if deps.iter().any(|dep| dep == "go" || dep.starts_with("golang")) {
+    } else if deps
+        .iter()
+        .any(|dep| dep == "go" || dep.starts_with("golang"))
+    {
         "Go".to_string()
     } else if deps
         .iter()
@@ -158,7 +164,10 @@ fn infer_release_date(meta_yaml_path: &Path) -> (String, String) {
         .and_then(|metadata| metadata.modified())
         .map(DateTime::<Utc>::from)
     {
-        Ok(ts) => (ts.date_naive().to_string(), "filesystem_modified".to_string()),
+        Ok(ts) => (
+            ts.date_naive().to_string(),
+            "filesystem_modified".to_string(),
+        ),
         Err(_) => (
             Utc::now().date_naive().to_string(),
             "current_utc_date".to_string(),
@@ -214,8 +223,8 @@ requirements:
         )
         .expect("meta.yaml should write");
 
-        let metadata = lookup_recipe_metadata(&recipes_root, "blast")
-            .expect("metadata should resolve");
+        let metadata =
+            lookup_recipe_metadata(&recipes_root, "blast").expect("metadata should resolve");
         assert_eq!(metadata.recipe_name, "blast");
         assert_eq!(metadata.latest_release.as_deref(), Some("2.16.0"));
         assert_eq!(

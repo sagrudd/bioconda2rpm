@@ -6263,6 +6263,7 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
     }
 
     let pip_name = match normalized.as_str() {
+        "dask-core" => "dask".to_string(),
         "python-annoy" => "annoy".to_string(),
         "python-graphviz" => "graphviz".to_string(),
         "python-kaleido" => "kaleido".to_string(),
@@ -6502,16 +6503,29 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "findutils"
             | "coreutils"
             | "bash"
+            | "boost-cpp"
+            | "conda"
+            | "crisper-recognition-tool"
             | "perl"
             | "rust"
             | "cargo"
+            | "diamond"
+            | "entrez-direct"
+            | "git"
+            | "graph-tool-base"
             | "java-11-openjdk"
             | "openjdk"
+            | "mamba"
+            | "maxbin2"
+            | "mmseqs2"
             | "openssl"
             | "openssl-devel"
+            | "seqkit"
+            | "snakemake-minimal"
             | "zlib"
             | "zlib-devel"
             | "bzip2-devel"
+            | "taxonkit"
             | "xz-devel"
             | "libffi-devel"
             | "sqlite-devel"
@@ -12884,10 +12898,11 @@ fi\n\
 if [[ \"$patch_applied\" -ne 1 ]]; then\n\
   if [[ \"$patch_referenced_paths\" -gt 0 && \"$patch_target_seen\" -eq 0 ]]; then\n\
     echo \"bioconda2rpm: skipping obsolete patch %{{SOURCE{}}}; none of its referenced target paths exist in the selected source tree\" >&2\n\
-    continue\n\
+    patch_applied=1\n\
+  else\n\
+    echo \"failed to apply patch %{{SOURCE{}}} with supported strip levels (1,0,2,3,4,5,6,7,8) and candidate dirs: ${{patch_dirs[*]}}\" >&2\n\
+    exit 1\n\
   fi\n\
-  echo \"failed to apply patch %{{SOURCE{}}} with supported strip levels (1,0,2,3,4,5,6,7,8) and candidate dirs: ${{patch_dirs[*]}}\" >&2\n\
-  exit 1\n\
 fi\n",
                 idx + 2,
                 idx + 2,
@@ -17668,6 +17683,8 @@ requirements:
             "patch -l --binary --forward --batch -p\"$patch_strip\" -i \"$patch_input\""
         ));
         assert!(spec.contains("bioconda2rpm: skipping obsolete patch"));
+        assert!(spec.contains("patch_applied=1"));
+        assert!(!spec.contains("continue\nfi\necho \"failed to apply patch"));
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(spec.contains("retry_snapshot=\"$(pwd)/.bioconda2rpm-retry-snapshot.tar\""));
         assert!(spec.contains("export CPU_COUNT=\"${BIOCONDA2RPM_CPU_COUNT:-1}\""));
@@ -19096,6 +19113,83 @@ requirements:
         assert!(!reqs.iter().any(|r| r == "pcre"));
         assert!(!reqs.iter().any(|r| r == "prank"));
         assert!(!reqs.iter().any(|r| r == "raxml"));
+    }
+
+    #[test]
+    fn python_requirements_keep_conda_only_cli_tools_out_of_pip_lock() {
+        let parsed = ParsedMeta {
+            package_name: "virsorter".to_string(),
+            version: "2.2.4".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/virsorter.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/virsorter".to_string(),
+            license: "MIT".to_string(),
+            summary: "virsorter".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["python".to_string(), "pip".to_string()],
+            run_dep_specs_raw: vec![
+                "python".to_string(),
+                "click >=7".to_string(),
+                "git".to_string(),
+                "conda-package-handling".to_string(),
+                "mamba".to_string(),
+                "snakemake-minimal >=5.18".to_string(),
+            ],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let reqs = build_python_requirements(&parsed);
+        assert!(reqs.contains(&"click>=7".to_string()));
+        assert!(reqs.contains(&"conda-package-handling".to_string()));
+        assert!(!reqs.iter().any(|r| r == "git"));
+        assert!(!reqs.iter().any(|r| r == "mamba"));
+        assert!(!reqs.iter().any(|r| r.starts_with("snakemake-minimal")));
+    }
+
+    #[test]
+    fn python_requirements_map_conda_split_packages_and_exclude_bio_modules() {
+        let parsed = ParsedMeta {
+            package_name: "vpt".to_string(),
+            version: "1.3.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/vpt.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/vpt".to_string(),
+            license: "MIT".to_string(),
+            summary: "vpt".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["python".to_string(), "pip".to_string()],
+            run_dep_specs_raw: vec![
+                "python".to_string(),
+                "dask-core >=2023.2.0".to_string(),
+                "diamond ==2.1.16".to_string(),
+                "entrez-direct >=16.2".to_string(),
+                "mmseqs2 >=15.6f452".to_string(),
+                "seqkit".to_string(),
+                "taxonkit".to_string(),
+            ],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let reqs = build_python_requirements(&parsed);
+        assert!(reqs.contains(&"dask>=2023.2.0".to_string()));
+        assert!(!reqs.iter().any(|r| r.starts_with("dask-core")));
+        assert!(!reqs.iter().any(|r| r.starts_with("diamond")));
+        assert!(!reqs.iter().any(|r| r.starts_with("entrez-direct")));
+        assert!(!reqs.iter().any(|r| r.starts_with("mmseqs2")));
+        assert!(!reqs.iter().any(|r| r == "seqkit"));
+        assert!(!reqs.iter().any(|r| r == "taxonkit"));
     }
 
     #[test]
