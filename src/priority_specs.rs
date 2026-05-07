@@ -15461,7 +15461,7 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
     fi\n\
     rm -f \"$build_sourcedir/$manual_file\" || true\n\
     echo \"Attempting manual prefetch fallback: $manual_url\"\n\
-    if [[ \"$manual_url\" =~ ^https?://data\\.broadinstitute\\.org/igv/ && -n \"$expected_source_sha256\" ]]; then\n\
+    if [[ \"$manual_url\" =~ ^https?://data\\.broadinstitute\\.org/ && -n \"$expected_source_sha256\" ]]; then\n\
       if command -v curl >/dev/null 2>&1; then\n\
         curl -k -L --fail --retry 5 --retry-all-errors --connect-timeout 20 --speed-time 120 --speed-limit 1024 --max-time 1800 --output \"$build_sourcedir/$manual_file\" \"$manual_url\" || true\n\
       elif command -v wget >/dev/null 2>&1; then\n\
@@ -18025,7 +18025,7 @@ source:
         const SOURCE: &str = include_str!("priority_specs.rs");
         assert!(SOURCE.contains("validate_source_checksum()"));
         assert!(SOURCE.contains("source sha256 mismatch"));
-        assert!(SOURCE.contains("data\\\\.broadinstitute\\\\.org/igv/"));
+        assert!(SOURCE.contains("data\\\\.broadinstitute\\\\.org/"));
         assert!(SOURCE.contains("curl -k -L --fail --retry 5"));
     }
 
