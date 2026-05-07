@@ -6295,6 +6295,8 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
         "python-annoy" => "annoy".to_string(),
         "python-graphviz" => "graphviz".to_string(),
         "python-kaleido" => "kaleido".to_string(),
+        "python-lmdb" => "lmdb".to_string(),
+        "python-wget" => "wget".to_string(),
         "matplotlib-base" => "matplotlib".to_string(),
         "seaborn-base" => "seaborn".to_string(),
         "pytorch" => "torch".to_string(),
@@ -6470,9 +6472,11 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
     if matches!(
         normalized,
         "bedtools"
+            | "bedops"
             | "samtools"
             | "bcftools"
             | "htslib"
+            | "tabix"
             | "tabixpp"
             | "bwa"
             | "blast"
@@ -6502,8 +6506,13 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "kallisto"
             | "bowtie"
             | "bowtie2"
+            | "intarna"
+            | "lamassemble"
+            | "meme"
             | "minimap2"
             | "mummer"
+            | "ucsc-bedgraphtobigwig"
+            | "ucsc-bigwigaverageoverbed"
             | "gcc"
             | "gcc-c++"
             | "gcc-gfortran"
@@ -6551,6 +6560,7 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "nb-conda-kernels"
             | "openssl"
             | "openssl-devel"
+            | "apptainer"
             | "scala"
             | "seqkit"
             | "snakemake-minimal"
@@ -6558,6 +6568,7 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "zlib-devel"
             | "bzip2-devel"
             | "taxonkit"
+            | "pytaxonkit"
             | "xz-devel"
             | "libffi-devel"
             | "sqlite-devel"
@@ -18306,6 +18317,14 @@ source:
             Some("annoy>=1.11.5".to_string())
         );
         assert_eq!(
+            conda_dep_to_pip_requirement("python-lmdb >=1.4"),
+            Some("lmdb>=1.4".to_string())
+        );
+        assert_eq!(
+            conda_dep_to_pip_requirement("python-wget >=3.2"),
+            Some("wget>=3.2".to_string())
+        );
+        assert_eq!(
             conda_dep_to_pip_requirement("matplotlib-base >=3.5.2"),
             Some("matplotlib>=3.5.2".to_string())
         );
@@ -18330,6 +18349,17 @@ source:
             Some("scanpy==1.9.3".to_string())
         );
         assert_eq!(conda_dep_to_pip_requirement("bedtools"), None);
+        assert_eq!(conda_dep_to_pip_requirement("bedops >=2.4.39"), None);
+        assert_eq!(conda_dep_to_pip_requirement("intarna"), None);
+        assert_eq!(conda_dep_to_pip_requirement("lamassemble"), None);
+        assert_eq!(conda_dep_to_pip_requirement("meme >=5.0"), None);
+        assert_eq!(conda_dep_to_pip_requirement("tabix"), None);
+        assert_eq!(conda_dep_to_pip_requirement("pytaxonkit"), None);
+        assert_eq!(conda_dep_to_pip_requirement("ucsc-bedgraphtobigwig"), None);
+        assert_eq!(
+            conda_dep_to_pip_requirement("ucsc-bigwigaverageoverbed"),
+            None
+        );
         assert_eq!(conda_dep_to_pip_requirement("bats"), None);
         assert_eq!(conda_dep_to_pip_requirement("openblas"), None);
         assert_eq!(conda_dep_to_pip_requirement("python >=3.8"), None);
