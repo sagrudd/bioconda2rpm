@@ -1703,7 +1703,6 @@ fn preflight_up_to_date_root(
     planning_context: &mut BuildPlanContext<'_>,
     build_config: &BuildConfig,
     bad_spec_dir: &Path,
-    build_started: Instant,
 ) -> Result<Option<ReportEntry>> {
     let Some(resolved_parsed) =
         planning_context.resolve_and_parse_recipe_with_constraints(root, &[], true)?
@@ -1736,13 +1735,6 @@ fn preflight_up_to_date_root(
     };
 
     clear_quarantine_note(bad_spec_dir, &software_slug);
-    log_progress(format!(
-        "phase=build-preflight status=up-to-date package={} version={} local_version={} elapsed={}",
-        resolved.recipe_name,
-        parsed.version,
-        existing_version,
-        format_elapsed(build_started.elapsed())
-    ));
     Ok(Some(ReportEntry {
         software: resolved.recipe_name.clone(),
         priority: 0,
@@ -1760,6 +1752,14 @@ fn preflight_up_to_date_root(
         meta_spec_path: String::new(),
         staged_build_sh: String::new(),
     }))
+}
+
+fn should_emit_preflight_checkpoint(done: usize) -> bool {
+    done <= 10 || done % 500 == 0
+}
+
+fn should_persist_preflight_report(up_to_date: usize) -> bool {
+    up_to_date <= 10 || up_to_date % 500 == 0
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1820,17 +1820,27 @@ fn run_build_batch_queue(
             "phase=build-preflight status=started roots={} mode=catalog-up-to-date",
             requested_packages.len()
         ));
-        for root in requested_packages {
-            match preflight_up_to_date_root(
-                root,
-                &mut planning_context,
-                build_config,
-                bad_spec_dir,
-                build_started,
-            ) {
+        for (idx, root) in requested_packages.iter().enumerate() {
+            let done = idx + 1;
+            match preflight_up_to_date_root(root, &mut planning_context, build_config, bad_spec_dir)
+            {
                 Ok(Some(entry)) => {
+                    let software = entry.software.clone();
+                    let version = entry.version.clone();
                     results.push(entry);
-                    if results.len() <= 10 || results.len() % 100 == 0 {
+                    if should_emit_preflight_checkpoint(done) {
+                        log_progress(format!(
+                            "phase=build-preflight status=running roots_done={done}/{} up_to_date={} active={} last_up_to_date={} version={} parsed_recipes={} elapsed={}",
+                            requested_packages.len(),
+                            results.len(),
+                            active_roots.len(),
+                            software,
+                            version,
+                            planning_context.cached_recipe_count(),
+                            format_elapsed(build_started.elapsed())
+                        ));
+                    }
+                    if should_persist_preflight_report(results.len()) {
                         if let Err(err) = write_report_json(&results, &report_json) {
                             log_progress(format!(
                                 "phase=report-update status=failed report_json={} reason={}",
@@ -1847,7 +1857,19 @@ fn run_build_batch_queue(
                         }
                     }
                 }
-                Ok(None) => active_roots.push(root.clone()),
+                Ok(None) => {
+                    active_roots.push(root.clone());
+                    if should_emit_preflight_checkpoint(done) {
+                        log_progress(format!(
+                            "phase=build-preflight status=running roots_done={done}/{} up_to_date={} active={} parsed_recipes={} elapsed={}",
+                            requested_packages.len(),
+                            results.len(),
+                            active_roots.len(),
+                            planning_context.cached_recipe_count(),
+                            format_elapsed(build_started.elapsed())
+                        ));
+                    }
+                }
                 Err(err) => {
                     log_progress(format!(
                         "phase=build-preflight status=deferred package={} reason={}",

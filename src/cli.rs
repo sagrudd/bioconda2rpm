@@ -824,8 +824,13 @@ impl BuildArgs {
 
     pub fn execution_summary(&self) -> String {
         format!(
-            "build requested_packages={requested_packages} stage={stage:?} with_deps={deps} force={force} refresh_files={refresh_files} policy={policy:?} recipe_root={recipes} recipe_repo_root={recipe_repo_root} recipe_sync={recipe_sync} recipe_ref={recipe_ref} topdir={topdir} target_id={target_id} target_root={target_root} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_profile={container_profile:?} container_image={container_image} container_engine={container_engine} parallel_policy={parallel_policy:?} build_jobs={build_jobs} effective_build_jobs={effective_build_jobs} queue_workers={queue_workers} effective_queue_workers={effective_queue_workers} ui={ui:?} effective_ui={effective_ui:?} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
+            "build requested_positional_packages={requested_packages} packages_file={packages_file} stage={stage:?} with_deps={deps} force={force} refresh_files={refresh_files} policy={policy:?} recipe_root={recipes} recipe_repo_root={recipe_repo_root} recipe_sync={recipe_sync} recipe_ref={recipe_ref} topdir={topdir} target_id={target_id} target_root={target_root} bad_spec_dir={bad_spec} reports_dir={reports} container_mode={container:?} container_profile={container_profile:?} container_image={container_image} container_engine={container_engine} parallel_policy={parallel_policy:?} build_jobs={build_jobs} effective_build_jobs={effective_build_jobs} queue_workers={queue_workers} effective_queue_workers={effective_queue_workers} ui={ui:?} effective_ui={effective_ui:?} arch={arch:?} target_arch={target_arch} deployment_profile={deployment_profile:?} naming={naming:?} render={render:?} metadata_adapter={metadata_adapter:?} effective_metadata_adapter={effective_metadata_adapter:?} kpi_gate={kpi_gate} kpi_min_success_rate={kpi_min_success_rate:.2} outputs={outputs:?} missing_dependency={missing:?} phoreus_local_repo_count={local_repo_count} phoreus_core_repo_count={core_repo_count}",
             requested_packages = self.packages.len(),
+            packages_file = self
+                .packages_file
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none".to_string()),
             stage = self.stage,
             deps = self.with_deps(),
             force = self.force,
