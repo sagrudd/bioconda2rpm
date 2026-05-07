@@ -6506,6 +6506,8 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "boost-cpp"
             | "conda"
             | "crisper-recognition-tool"
+            | "geos"
+            | "graphviz"
             | "perl"
             | "rust"
             | "cargo"
@@ -6518,8 +6520,10 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "mamba"
             | "maxbin2"
             | "mmseqs2"
+            | "nb-conda-kernels"
             | "openssl"
             | "openssl-devel"
+            | "scala"
             | "seqkit"
             | "snakemake-minimal"
             | "zlib"
@@ -7870,6 +7874,12 @@ fn command_mentions_compiler_env(commands: &[String]) -> bool {
             "meson ",
             "$cc",
             "$cxx",
+            "${cc}",
+            "${cxx}",
+            "$gcc",
+            "$gxx",
+            "${gcc}",
+            "${gxx}",
             " cc ",
             " cxx ",
         ],
@@ -8007,6 +8017,16 @@ fn package_requires_original_build_script(
     {
         return true;
     }
+    if parsed
+        .build_script
+        .as_deref()
+        .is_some_and(build_script_uses_stateful_bash_arrays)
+    {
+        return true;
+    }
+    if interpreted_plan_has_shell_continuation_fragments(interpreted_build_plan) {
+        return true;
+    }
     match software_slug {
         // HEURISTIC-TEMP(issue=bioconda2rpm#blast-minimal-build-script-scope):
         // BLAST's Bioconda build.sh is stateful; splitting it loses configure state.
@@ -8029,6 +8049,30 @@ fn package_requires_original_build_script(
         "binspreader" => true,
         _ => false,
     }
+}
+
+fn build_script_uses_stateful_bash_arrays(script: &str) -> bool {
+    let lower = script.to_ascii_lowercase();
+    lower.contains("for ") && script.contains("=(") && script.contains("[@]")
+}
+
+fn interpreted_plan_has_shell_continuation_fragments(plan: &InterpretedBuildPlan) -> bool {
+    plan.build_commands
+        .iter()
+        .chain(plan.install_commands.iter())
+        .any(|command| {
+            let trimmed = command.trim_start();
+            trimmed.starts_with("-D")
+                || trimmed.starts_with("-I")
+                || trimmed.starts_with("-L")
+                || trimmed.starts_with("-o ")
+                || trimmed.starts_with("-O")
+                || command.contains("\n-D")
+                || command.contains("\n-I")
+                || command.contains("\n-L")
+                || command.contains("\n-o ")
+                || command.contains("\n-O")
+        })
 }
 
 fn package_requires_blast_compat(software_slug: &str) -> bool {
@@ -8065,6 +8109,7 @@ fn compute_minimal_build_scope(
             "cxx-compiler",
             "fortran-compiler",
             "gcc",
+            "gcc-c++",
             "gxx",
             "gfortran",
         ],
@@ -8147,8 +8192,9 @@ fn compute_minimal_build_scope(
         conda_pkg_vars_required: command_mentions_conda_pkg_vars(&all_commands),
         arch_env_required,
         parallel_env_required,
-        symlink_normalization_required: !recipe_build_sh_required
-            && command_mentions_symlink_install(&interpreted_build_plan.install_commands),
+        symlink_normalization_required: buildroot_text_scrub_required
+            || (!recipe_build_sh_required
+                && command_mentions_symlink_install(&interpreted_build_plan.install_commands)),
         buildroot_text_scrub_required,
         sparsehash_configure_fallback_required,
         recipe_build_sh_required,
@@ -19173,7 +19219,11 @@ requirements:
                 "dask-core >=2023.2.0".to_string(),
                 "diamond ==2.1.16".to_string(),
                 "entrez-direct >=16.2".to_string(),
+                "geos >=3.10.2".to_string(),
+                "graphviz >=2.40".to_string(),
                 "mmseqs2 >=15.6f452".to_string(),
+                "nb-conda-kernels >=2.4.0".to_string(),
+                "scala".to_string(),
                 "seqkit".to_string(),
                 "taxonkit".to_string(),
             ],
@@ -19187,7 +19237,11 @@ requirements:
         assert!(!reqs.iter().any(|r| r.starts_with("dask-core")));
         assert!(!reqs.iter().any(|r| r.starts_with("diamond")));
         assert!(!reqs.iter().any(|r| r.starts_with("entrez-direct")));
+        assert!(!reqs.iter().any(|r| r.starts_with("geos")));
+        assert!(!reqs.iter().any(|r| r.starts_with("graphviz")));
         assert!(!reqs.iter().any(|r| r.starts_with("mmseqs2")));
+        assert!(!reqs.iter().any(|r| r.starts_with("nb-conda-kernels")));
+        assert!(!reqs.iter().any(|r| r == "scala"));
         assert!(!reqs.iter().any(|r| r == "seqkit"));
         assert!(!reqs.iter().any(|r| r == "taxonkit"));
     }
@@ -24355,6 +24409,64 @@ install -v -m 755 build/trf "${PREFIX}/bin"
         assert!(spec.contains("export LDFLAGS=\"${LDFLAGS:-}\""));
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(!spec.contains("${CC} ${CFLAGS} -O3 || true"));
+    }
+
+    #[test]
+    fn minimal_payload_spec_keeps_stateful_bash_array_scripts_intact() {
+        let build_script = r#"#!/bin/bash
+mkdir build
+cd build
+for ARCH in SSE2 AVX2_256; do
+  cmake_args=(
+    -DCMAKE_INSTALL_PREFIX="${PREFIX}"
+    -DGMX_SIMD="${ARCH}"
+  )
+  cmake .. "${cmake_args[@]}"
+  make install
+done
+${CXX} -O3 -o "${PREFIX}/bin/helper" "${SRC_DIR}/helper.cpp"
+"#;
+        let parsed = ParsedMeta {
+            package_name: "gromacs_mpi".to_string(),
+            version: "2021.1".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/gromacs.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/gromacs".to_string(),
+            license: "LGPL-2.1-or-later".to_string(),
+            summary: "gromacs mpi".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(build_script.to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["make".to_string(), "gcc-c++".to_string()],
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::from(["make".to_string(), "gcc-c++".to_string()]),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let plan = interpret_build_script_minimal(build_script);
+        let spec = render_payload_spec_minimal(
+            "gromacs-mpi",
+            &parsed,
+            &plan,
+            Some("bioconda-gromacs-mpi-build.sh"),
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(build_script_uses_stateful_bash_arrays(build_script));
+        assert!(spec.contains("recipe-build-sh"));
+        assert!(spec.contains("compiler-env"));
+        assert!(spec.contains("Source1:        bioconda-gromacs-mpi-build.sh"));
+        assert!(spec.contains("export CXX=\"${CXX:-g++}\""));
+        assert!(spec.contains("bash -eo pipefail ./build.sh"));
+        assert!(!spec.contains("${CXX} -O3 -o \"${PREFIX}/bin/helper\""));
     }
 
     #[test]
