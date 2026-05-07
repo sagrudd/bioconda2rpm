@@ -3535,7 +3535,7 @@ fn parse_meta_for_resolved_native(
 ) -> Result<ParsedRecipeResult> {
     let meta_text = fs::read_to_string(&resolved.meta_path)
         .with_context(|| format!("failed to read metadata {}", resolved.meta_path.display()))?;
-    let selector_ctx = if meta_text_requests_python2(&meta_text) {
+    let selector_ctx = if meta_text_requests_python2(&meta_text, target_arch) {
         SelectorContext::for_rpm_build_with_python(target_arch, 2, 7)
     } else {
         SelectorContext::for_rpm_build(target_arch)
@@ -3576,7 +3576,7 @@ fn parse_meta_for_resolved_conda(
     target_arch: &str,
 ) -> Result<ParsedRecipeResult> {
     let meta_text = fs::read_to_string(&resolved.meta_path).unwrap_or_default();
-    let conda_py = if meta_text_requests_python2(&meta_text) {
+    let conda_py = if meta_text_requests_python2(&meta_text, target_arch) {
         "27"
     } else {
         "311"
@@ -5260,8 +5260,8 @@ impl SelectorContext {
     }
 }
 
-fn meta_text_requests_python2(meta_text: &str) -> bool {
-    meta_text.lines().any(|line| {
+fn meta_text_requests_python2(meta_text: &str, target_arch: &str) -> bool {
+    let dependency_requests_python27 = meta_text.lines().any(|line| {
         let dependency = line
             .split('#')
             .next()
@@ -5271,6 +5271,18 @@ fn meta_text_requests_python2(meta_text: &str) -> bool {
             .unwrap_or_else(|| line.split('#').next().unwrap_or_default().trim())
             .trim();
         dep_spec_requests_python27(dependency)
+    });
+    if dependency_requests_python27 {
+        return true;
+    }
+
+    let py2_ctx = SelectorContext::for_rpm_build_with_python(target_arch, 2, 7);
+    let py3_ctx = SelectorContext::for_rpm_build(target_arch);
+    recipe_build_skip_lines(meta_text).iter().any(|line| {
+        let Some((_, selector)) = split_selector(line) else {
+            return false;
+        };
+        evaluate_selector(selector, &py3_ctx) && !evaluate_selector(selector, &py2_ctx)
     })
 }
 
@@ -7159,7 +7171,7 @@ fn source_file_expectation_for_resolved(
 ) -> Result<SourceFileExpectation> {
     let meta_text = fs::read_to_string(&resolved.meta_path)
         .with_context(|| format!("failed to read metadata {}", resolved.meta_path.display()))?;
-    let selector_ctx = if meta_text_requests_python2(&meta_text) {
+    let selector_ctx = if meta_text_requests_python2(&meta_text, target_arch) {
         SelectorContext::for_rpm_build_with_python(target_arch, 2, 7)
     } else {
         SelectorContext::for_rpm_build(target_arch)
@@ -17903,7 +17915,18 @@ build:
         let py2_ctx = SelectorContext::for_rpm_build_with_python("x86_64", 2, 7);
         let py3_ctx = SelectorContext::for_rpm_build_with_python("x86_64", 3, 11);
 
-        assert!(meta_text_requests_python2(meta));
+        assert!(meta_text_requests_python2(meta, "x86_64"));
+        assert!(!apply_selectors(meta, &py2_ctx).contains("skip: True"));
+        assert!(apply_selectors(meta, &py3_ctx).contains("skip: True"));
+    }
+
+    #[test]
+    fn python2_selector_context_handles_py27_only_skip_rules() {
+        let meta = "build:\n  skip: True  # [not py27]\nrequirements:\n  run:\n    - python\n";
+        let py2_ctx = SelectorContext::for_rpm_build_with_python("x86_64", 2, 7);
+        let py3_ctx = SelectorContext::for_rpm_build_with_python("x86_64", 3, 11);
+
+        assert!(meta_text_requests_python2(meta, "x86_64"));
         assert!(!apply_selectors(meta, &py2_ctx).contains("skip: True"));
         assert!(apply_selectors(meta, &py3_ctx).contains("skip: True"));
     }

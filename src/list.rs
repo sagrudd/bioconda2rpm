@@ -1173,6 +1173,26 @@ fn write_blacklist_rows(path: &Path, rows: &[BlacklistCsvRow]) -> Result<()> {
     Ok(())
 }
 
+fn remove_blacklist_row_from_path(path: &Path, package: &str) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let key = normalize_blacklist_package(package);
+    let mut rows = read_blacklist_rows(path)?;
+    let before = rows.len();
+    rows.retain(|row| normalize_blacklist_package(&row.package) != key);
+    let removed = before != rows.len();
+    if removed {
+        write_blacklist_rows(path, &rows)?;
+    }
+    Ok(removed)
+}
+
+fn remove_default_blacklist_row(package: &str) -> Result<bool> {
+    let path = default_blacklist_path()?;
+    remove_blacklist_row_from_path(&path, package)
+}
+
 fn blacklisted_packages_from_default_path() -> BTreeSet<String> {
     let Ok(path) = default_blacklist_path() else {
         return BTreeSet::new();
@@ -1388,6 +1408,12 @@ pub fn record_build_results(
         }
         if is_success_status(&entry.status) {
             failures.remove(&key);
+            if let Ok(true) = remove_default_blacklist_row(&entry.software) {
+                eprintln!(
+                    "blacklist removed: package={} reason=successful-build",
+                    entry.software
+                );
+            }
             continue;
         }
         if is_direct_build_failure(&entry.status, &entry.reason) {
@@ -2299,6 +2325,44 @@ mod tests {
         assert!(loaded.failures.is_empty());
         assert_eq!(loaded.entries.len(), 1);
         assert_eq!(loaded.entries[0].software, "tbl2asn-forever");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn blacklist_row_removal_updates_csv() {
+        let tmp = std::env::temp_dir().join(format!(
+            "bioconda2rpm-blacklist-remove-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("blacklist.txt");
+        write_blacklist_rows(
+            &path,
+            &[
+                BlacklistCsvRow {
+                    package: "python-consensuscore2".to_string(),
+                    problem_url: "recipe://bioconda-recipes/recipes/python-consensuscore2/meta.yaml"
+                        .to_string(),
+                    justification: "py27-only skip".to_string(),
+                },
+                BlacklistCsvRow {
+                    package: "bam2fasta".to_string(),
+                    problem_url: "https://example.invalid/bam2fasta.tar.gz".to_string(),
+                    justification: "withdrawn".to_string(),
+                },
+            ],
+        )
+        .expect("write blacklist");
+
+        assert!(
+            remove_blacklist_row_from_path(&path, "python_consensuscore2")
+                .expect("remove row")
+        );
+        let rows = read_blacklist_rows(&path).expect("read blacklist");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].package, "bam2fasta");
 
         let _ = fs::remove_dir_all(&tmp);
     }
