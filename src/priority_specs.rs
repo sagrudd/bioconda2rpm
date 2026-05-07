@@ -111,6 +111,7 @@ struct BuildConfig {
     target_id: String,
     target_root: PathBuf,
     reports_dir: PathBuf,
+    stage: BuildStage,
     container_engine: String,
     container_image: String,
     target_arch: String,
@@ -989,6 +990,7 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
         target_id,
         target_root: target_root.clone(),
         reports_dir: reports_dir.clone(),
+        stage: BuildStage::Rpm,
         container_engine: args.container_engine.clone(),
         container_image: args.effective_container_image().to_string(),
         target_arch: target_arch.clone(),
@@ -998,11 +1000,6 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
         refresh_files: false,
         source_srpm_path: None,
     };
-    ensure_phoreus_python_bootstrap(&build_config, &specs_dir, PHOREUS_PYTHON_RUNTIME_311)
-        .context("bootstrapping Phoreus Python runtime")?;
-    ensure_phoreus_perl_bootstrap(&build_config, &specs_dir)
-        .context("bootstrapping Phoreus Perl runtime")?;
-
     let indexed_tools: Vec<(usize, PriorityTool)> = tools.into_iter().enumerate().collect();
     let worker_count = args.workers.filter(|w| *w > 0);
 
@@ -1156,12 +1153,14 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
     fs::create_dir_all(&bad_spec_dir)
         .with_context(|| format!("creating bad spec dir {}", bad_spec_dir.display()))?;
 
-    ensure_container_engine_available(&args.container_engine)?;
-    ensure_container_profile_available(
-        &args.container_engine,
-        args.container_profile,
-        &target_arch,
-    )?;
+    if args.stage != BuildStage::Spec {
+        ensure_container_engine_available(&args.container_engine)?;
+        ensure_container_profile_available(
+            &args.container_engine,
+            args.container_profile,
+            &target_arch,
+        )?;
+    }
     sync_reference_python_specs(&specs_dir).context("syncing reference Phoreus Python specs")?;
     let recipe_dirs = discover_recipe_dirs(&recipe_root)?;
     log_progress(format!(
@@ -1175,6 +1174,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         target_id: target_id.clone(),
         target_root: target_root.clone(),
         reports_dir: reports_dir.clone(),
+        stage: args.stage.clone(),
         container_engine: args.container_engine.clone(),
         container_image: args.effective_container_image().to_string(),
         target_arch: target_arch.clone(),
@@ -1184,11 +1184,6 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         refresh_files: args.refresh_files,
         source_srpm_path: None,
     };
-    ensure_phoreus_python_bootstrap(&build_config, &specs_dir, PHOREUS_PYTHON_RUNTIME_311)
-        .context("bootstrapping Phoreus Python runtime")?;
-    ensure_phoreus_perl_bootstrap(&build_config, &specs_dir)
-        .context("bootstrapping Phoreus Perl runtime")?;
-
     if requested_packages.len() > 1 {
         return run_build_batch_queue(
             args,
@@ -4042,85 +4037,110 @@ fn process_tool(
     let r_script_hint = script_text_indicates_r(&build_script);
     let rust_script_hint = script_text_indicates_rust(&build_script);
     let python_recipe = is_python_recipe(&parsed) || python_script_hint;
+    let perl_recipe = normalize_name(&parsed.package_name).starts_with("perl-");
     let python_runtime = select_phoreus_python_runtime(&parsed, python_recipe);
-    if python_recipe || recipe_requires_python_runtime(&parsed) {
-        if let Err(err) = ensure_phoreus_python_bootstrap(build_config, specs_dir, python_runtime) {
-            let reason = format!("bootstrapping Phoreus Python runtime failed: {err}");
-            quarantine_note(bad_spec_dir, &software_slug, &reason);
-            return ReportEntry {
-                software: tool.software.clone(),
-                priority: tool.priority,
-                status: "quarantined".to_string(),
-                reason,
-                overlap_recipe: resolved.recipe_name,
-                overlap_reason: resolved.overlap_reason,
-                variant_dir: resolved.variant_dir.display().to_string(),
-                package_name: parsed.package_name,
-                version: parsed.version,
-                payload_spec_path: String::new(),
-                meta_spec_path: String::new(),
-                staged_build_sh: staged_build_sh.display().to_string(),
-            };
+    if build_config.stage != BuildStage::Spec {
+        if python_recipe || recipe_requires_python_runtime(&parsed) {
+            if let Err(err) =
+                ensure_phoreus_python_bootstrap(build_config, specs_dir, python_runtime)
+            {
+                let reason = format!("bootstrapping Phoreus Python runtime failed: {err}");
+                quarantine_note(bad_spec_dir, &software_slug, &reason);
+                return ReportEntry {
+                    software: tool.software.clone(),
+                    priority: tool.priority,
+                    status: "quarantined".to_string(),
+                    reason,
+                    overlap_recipe: resolved.recipe_name,
+                    overlap_reason: resolved.overlap_reason,
+                    variant_dir: resolved.variant_dir.display().to_string(),
+                    package_name: parsed.package_name,
+                    version: parsed.version,
+                    payload_spec_path: String::new(),
+                    meta_spec_path: String::new(),
+                    staged_build_sh: staged_build_sh.display().to_string(),
+                };
+            }
         }
-    }
-    if recipe_requires_r_runtime(&parsed) || is_r_project_recipe(&parsed) || r_script_hint {
-        if let Err(err) = ensure_phoreus_r_bootstrap(build_config, specs_dir) {
-            let reason = format!("bootstrapping Phoreus R runtime failed: {err}");
-            quarantine_note(bad_spec_dir, &software_slug, &reason);
-            return ReportEntry {
-                software: tool.software.clone(),
-                priority: tool.priority,
-                status: "quarantined".to_string(),
-                reason,
-                overlap_recipe: resolved.recipe_name,
-                overlap_reason: resolved.overlap_reason,
-                variant_dir: resolved.variant_dir.display().to_string(),
-                package_name: parsed.package_name,
-                version: parsed.version,
-                payload_spec_path: String::new(),
-                meta_spec_path: String::new(),
-                staged_build_sh: staged_build_sh.display().to_string(),
-            };
+        if perl_recipe {
+            if let Err(err) = ensure_phoreus_perl_bootstrap(build_config, specs_dir) {
+                let reason = format!("bootstrapping Phoreus Perl runtime failed: {err}");
+                quarantine_note(bad_spec_dir, &software_slug, &reason);
+                return ReportEntry {
+                    software: tool.software.clone(),
+                    priority: tool.priority,
+                    status: "quarantined".to_string(),
+                    reason,
+                    overlap_recipe: resolved.recipe_name,
+                    overlap_reason: resolved.overlap_reason,
+                    variant_dir: resolved.variant_dir.display().to_string(),
+                    package_name: parsed.package_name,
+                    version: parsed.version,
+                    payload_spec_path: String::new(),
+                    meta_spec_path: String::new(),
+                    staged_build_sh: staged_build_sh.display().to_string(),
+                };
+            }
         }
-    }
-    if recipe_requires_rust_runtime(&parsed) || rust_script_hint {
-        if let Err(err) = ensure_phoreus_rust_bootstrap(build_config, specs_dir) {
-            let reason = format!("bootstrapping Phoreus Rust runtime failed: {err}");
-            quarantine_note(bad_spec_dir, &software_slug, &reason);
-            return ReportEntry {
-                software: tool.software.clone(),
-                priority: tool.priority,
-                status: "quarantined".to_string(),
-                reason,
-                overlap_recipe: resolved.recipe_name,
-                overlap_reason: resolved.overlap_reason,
-                variant_dir: resolved.variant_dir.display().to_string(),
-                package_name: parsed.package_name,
-                version: parsed.version,
-                payload_spec_path: String::new(),
-                meta_spec_path: String::new(),
-                staged_build_sh: staged_build_sh.display().to_string(),
-            };
+        if recipe_requires_r_runtime(&parsed) || is_r_project_recipe(&parsed) || r_script_hint {
+            if let Err(err) = ensure_phoreus_r_bootstrap(build_config, specs_dir) {
+                let reason = format!("bootstrapping Phoreus R runtime failed: {err}");
+                quarantine_note(bad_spec_dir, &software_slug, &reason);
+                return ReportEntry {
+                    software: tool.software.clone(),
+                    priority: tool.priority,
+                    status: "quarantined".to_string(),
+                    reason,
+                    overlap_recipe: resolved.recipe_name,
+                    overlap_reason: resolved.overlap_reason,
+                    variant_dir: resolved.variant_dir.display().to_string(),
+                    package_name: parsed.package_name,
+                    version: parsed.version,
+                    payload_spec_path: String::new(),
+                    meta_spec_path: String::new(),
+                    staged_build_sh: staged_build_sh.display().to_string(),
+                };
+            }
         }
-    }
-    if recipe_requires_nim_runtime(&parsed) {
-        if let Err(err) = ensure_phoreus_nim_bootstrap(build_config, specs_dir) {
-            let reason = format!("bootstrapping Phoreus Nim runtime failed: {err}");
-            quarantine_note(bad_spec_dir, &software_slug, &reason);
-            return ReportEntry {
-                software: tool.software.clone(),
-                priority: tool.priority,
-                status: "quarantined".to_string(),
-                reason,
-                overlap_recipe: resolved.recipe_name,
-                overlap_reason: resolved.overlap_reason,
-                variant_dir: resolved.variant_dir.display().to_string(),
-                package_name: parsed.package_name,
-                version: parsed.version,
-                payload_spec_path: String::new(),
-                meta_spec_path: String::new(),
-                staged_build_sh: staged_build_sh.display().to_string(),
-            };
+        if recipe_requires_rust_runtime(&parsed) || rust_script_hint {
+            if let Err(err) = ensure_phoreus_rust_bootstrap(build_config, specs_dir) {
+                let reason = format!("bootstrapping Phoreus Rust runtime failed: {err}");
+                quarantine_note(bad_spec_dir, &software_slug, &reason);
+                return ReportEntry {
+                    software: tool.software.clone(),
+                    priority: tool.priority,
+                    status: "quarantined".to_string(),
+                    reason,
+                    overlap_recipe: resolved.recipe_name,
+                    overlap_reason: resolved.overlap_reason,
+                    variant_dir: resolved.variant_dir.display().to_string(),
+                    package_name: parsed.package_name,
+                    version: parsed.version,
+                    payload_spec_path: String::new(),
+                    meta_spec_path: String::new(),
+                    staged_build_sh: staged_build_sh.display().to_string(),
+                };
+            }
+        }
+        if recipe_requires_nim_runtime(&parsed) {
+            if let Err(err) = ensure_phoreus_nim_bootstrap(build_config, specs_dir) {
+                let reason = format!("bootstrapping Phoreus Nim runtime failed: {err}");
+                quarantine_note(bad_spec_dir, &software_slug, &reason);
+                return ReportEntry {
+                    software: tool.software.clone(),
+                    priority: tool.priority,
+                    status: "quarantined".to_string(),
+                    reason,
+                    overlap_recipe: resolved.recipe_name,
+                    overlap_reason: resolved.overlap_reason,
+                    variant_dir: resolved.variant_dir.display().to_string(),
+                    package_name: parsed.package_name,
+                    version: parsed.version,
+                    payload_spec_path: String::new(),
+                    meta_spec_path: String::new(),
+                    staged_build_sh: staged_build_sh.display().to_string(),
+                };
+            }
         }
     }
     let interpreted_build_plan = interpret_build_script_minimal(&build_script);
@@ -4371,6 +4391,31 @@ fn process_tool(
                 staged_build_sh: staged_build_sh.display().to_string(),
             };
         }
+    }
+
+    if build_config.stage == BuildStage::Spec {
+        clear_quarantine_note(bad_spec_dir, &software_slug);
+        log_progress(format!(
+            "phase=package status=spec-generated package={} version={} payload_spec={} meta_spec={}",
+            tool.software,
+            parsed.version,
+            payload_spec_path.display(),
+            meta_spec_path.display()
+        ));
+        return ReportEntry {
+            software: tool.software.clone(),
+            priority: tool.priority,
+            status: "generated".to_string(),
+            reason: "spec generated from bioconda metadata without container build".to_string(),
+            overlap_recipe: resolved.recipe_name,
+            overlap_reason: resolved.overlap_reason,
+            variant_dir: resolved.variant_dir.display().to_string(),
+            package_name: parsed.package_name,
+            version: parsed.version,
+            payload_spec_path: payload_spec_path.display().to_string(),
+            meta_spec_path: meta_spec_path.display().to_string(),
+            staged_build_sh: staged_build_sh.display().to_string(),
+        };
     }
 
     let mut package_build_config = build_config.clone();
@@ -6955,14 +7000,16 @@ fn interpret_build_script_minimal(script: &str) -> InterpretedBuildPlan {
             install_commands.push(line);
             continue;
         }
-        if line_is_install_command(&line)
-            || line_mentions_prefix_install_alias(&line, &prefix_install_vars)
-        {
+        if line_is_install_command(&line) {
             install_commands.push(line);
             continue;
         }
         if line_is_build_command(&line) {
             build_commands.push(line);
+            continue;
+        }
+        if line_mentions_prefix_install_alias(&line, &prefix_install_vars) {
+            install_commands.push(line);
             continue;
         }
         if line_is_setup_command(&line) {
@@ -7196,12 +7243,30 @@ fn line_is_install_command(line: &str) -> bool {
         || line_targets_prefix_install(line)
 }
 
+fn line_is_cmake_configure_command(line: &str) -> bool {
+    let Some(words) = split_shell_words_for_rewrite(line.trim()) else {
+        let lower = line.to_ascii_lowercase();
+        return lower.starts_with("cmake ") && !lower.starts_with("cmake --");
+    };
+    if words.first().map(String::as_str) != Some("cmake") {
+        return false;
+    }
+    let Some(second) = words.get(1).map(String::as_str) else {
+        return false;
+    };
+    if second.starts_with("--") {
+        return false;
+    }
+    true
+}
+
 fn line_is_build_command(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     lower.starts_with("./configure")
         || lower.starts_with("./autogen.sh")
         || lower.starts_with("autoreconf ")
         || lower.starts_with("configure ")
+        || line_is_cmake_configure_command(line)
         || (lower.starts_with("cmake ") && !lower.starts_with("cmake --install"))
         || (lower.starts_with("make ") && !lower.starts_with("make install"))
         || lower == "make"
@@ -12528,6 +12593,7 @@ fn map_build_dependency(dep: &str) -> String {
     }
     match dep {
         "autoconf" => "autoconf271".to_string(),
+        "armadillo" => "armadillo-devel".to_string(),
         "argtable2" => "argtable-devel".to_string(),
         "boost-cpp" => "boost-devel".to_string(),
         "bzip2" => "bzip2-devel".to_string(),
@@ -12542,6 +12608,7 @@ fn map_build_dependency(dep: &str) -> String {
         "curl" => "libcurl-devel openssl-devel xz-devel bzip2-devel".to_string(),
         "libcurl-devel" => "libcurl-devel openssl-devel".to_string(),
         "eigen" => "eigen3-devel".to_string(),
+        "fmt" => "fmt-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
         "gmp" => "gmp-devel".to_string(),
@@ -12563,13 +12630,14 @@ fn map_build_dependency(dep: &str) -> String {
         "libxslt" => "libxslt-devel".to_string(),
         "libblas" => "openblas-devel".to_string(),
         "libcblas" => "openblas-devel".to_string(),
+        "mkl" | "mkl-devel" => "openblas-devel lapack-devel".to_string(),
         "openblas" | "libopenblas" => "openblas-devel".to_string(),
         // Keep libdeflate as a Bioconda/Phoreus dependency for prefix hydration.
         "libdeflate" => "libdeflate".to_string(),
         "libdeflate-devel" => "libdeflate".to_string(),
         "liblzma" => "xz-devel".to_string(),
         "liblzma-devel" => "xz-devel".to_string(),
-        "liblapack" => "lapack-devel".to_string(),
+        "lapack" | "liblapack" => "lapack-devel".to_string(),
         "lp-solve" | "lpsolve" => "lpsolve".to_string(),
         "libboost" | "libboost-devel" => "boost-devel".to_string(),
         "libhwy" => "highway-devel".to_string(),
@@ -12689,6 +12757,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "jsoncpp" => "jsoncpp".to_string(),
         "libblas" => "openblas".to_string(),
         "libcblas" => "openblas".to_string(),
+        "mkl" | "mkl-devel" => "openblas lapack".to_string(),
         "openblas" | "libopenblas" => "openblas".to_string(),
         "libhwy" => "highway".to_string(),
         "libiconv" => "glibc".to_string(),
@@ -15764,6 +15833,10 @@ mod tests {
         assert_eq!(map_build_dependency("boost-cpp"), "boost-devel".to_string());
         assert_eq!(map_build_dependency("autoconf"), "autoconf271".to_string());
         assert_eq!(
+            map_build_dependency("armadillo"),
+            "armadillo-devel".to_string()
+        );
+        assert_eq!(
             map_build_dependency("argtable2"),
             "argtable-devel".to_string()
         );
@@ -15846,6 +15919,7 @@ mod tests {
             "libcurl-devel openssl-devel xz-devel bzip2-devel".to_string()
         );
         assert_eq!(map_build_dependency("libpng"), "libpng-devel".to_string());
+        assert_eq!(map_build_dependency("fmt"), "fmt-devel".to_string());
         assert_eq!(map_build_dependency("liblzo2"), "lzo-devel".to_string());
         assert_eq!(map_build_dependency("liblzo2-dev"), "lzo-devel".to_string());
         assert_eq!(map_runtime_dependency("liblzo2"), "lzo".to_string());
@@ -15872,9 +15946,14 @@ mod tests {
             "openblas-devel".to_string()
         );
         assert_eq!(
+            map_build_dependency("mkl"),
+            "openblas-devel lapack-devel".to_string()
+        );
+        assert_eq!(
             map_build_dependency("liblapack"),
             "lapack-devel".to_string()
         );
+        assert_eq!(map_build_dependency("lapack"), "lapack-devel".to_string());
         assert_eq!(
             map_build_dependency("liblzma-devel"),
             "xz-devel".to_string()
@@ -15933,6 +16012,7 @@ mod tests {
             map_runtime_dependency("libopenblas"),
             "openblas".to_string()
         );
+        assert_eq!(map_runtime_dependency("mkl"), "openblas lapack".to_string());
         assert_eq!(
             map_runtime_dependency("zlib-ng"),
             "zlib-ng-compat".to_string()
@@ -21886,6 +21966,49 @@ cmake --build build --clean-first --target install -j "${CPU_COUNT}"
                 .build_commands
                 .iter()
                 .any(|c| c.starts_with("cmake --build build --clean-first --target install"))
+        );
+    }
+
+    #[test]
+    fn minimal_build_interpreter_keeps_treeswirl_cmake_before_ninja() {
+        let script = r#"
+export INCLUDES="-I${PREFIX}/include"
+export LIBPATH="-L${PREFIX}/lib"
+export LDFLAGS="${LDFLAGS} -L${PREFIX}/lib"
+export CXXFLAGS="${CXXFLAGS} -O3 -I${PREFIX}/include"
+cmake . -GNinja \
+    -DCONDA=ON \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
+    -DCMAKE_CXX_COMPILER="${CXX}" \
+    -DCMAKE_CXX_FLAGS="${CXXFLAGS}" \
+    "${CONFIG_ARGS}"
+ninja -v -j"${CPU_COUNT}" || exit 1
+mkdir -p ${PREFIX}/bin
+install -v -m 0755 TreeSwirl ${PREFIX}/bin || exit 1
+"#;
+        let plan = interpret_build_script_minimal(script);
+        let cmake_index = plan
+            .build_commands
+            .iter()
+            .position(|line| line.contains("cmake . -GNinja"))
+            .expect("treeswirl cmake configure in build phase");
+        let ninja_index = plan
+            .build_commands
+            .iter()
+            .position(|line| line.contains("ninja -v"))
+            .expect("treeswirl ninja in build phase");
+        assert!(cmake_index < ninja_index);
+        assert!(
+            !plan
+                .install_commands
+                .iter()
+                .any(|line| line.contains("cmake . -GNinja"))
+        );
+        assert!(
+            plan.install_commands
+                .iter()
+                .any(|line| line.starts_with("install -v -m 0755 TreeSwirl"))
         );
     }
 
