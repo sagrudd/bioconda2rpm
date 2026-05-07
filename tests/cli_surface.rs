@@ -169,6 +169,153 @@ fn todo_json_emits_manual_source_file_task() {
 }
 
 #[test]
+fn todo_json_skips_in_flight_and_srpm_prepared_source_tasks() {
+    let topdir = tempdir().expect("tempdir");
+    let topdir_arg = topdir.path().to_string_lossy().to_string();
+    let report_path = topdir
+        .path()
+        .join("targets/test-target/reports/build_sources.json");
+    let specs_dir = topdir.path().join("SPECS");
+    let srpm_path = topdir
+        .path()
+        .join("targets/test-target/SRPMS/phoreus-mango-0.0.5-0.0.5-1.el9.src.rpm");
+    std::fs::create_dir_all(report_path.parent().expect("report parent")).expect("reports dir");
+    std::fs::create_dir_all(&specs_dir).expect("spec dir");
+    std::fs::create_dir_all(srpm_path.parent().expect("srpm parent")).expect("srpm dir");
+    std::fs::write(&srpm_path, b"placeholder srpm").expect("write srpm");
+
+    for package in ["mango", "cap3", "next-target"] {
+        std::fs::write(
+            specs_dir.join(format!("phoreus-{package}.spec")),
+            format!(
+                "Name: phoreus-{package}\nSource0:        https://example.invalid/downloads/{package}.tar.gz\n"
+            ),
+        )
+        .expect("write spec");
+    }
+    let report = serde_json::json!([
+        {
+            "software": "mango",
+            "priority": 0,
+            "status": "quarantined",
+            "reason": "source download failed after retries",
+            "overlap_recipe": "mango",
+            "overlap_reason": "exact",
+            "variant_dir": "/recipes/mango",
+            "package_name": "mango",
+            "version": "0.0.5",
+            "payload_spec_path": specs_dir.join("phoreus-mango.spec").display().to_string(),
+            "meta_spec_path": "",
+            "staged_build_sh": ""
+        },
+        {
+            "software": "cap3",
+            "priority": 0,
+            "status": "quarantined",
+            "reason": "source download failed after retries",
+            "overlap_recipe": "cap3",
+            "overlap_reason": "exact",
+            "variant_dir": "/recipes/cap3",
+            "package_name": "cap3",
+            "version": "10.2011",
+            "payload_spec_path": specs_dir.join("phoreus-cap3.spec").display().to_string(),
+            "meta_spec_path": "",
+            "staged_build_sh": ""
+        },
+        {
+            "software": "next-target",
+            "priority": 0,
+            "status": "quarantined",
+            "reason": "source download failed after retries",
+            "overlap_recipe": "next-target",
+            "overlap_reason": "exact",
+            "variant_dir": "/recipes/next-target",
+            "package_name": "next-target",
+            "version": "1.0",
+            "payload_spec_path": specs_dir.join("phoreus-next-target.spec").display().to_string(),
+            "meta_spec_path": "",
+            "staged_build_sh": ""
+        }
+    ]);
+    std::fs::write(
+        &report_path,
+        serde_json::to_string(&report).expect("report json"),
+    )
+    .expect("write report");
+    let catalog = serde_json::json!({
+        "schema_version": 2,
+        "packages": [
+            {
+                "software": "mango",
+                "versions": [
+                    {
+                        "version": "0.0.5",
+                        "authoritative_srpm": {
+                            "path": srpm_path.display().to_string(),
+                            "recorded_at": "2026-05-07T10:00:00Z",
+                            "build_host": "test-host",
+                            "build_user": "test-user"
+                        },
+                        "builds": []
+                    }
+                ]
+            }
+        ],
+        "entries": [],
+        "failures": [
+            {
+                "software": "mango",
+                "version": "0.0.5",
+                "arch": "x86_64",
+                "target_id": "test-target",
+                "status": "quarantined",
+                "reason": "source download failed after retries",
+                "report_path": report_path.display().to_string(),
+                "failed_at": "2026-05-07T10:00:00Z"
+            },
+            {
+                "software": "cap3",
+                "version": "10.2011",
+                "arch": "x86_64",
+                "target_id": "test-target",
+                "status": "quarantined",
+                "reason": "source download failed after retries",
+                "report_path": report_path.display().to_string(),
+                "failed_at": "2026-05-07T10:00:01Z"
+            },
+            {
+                "software": "next-target",
+                "version": "1.0",
+                "arch": "x86_64",
+                "target_id": "test-target",
+                "status": "quarantined",
+                "reason": "source download failed after retries",
+                "report_path": report_path.display().to_string(),
+                "failed_at": "2026-05-07T10:00:02Z"
+            }
+        ]
+    });
+    std::fs::write(
+        topdir.path().join(".catalog.json"),
+        serde_json::to_string(&catalog).expect("catalog json"),
+    )
+    .expect("write catalog");
+    std::fs::write(
+        topdir.path().join(".bioconda2rpm-build-requests.jsonl"),
+        r#"{"pid":77,"target_id":"test-target","packages":["cap3"],"force_rebuild":true,"manual_source_files":["/tmp/cap3.tar.gz"],"submitted_host":"host-a","submitted_at_utc":"2026-05-07T10:00:03Z"}"#,
+    )
+    .expect("write queued request");
+
+    let output = run(&["todo", "--json", "--topdir", &topdir_arg]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Value = serde_json::from_str(stdout.trim()).expect("todo json");
+    let items = parsed.as_array().expect("array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["software"], "next-target");
+}
+
+#[test]
 fn blacklist_updates_csv_and_clears_catalogue_failures() {
     let topdir = tempdir().expect("tempdir");
     let topdir_arg = topdir.path().to_string_lossy().to_string();

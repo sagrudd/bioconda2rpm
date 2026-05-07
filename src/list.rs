@@ -1791,6 +1791,61 @@ fn todo_task_for_failure(topdir: &Path, entry: &FailureEntry) -> Option<TodoTask
     })
 }
 
+fn failure_has_authoritative_srpm(catalog: &Catalog, entry: &FailureEntry) -> bool {
+    if entry.version.is_empty() {
+        return false;
+    }
+    let software_key = normalize_package_slug(&entry.software);
+    catalog
+        .packages
+        .iter()
+        .find(|package| normalize_package_slug(&package.software) == software_key)
+        .and_then(|package| {
+            package
+                .versions
+                .iter()
+                .find(|version| version.version == entry.version)
+        })
+        .and_then(|version| version.authoritative_srpm.as_ref())
+        .map(|artifact| Path::new(&artifact.path).exists())
+        .unwrap_or(false)
+}
+
+fn in_flight_todo_packages(topdir: &Path) -> BTreeSet<String> {
+    let mut packages = BTreeSet::new();
+    let Ok(snapshot) = crate::build_lock::lookup_build_runtime(topdir) else {
+        return packages;
+    };
+    for entry in snapshot.active_entries {
+        for package in entry.packages {
+            packages.insert(normalize_package_slug(&package));
+        }
+    }
+    for request in snapshot.queued_requests {
+        for package in request.packages {
+            packages.insert(normalize_package_slug(&package));
+        }
+    }
+    if let Some(status) = snapshot.server_status {
+        for package in status.current_packages {
+            packages.insert(normalize_package_slug(&package));
+        }
+        for package in status.pending_packages {
+            packages.insert(normalize_package_slug(&package));
+        }
+    }
+    for container in snapshot.running_containers {
+        let name = container.trim();
+        if let Some(rest) = name.strip_prefix("bioconda2rpm-") {
+            let package = rest.split('-').next().unwrap_or(rest);
+            if !package.is_empty() {
+                packages.insert(normalize_package_slug(package));
+            }
+        }
+    }
+    packages
+}
+
 fn render_todo_text(tasks: &[TodoTask], total_actionable: usize, cat_path: &Path) -> String {
     if tasks.is_empty() {
         return format!(
@@ -1942,8 +1997,13 @@ pub fn run_todo(topdir: &Path, args: &crate::cli::TodoArgs) -> Result<()> {
         args.arch.as_deref(),
         &blacklisted_packages,
     );
+    let in_flight_packages = in_flight_todo_packages(topdir);
     let actionable: Vec<TodoTask> = filtered
         .into_iter()
+        .filter(|failure| {
+            !in_flight_packages.contains(&normalize_package_slug(&failure.software))
+                && !failure_has_authoritative_srpm(&catalog, failure)
+        })
         .filter_map(|failure| todo_task_for_failure(topdir, failure))
         .collect();
     let visible: Vec<TodoTask> = if args.all {
