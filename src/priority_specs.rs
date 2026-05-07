@@ -6224,6 +6224,26 @@ fn requirement_hits_python_abi_incompatible_legacy_dep(requirement: &str) -> boo
     matches!(name.as_str(), "fa2" | "mnnpy")
 }
 
+fn is_python_binary_framework_dependency_name(dep: &str) -> bool {
+    let normalized = normalize_dependency_token(dep);
+    matches!(
+        normalized.as_str(),
+        "pytorch"
+            | "pytorch-cpu"
+            | "pytorch-gpu"
+            | "torch"
+            | "torchaudio"
+            | "torchtext"
+            | "torchvision"
+            | "tensorflow"
+            | "tensorflow-base"
+            | "tensorflow-estimator"
+            | "jax"
+            | "jaxlib"
+            | "triton"
+    ) || normalized.starts_with("nvidia-")
+}
+
 fn normalized_pip_requirement_name(requirement: &str) -> String {
     let split_at = requirement
         .char_indices()
@@ -6286,6 +6306,9 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
     if is_nim_ecosystem_dependency_name(&normalized) {
         return None;
     }
+    if is_python_binary_framework_dependency_name(&normalized) {
+        return None;
+    }
     if !is_python_ecosystem_dependency_name(&normalized) {
         return None;
     }
@@ -6299,7 +6322,6 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
         "python-wget" => "wget".to_string(),
         "matplotlib-base" => "matplotlib".to_string(),
         "seaborn-base" => "seaborn".to_string(),
-        "pytorch" => "torch".to_string(),
         "pytables" => "tables".to_string(),
         other => other.to_string(),
     };
@@ -6576,6 +6598,9 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "glibc"
             | "glibc-devel"
     ) {
+        return false;
+    }
+    if is_python_binary_framework_dependency_name(normalized) {
         return false;
     }
 
@@ -18332,10 +18357,11 @@ source:
             conda_dep_to_pip_requirement("seaborn-base >=0.11.*"),
             Some("seaborn>=0.11".to_string())
         );
-        assert_eq!(
-            conda_dep_to_pip_requirement("pytorch >=2.* cpu_*"),
-            Some("torch>=2".to_string())
-        );
+        assert_eq!(conda_dep_to_pip_requirement("pytorch >=2.* cpu_*"), None);
+        assert_eq!(conda_dep_to_pip_requirement("torch >=2.0"), None);
+        assert_eq!(conda_dep_to_pip_requirement("tensorflow >=2.15"), None);
+        assert_eq!(conda_dep_to_pip_requirement("jaxlib >=0.4"), None);
+        assert_eq!(conda_dep_to_pip_requirement("nvidia-cublas >=13"), None);
         assert_eq!(
             conda_dep_to_pip_requirement("pytables >=3.5.*"),
             Some("tables>=3.5".to_string())
@@ -19068,8 +19094,25 @@ requirements:
                 "mummer".to_string(),
             ],
             build_deps: BTreeSet::new(),
-            host_deps: BTreeSet::new(),
-            run_deps: BTreeSet::new(),
+            host_deps: BTreeSet::from([
+                "python".to_string(),
+                "setuptools".to_string(),
+                "scikit-learn".to_string(),
+                "h5py".to_string(),
+            ]),
+            run_deps: BTreeSet::from([
+                "python".to_string(),
+                "pytorch".to_string(),
+                "transformers".to_string(),
+                "sentencepiece".to_string(),
+                "biopython".to_string(),
+                "scikit-learn".to_string(),
+                "numpy".to_string(),
+                "pandas".to_string(),
+                "openpyxl".to_string(),
+                "h5py".to_string(),
+                "tqdm".to_string(),
+            ]),
         };
 
         let reqs = build_python_requirements(&parsed);
@@ -19304,6 +19347,79 @@ requirements:
         assert!(!reqs.iter().any(|r| r == "scala"));
         assert!(!reqs.iter().any(|r| r == "seqkit"));
         assert!(!reqs.iter().any(|r| r == "taxonkit"));
+    }
+
+    #[test]
+    fn python_requirements_exclude_binary_ml_frameworks_from_pip_lock() {
+        let parsed = ParsedMeta {
+            package_name: "viral-host-hunter".to_string(),
+            version: "0.2.0".to_string(),
+            build_number: "1".to_string(),
+            source_url: "https://example.invalid/viral-host-hunter.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/viral-host-hunter".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "viral-host-hunter".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "$PYTHON -m pip install . --no-deps --ignore-installed -vv".to_string(),
+            ),
+            noarch_python: true,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec![
+                "python >=3.8".to_string(),
+                "setuptools >64".to_string(),
+                "scikit-learn >=1.3.2,<1.4.0".to_string(),
+                "h5py >=3.11.0".to_string(),
+            ],
+            run_dep_specs_raw: vec![
+                "python >=3.8".to_string(),
+                "pytorch >=2.0".to_string(),
+                "transformers >=4.37,<4.52".to_string(),
+                "sentencepiece >=0.1.99".to_string(),
+                "biopython".to_string(),
+                "scikit-learn >=1.3.2,<1.4.0".to_string(),
+                "numpy >=1.24".to_string(),
+                "pandas >=2.0".to_string(),
+                "openpyxl >=3.1".to_string(),
+                "h5py >=3.11.0".to_string(),
+                "tqdm >=4.60".to_string(),
+            ],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let reqs = build_python_requirements(&parsed);
+        assert!(reqs.contains(&"transformers>=4.37,<4.52".to_string()));
+        assert!(reqs.contains(&"scikit-learn>=1.3.2,<1.4.0".to_string()));
+        assert!(!reqs.iter().any(|r| r.starts_with("pytorch")));
+        assert!(!reqs.iter().any(|r| r.starts_with("torch")));
+        assert!(!reqs.iter().any(|r| r.starts_with("triton")));
+        assert!(!reqs.iter().any(|r| r.starts_with("nvidia-")));
+
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "viral-host-hunter",
+            &parsed,
+            &plan,
+            None,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            true,
+            true,
+            false,
+            false,
+        );
+        assert!(spec.contains("Requires:  pytorch"));
+        assert!(spec.contains("Requires:  pytorch >= 2.0"));
+        assert!(spec.contains("transformers>=4.37,<4.52"));
+        assert!(!spec.contains("\ntorch>=2.0\n"));
+        assert!(!spec.contains("\npytorch>=2.0\n"));
+        assert!(!spec.contains("\ntriton"));
+        assert!(!spec.contains("\nnvidia-"));
     }
 
     #[test]
