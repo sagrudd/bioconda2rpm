@@ -12452,33 +12452,33 @@ fn render_python_venv_setup_block(python_recipe: bool, python_requirements: &[St
         let compile_flags = " --pip-args \"--no-build-isolation\"";
         let install_flags = " --no-build-isolation";
         format!(
-            "cat > requirements.in <<'REQEOF'\n\
-{requirements_body}\n\
-REQEOF\n\
-python - <<'PYREQSAN'\n\
-from pathlib import Path\n\
-import re\n\
-drop = {{\n\
-    'openblas', 'libopenblas', 'libblas', 'libcblas', 'mkl', 'mkl-devel',\n\
-    'pytorch', 'torch', 'tensorflow', 'tensorflow-base', 'jax', 'jaxlib', 'triton',\n\
-}}\n\
-path = Path('requirements.in')\n\
-lines = []\n\
-for raw in path.read_text().splitlines():\n\
-    line = raw.strip()\n\
-    if not line or line.startswith('#'):\n\
-        continue\n\
-    name = re.split(r'[<>=!~\\[; ]', line, 1)[0].strip().lower().replace('_', '-')\n\
-    if name in drop or name.startswith('nvidia-'):\n\
-        continue\n\
-    line = re.sub(r'(?P<op>>=|<=|>|<|~=)(?P<ver>[0-9][0-9A-Za-z_.!+-]*)\\.\\*', r'\\g<op>\\g<ver>', line)\n\
-    lines.append(line)\n\
-path.write_text('\\n'.join(lines) + ('\\n' if lines else ''))\n\
-PYREQSAN\n\
-{preinstall_legacy_build_bits}\
-\"$PIP\" install pip-tools\n\
-pip-compile --generate-hashes requirements.in --output-file requirements.lock{compile_flags}\n\
-\"$PIP\" install{install_flags} --require-hashes -r requirements.lock\n",
+            r#"cat > requirements.in <<'REQEOF'
+{requirements_body}
+REQEOF
+python - <<'PYREQSAN'
+from pathlib import Path
+import re
+drop = {{
+    'openblas', 'libopenblas', 'libblas', 'libcblas', 'mkl', 'mkl-devel',
+    'pytorch', 'torch', 'tensorflow', 'tensorflow-base', 'jax', 'jaxlib', 'triton',
+}}
+path = Path('requirements.in')
+lines = []
+for raw in path.read_text().splitlines():
+    line = raw.strip()
+    if not line or line.startswith('#'):
+        continue
+    name = re.split(r'[<>=!~\[; ]', line, 1)[0].strip().lower().replace('_', '-')
+    if name in drop or name.startswith('nvidia-'):
+        continue
+    line = re.sub(r'(?P<op>>=|<=|>|<|~=)(?P<ver>[0-9][0-9A-Za-z_.!+-]*)\.\*', r'\g<op>\g<ver>', line)
+    lines.append(line)
+path.write_text('\n'.join(lines) + ('\n' if lines else ''))
+PYREQSAN
+{preinstall_legacy_build_bits}"$PIP" install pip-tools
+pip-compile --generate-hashes requirements.in --output-file requirements.lock{compile_flags}
+"$PIP" install{install_flags} --require-hashes -r requirements.lock
+"#,
             requirements_body = requirements_body,
             preinstall_legacy_build_bits = preinstall_legacy_build_bits,
             compile_flags = compile_flags,
@@ -18535,6 +18535,10 @@ requirements:
         );
         assert!(block.contains("PYREQSAN"));
         assert!(block.contains("line = re.sub"));
+        assert!(
+            block.contains("for raw in path.read_text().splitlines():\n    line = raw.strip()")
+        );
+        assert!(block.contains("if not line or line.startswith('#'):\n        continue"));
         assert!(block.contains("'openblas'"));
         assert!(block.contains("name.startswith('nvidia-')"));
         assert!(block.contains(
