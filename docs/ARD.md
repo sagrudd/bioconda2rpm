@@ -94,6 +94,7 @@ The product is structured as layered components:
   - one authoritative process owns a workspace lock for each `--topdir`
   - secondary local `build` invocations submit package names into the authoritative queue through a lock-coordinated request file
   - forwarded package requests carry request-scoped `--force` and `--refresh-files` policy
+  - server lifecycle controls are separate lock-coordinated control requests: `server --close` drains accepted queue work before exit, while `server --kill` cancels immediately and removes active build containers
 - For generated priority specs, execution is strictly ordered per spec as:
   - SPEC generation
   - SRPM build (`rpmbuild -bs`) in container

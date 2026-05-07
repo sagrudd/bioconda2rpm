@@ -10,6 +10,8 @@ const LOCK_FILE_NAME: &str = ".bioconda2rpm-artifacts.lock";
 const STATE_FILE_NAME: &str = ".bioconda2rpm-active-builds.json";
 const REQUESTS_FILE_NAME: &str = ".bioconda2rpm-build-requests.jsonl";
 const REMOVE_REQUESTS_FILE_NAME: &str = ".bioconda2rpm-remove-requests.jsonl";
+const SERVER_CONTROL_REQUESTS_FILE_NAME: &str = ".bioconda2rpm-server-control.jsonl";
+const SERVER_STATUS_FILE_NAME: &str = ".bioconda2rpm-server-status.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildSessionKind {
@@ -73,6 +75,23 @@ pub struct LookupQueuedBuildRequest {
 #[derive(Debug, Clone)]
 pub struct RemovedQueuedPackage {
     pub package: String,
+    pub target_id: String,
+    pub submitted_host: String,
+    pub submitted_pid: u32,
+    pub submitted_at_utc: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerControlAction {
+    Close,
+    Kill,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServerControlRequest {
+    pub action: ServerControlAction,
     pub target_id: String,
     pub submitted_host: String,
     pub submitted_pid: u32,
@@ -147,6 +166,27 @@ struct BuildRemoveRequest {
     submitted_at_utc: String,
     #[serde(default)]
     reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BuildServerControlRequest {
+    pid: u32,
+    target_id: String,
+    action: ServerControlAction,
+    #[serde(default = "default_host_name")]
+    submitted_host: String,
+    submitted_at_utc: String,
+    #[serde(default)]
+    reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct BuildServerStatus {
+    target_id: String,
+    pid: u32,
+    #[serde(default)]
+    closing: bool,
+    updated_at_utc: String,
 }
 
 pub struct BuildSessionGuard {
@@ -328,6 +368,12 @@ impl BuildSessionGuard {
                         state_file.to_string_lossy()
                     );
                 }
+                if server_is_closing(topdir, target_id)? {
+                    bail!(
+                        "active build server for target={} is closing and no longer accepts forwarded build requests",
+                        target_id
+                    );
+                }
                 let queued_packages = packages
                     .iter()
                     .map(|pkg| pkg.trim())
@@ -370,6 +416,9 @@ impl BuildSessionGuard {
         force_rebuild: bool,
         refresh_files: bool,
     ) -> Result<Self> {
+        if let Some(topdir) = lock_path.parent() {
+            let _ = fs::remove_file(topdir.join(SERVER_STATUS_FILE_NAME));
+        }
         let pid = std::process::id();
         let entry = ActiveBuildEntry {
             pid,
@@ -415,6 +464,8 @@ impl Drop for BuildSessionGuard {
                 let _ = fs::remove_file(&self.requests_file);
                 if let Some(topdir) = self.requests_file.parent() {
                     let _ = fs::remove_file(topdir.join(REMOVE_REQUESTS_FILE_NAME));
+                    let _ = fs::remove_file(topdir.join(SERVER_CONTROL_REQUESTS_FILE_NAME));
+                    let _ = fs::remove_file(topdir.join(SERVER_STATUS_FILE_NAME));
                 }
             }
         } else {
@@ -618,6 +669,165 @@ pub fn drain_removed_build_requests(
     Ok(removed)
 }
 
+pub fn append_server_control_request(
+    topdir: &Path,
+    target_id: &str,
+    action: ServerControlAction,
+    reason: &str,
+) -> Result<()> {
+    fs::create_dir_all(topdir)
+        .with_context(|| format!("creating topdir {}", topdir.to_string_lossy()))?;
+    let control_file = topdir.join(SERVER_CONTROL_REQUESTS_FILE_NAME);
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .read(true)
+        .open(&control_file)
+        .with_context(|| format!("opening server control file {}", control_file.display()))?;
+    file.lock_exclusive()
+        .with_context(|| format!("locking server control file {}", control_file.display()))?;
+
+    let request = BuildServerControlRequest {
+        pid: std::process::id(),
+        target_id: target_id.to_string(),
+        action,
+        submitted_host: current_host_name(),
+        submitted_at_utc: chrono::Utc::now().to_rfc3339(),
+        reason: reason.to_string(),
+    };
+    let payload = serde_json::to_string(&request).context("serializing server control request")?;
+    writeln!(file, "{payload}")
+        .with_context(|| format!("writing server control file {}", control_file.display()))?;
+    file.flush()
+        .with_context(|| format!("flushing server control file {}", control_file.display()))?;
+    file.unlock()
+        .with_context(|| format!("unlocking server control file {}", control_file.display()))?;
+    Ok(())
+}
+
+pub fn mark_server_closing(topdir: &Path, target_id: &str) -> Result<()> {
+    let status_file = topdir.join(SERVER_STATUS_FILE_NAME);
+    let status = BuildServerStatus {
+        target_id: target_id.to_string(),
+        pid: std::process::id(),
+        closing: true,
+        updated_at_utc: chrono::Utc::now().to_rfc3339(),
+    };
+    let tmp = status_file.with_extension("tmp");
+    let payload = serde_json::to_vec_pretty(&status).context("serializing server status")?;
+    fs::write(&tmp, payload)
+        .with_context(|| format!("writing server status temp file {}", tmp.display()))?;
+    fs::rename(&tmp, &status_file)
+        .with_context(|| format!("committing server status file {}", status_file.display()))?;
+    Ok(())
+}
+
+fn server_is_closing(topdir: &Path, target_id: &str) -> Result<bool> {
+    let status_file = topdir.join(SERVER_STATUS_FILE_NAME);
+    if !status_file.exists() {
+        return Ok(false);
+    }
+    let raw = fs::read_to_string(&status_file)
+        .with_context(|| format!("reading server status file {}", status_file.display()))?;
+    if raw.trim().is_empty() {
+        return Ok(false);
+    }
+    let status: BuildServerStatus = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing server status file {}", status_file.display()))?;
+    Ok(status.target_id == target_id && status.closing)
+}
+
+pub fn drain_server_control_requests(
+    topdir: &Path,
+    target_id: &str,
+) -> Result<Vec<ServerControlRequest>> {
+    drain_server_control_requests_matching(topdir, target_id, |_| true)
+}
+
+pub fn drain_kill_server_control_requests(
+    topdir: &Path,
+    target_id: &str,
+) -> Result<Vec<ServerControlRequest>> {
+    drain_server_control_requests_matching(topdir, target_id, |action| {
+        action == ServerControlAction::Kill
+    })
+}
+
+fn drain_server_control_requests_matching(
+    topdir: &Path,
+    target_id: &str,
+    should_drain: impl Fn(ServerControlAction) -> bool,
+) -> Result<Vec<ServerControlRequest>> {
+    let control_file = topdir.join(SERVER_CONTROL_REQUESTS_FILE_NAME);
+    if !control_file.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&control_file)
+        .with_context(|| format!("opening server control file {}", control_file.display()))?;
+    match file.try_lock_exclusive() {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::WouldBlock => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("locking server control file {}", control_file.display())
+            });
+        }
+    }
+
+    file.seek(SeekFrom::Start(0))
+        .with_context(|| format!("seeking server control file {}", control_file.display()))?;
+    let mut raw = String::new();
+    file.read_to_string(&mut raw)
+        .with_context(|| format!("reading server control file {}", control_file.display()))?;
+
+    let mut drained = Vec::new();
+    let mut retained_lines = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(req) = serde_json::from_str::<BuildServerControlRequest>(trimmed) else {
+            retained_lines.push(trimmed.to_string());
+            continue;
+        };
+        if req.target_id == target_id && should_drain(req.action) {
+            drained.push(ServerControlRequest {
+                action: req.action,
+                target_id: req.target_id,
+                submitted_host: req.submitted_host,
+                submitted_pid: req.pid,
+                submitted_at_utc: req.submitted_at_utc,
+                reason: req.reason,
+            });
+        } else {
+            retained_lines
+                .push(serde_json::to_string(&req).context("serializing retained control request")?);
+        }
+    }
+
+    file.set_len(0)
+        .with_context(|| format!("truncating server control file {}", control_file.display()))?;
+    file.seek(SeekFrom::Start(0))
+        .with_context(|| format!("rewinding server control file {}", control_file.display()))?;
+    if !retained_lines.is_empty() {
+        let payload = format!("{}\n", retained_lines.join("\n"));
+        file.write_all(payload.as_bytes())
+            .with_context(|| format!("writing server control file {}", control_file.display()))?;
+    }
+    file.flush()
+        .with_context(|| format!("flushing server control file {}", control_file.display()))?;
+    file.unlock()
+        .with_context(|| format!("unlocking server control file {}", control_file.display()))?;
+
+    Ok(drained)
+}
+
 pub fn remove_queued_build_requests(
     topdir: &Path,
     target_id: Option<&str>,
@@ -712,6 +922,18 @@ pub fn stop_matching_build_containers(engine: &str, packages: &[String]) -> Resu
     if package_prefixes.is_empty() {
         return Ok(Vec::new());
     }
+    stop_build_containers(engine, |name| {
+        package_prefixes
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+    })
+}
+
+pub fn stop_all_build_containers(engine: &str) -> Result<Vec<String>> {
+    stop_build_containers(engine, |name| name.starts_with("bioconda2rpm-"))
+}
+
+fn stop_build_containers(engine: &str, matches_name: impl Fn(&str) -> bool) -> Result<Vec<String>> {
     let output = Command::new(engine)
         .args(["ps", "--format", "{{.Names}}"])
         .output()
@@ -730,12 +952,7 @@ pub fn stop_matching_build_containers(engine: &str, packages: &[String]) -> Resu
     let matches = String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(str::trim)
-        .filter(|name| {
-            !name.is_empty()
-                && package_prefixes
-                    .iter()
-                    .any(|prefix| name.starts_with(prefix))
-        })
+        .filter(|name| !name.is_empty() && matches_name(name))
         .map(str::to_string)
         .collect::<Vec<_>>();
     for name in &matches {
@@ -1103,6 +1320,90 @@ mod tests {
         assert!(remaining.contains("\"target-b\""));
         assert!(!remaining.contains("\"target-a\""));
 
+        let _ = fs::remove_dir_all(&topdir);
+    }
+
+    #[test]
+    fn drain_server_control_requests_filters_by_target_and_action() {
+        let topdir = tempdir("drain-server-control");
+        append_server_control_request(
+            &topdir,
+            "target-a",
+            ServerControlAction::Close,
+            "operator drain",
+        )
+        .expect("append close request");
+        append_server_control_request(
+            &topdir,
+            "target-a",
+            ServerControlAction::Kill,
+            "operator kill",
+        )
+        .expect("append kill request");
+        append_server_control_request(
+            &topdir,
+            "target-b",
+            ServerControlAction::Kill,
+            "other target",
+        )
+        .expect("append other target request");
+
+        let kills = drain_kill_server_control_requests(&topdir, "target-a")
+            .expect("drain kill control requests");
+        assert_eq!(kills.len(), 1);
+        assert_eq!(kills[0].action, ServerControlAction::Kill);
+        assert_eq!(kills[0].target_id, "target-a");
+        assert_eq!(kills[0].reason, "operator kill");
+
+        let remaining =
+            fs::read_to_string(topdir.join(SERVER_CONTROL_REQUESTS_FILE_NAME)).expect("read queue");
+        assert!(remaining.contains("\"action\":\"close\""));
+        assert!(remaining.contains("\"target-b\""));
+        assert!(remaining.contains("other target"));
+
+        let drained = drain_server_control_requests(&topdir, "target-a")
+            .expect("drain remaining control requests");
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].action, ServerControlAction::Close);
+
+        let final_remaining =
+            fs::read_to_string(topdir.join(SERVER_CONTROL_REQUESTS_FILE_NAME)).expect("read queue");
+        assert!(final_remaining.contains("\"target-b\""));
+        assert!(!final_remaining.contains("\"target-a\""));
+
+        let _ = fs::remove_dir_all(&topdir);
+    }
+
+    #[test]
+    fn closing_server_rejects_new_forwarded_builds() {
+        let topdir = tempdir("closing-rejects-forward");
+        let owner = BuildSessionGuard::acquire(
+            &topdir,
+            "target-a",
+            &["emboss".to_string()],
+            BuildSessionKind::Build,
+            false,
+            false,
+        )
+        .expect("acquire owner");
+        mark_server_closing(&topdir, "target-a").expect("mark closing");
+
+        let err = match BuildSessionGuard::acquire_or_forward_build(
+            &topdir,
+            "target-a",
+            &["blast".to_string()],
+            false,
+            false,
+        ) {
+            Ok(_) => panic!("closing server should reject forwarded builds"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("no longer accepts"),
+            "unexpected error: {err:#}"
+        );
+
+        drop(owner);
         let _ = fs::remove_dir_all(&topdir);
     }
 

@@ -87,6 +87,15 @@ fn build_help_exposes_public_package_selection_flags() {
 }
 
 #[test]
+fn server_help_exposes_lifecycle_controls() {
+    let output = run(&["server", "--help"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--close"));
+    assert!(stdout.contains("--kill"));
+}
+
+#[test]
 fn lookup_compact_emits_machine_readable_json() {
     let topdir = tempdir().expect("tempdir");
     let topdir_arg = topdir.path().to_string_lossy().to_string();

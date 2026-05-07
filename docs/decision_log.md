@@ -247,3 +247,8 @@
 - If the generated SPEC differs from the SPEC embedded in the authoritative SRPM, the container extracts source assets from the old SRPM and prepares a new SRPM from the current SPEC without external source fetches.
 - `build --refresh-files` is the explicit source-refresh path: it bypasses authoritative SRPM reuse, redownloads original sources, and records the newly prepared SRPM as authoritative.
 - Forwarded build requests carry request-scoped `--refresh-files`; persistent `server` rejects startup-level `--refresh-files` for the same reason it rejects startup-level `--force`.
+
+### Server drain and kill controls
+- `bioconda2rpm server --close` is an operator control request, not a second server instance. It records a close request in the workspace control queue for the selected target id.
+- The active server drains build requests it already accepted, stops ingesting newly forwarded requests after close is observed, marks the target as closing so later `build` submissions fail instead of being falsely accepted, and exits when its in-memory queue is empty.
+- `bioconda2rpm server --kill` records an immediate kill request and force-removes active `bioconda2rpm-*` containers. Active batch execution also polls for kill requests so a server can interrupt long-running package containers instead of waiting for the outer server loop.

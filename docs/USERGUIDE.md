@@ -85,6 +85,22 @@ cargo run -- server \
 
 `server` owns the workspace build lock, launches the same progress TUI, and remains alive after each batch completes. Additional `bioconda2rpm build <package>` invocations with the same target id are forwarded into the server queue. The server exits only when the user sends Ctrl-C.
 
+Drain and close a running server without wasting accepted build work:
+
+```bash
+cargo run -- server --close
+```
+
+`server --close` tells the active server for the same target id to stop accepting newly forwarded work, finish the queue items it has already accepted, and then exit. This is the preferred end-of-day shutdown when running package work should complete cleanly.
+
+Immediately stop a blocked server and active build containers:
+
+```bash
+cargo run -- server --kill
+```
+
+`server --kill` requests immediate cancellation and removes running `bioconda2rpm-*` build containers. It does not drain queued work and should be reserved for stalled or otherwise unsafe sessions.
+
 Remove queued or stalled package work:
 
 ```bash

@@ -19,7 +19,7 @@ pub enum Command {
     /// Build RPM artifacts for a package and optionally its dependency closure.
     Build(BuildArgs),
     /// Run a persistent build owner that drains forwarded build requests until Ctrl-C.
-    Server(BuildArgs),
+    Server(ServerArgs),
     /// Remove queued or running package build work from an active build owner.
     Remove(RemoveArgs),
     /// Run a regression corpus campaign (PR top-N or full nightly).
@@ -292,6 +292,21 @@ pub struct BuildArgs {
     /// Core OS repository URLs to embed in reserved `phoreus` package config.
     #[arg(long = "phoreus-core-repo")]
     pub phoreus_core_repo: Vec<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ServerArgs {
+    /// Close the running server to new work, drain already accepted queue items, then exit.
+    #[arg(long, conflicts_with = "kill")]
+    pub close: bool,
+
+    /// Immediately stop the running server and active build containers without draining the queue.
+    #[arg(long)]
+    pub kill: bool,
+
+    /// Build/server options and optional initial package queue for a newly started server.
+    #[command(flatten)]
+    pub build: BuildArgs,
 }
 
 #[derive(Debug, clap::Args)]
@@ -1163,12 +1178,36 @@ mod tests {
         let Command::Server(args) = cli.command else {
             panic!("expected server command")
         };
-        assert!(args.packages.is_empty());
-        assert_eq!(args.ui, UiMode::Plain);
+        assert!(!args.close);
+        assert!(!args.kill);
+        assert!(args.build.packages.is_empty());
+        assert_eq!(args.build.ui, UiMode::Plain);
         assert_eq!(
-            args.effective_topdir(),
+            args.build.effective_topdir(),
             PathBuf::from("/tmp/bioconda2rpm-server")
         );
+    }
+
+    #[test]
+    fn server_command_accepts_close_and_kill_controls() {
+        let close_cli =
+            Cli::try_parse_from(["bioconda2rpm", "server", "--close"]).expect("close parses");
+        let Command::Server(close_args) = close_cli.command else {
+            panic!("expected server command")
+        };
+        assert!(close_args.close);
+        assert!(!close_args.kill);
+        assert!(close_args.build.packages.is_empty());
+
+        let kill_cli =
+            Cli::try_parse_from(["bioconda2rpm", "server", "--kill"]).expect("kill parses");
+        let Command::Server(kill_args) = kill_cli.command else {
+            panic!("expected server command")
+        };
+        assert!(!kill_args.close);
+        assert!(kill_args.kill);
+
+        assert!(Cli::try_parse_from(["bioconda2rpm", "server", "--close", "--kill"]).is_err());
     }
 
     #[test]

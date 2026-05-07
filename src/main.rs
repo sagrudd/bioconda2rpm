@@ -213,8 +213,66 @@ fn main() -> ExitCode {
                 }
             }
         }
-        cli::Command::Server(mut args) => {
+        cli::Command::Server(server_args) => {
             priority_specs::reset_cancellation();
+            let mut args = server_args.build;
+            let topdir = args.effective_topdir();
+            let target_id = args.effective_target_id();
+            if server_args.close {
+                if let Err(err) = ensure_workspace_paths(
+                    &topdir,
+                    &args.effective_bad_spec_dir(),
+                    &args.effective_reports_dir(),
+                ) {
+                    eprintln!("failed to prepare workspace directories: {err}");
+                    return ExitCode::FAILURE;
+                }
+                if let Err(err) = build_lock::append_server_control_request(
+                    &topdir,
+                    &target_id,
+                    build_lock::ServerControlAction::Close,
+                    "operator requested server close after queue drain",
+                ) {
+                    eprintln!("failed to submit server close request: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+                println!("server close requested target_id={target_id}");
+                return ExitCode::SUCCESS;
+            }
+            if server_args.kill {
+                if let Err(err) = ensure_workspace_paths(
+                    &topdir,
+                    &args.effective_bad_spec_dir(),
+                    &args.effective_reports_dir(),
+                ) {
+                    eprintln!("failed to prepare workspace directories: {err}");
+                    return ExitCode::FAILURE;
+                }
+                if let Err(err) = build_lock::append_server_control_request(
+                    &topdir,
+                    &target_id,
+                    build_lock::ServerControlAction::Kill,
+                    "operator requested immediate server kill",
+                ) {
+                    eprintln!("failed to submit server kill request: {err:#}");
+                    return ExitCode::FAILURE;
+                }
+                let stopped = match build_lock::stop_all_build_containers(&args.container_engine) {
+                    Ok(names) => names,
+                    Err(err) => {
+                        eprintln!(
+                            "warning: submitted server kill request but failed to stop build containers immediately: {err:#}"
+                        );
+                        Vec::new()
+                    }
+                };
+                println!(
+                    "server kill requested target_id={} stopped_containers={}",
+                    target_id,
+                    stopped.join(",")
+                );
+                return ExitCode::SUCCESS;
+            }
             if args.force {
                 eprintln!(
                     "server does not accept --force; start the server without --force and submit forced work with `bioconda2rpm build --force <package>`"
@@ -227,7 +285,6 @@ fn main() -> ExitCode {
                 );
                 return ExitCode::FAILURE;
             }
-            let topdir = args.effective_topdir();
             let bad_spec = args.effective_bad_spec_dir();
             let reports = args.effective_reports_dir();
             if let Err(err) = ensure_workspace_paths(&topdir, &bad_spec, &reports) {
@@ -317,27 +374,107 @@ fn main() -> ExitCode {
                 recipes.head.as_deref().unwrap_or("unknown")
             ));
 
+            let mut closing = false;
+            let mut server_stop_reason = "server stopped by user".to_string();
             while !priority_specs::cancellation_requested_public() {
-                match build_lock::drain_forwarded_build_requests(
+                if !closing {
+                    match build_lock::drain_forwarded_build_requests(
+                        topdir.as_path(),
+                        &args.effective_target_id(),
+                    ) {
+                        Ok(forwarded) => {
+                            for request in forwarded {
+                                pending_packages.push((
+                                    request.package,
+                                    request.force_rebuild,
+                                    request.refresh_files,
+                                ));
+                            }
+                        }
+                        Err(err) => {
+                            priority_specs::log_external_progress(format!(
+                                "phase=server status=queue-drain-error target_id={} detail={}",
+                                args.effective_target_id(),
+                                err
+                            ));
+                        }
+                    }
+                }
+
+                match build_lock::drain_server_control_requests(
                     topdir.as_path(),
                     &args.effective_target_id(),
                 ) {
-                    Ok(forwarded) => {
-                        for request in forwarded {
-                            pending_packages.push((
-                                request.package,
-                                request.force_rebuild,
-                                request.refresh_files,
-                            ));
+                    Ok(control_requests) => {
+                        for request in control_requests {
+                            match request.action {
+                                build_lock::ServerControlAction::Close => {
+                                    closing = true;
+                                    if let Err(err) =
+                                        build_lock::mark_server_closing(&topdir, &target_id)
+                                    {
+                                        priority_specs::log_external_progress(format!(
+                                            "phase=server-control status=close-marker-error target_id={} detail={}",
+                                            args.effective_target_id(),
+                                            err
+                                        ));
+                                    }
+                                    server_stop_reason =
+                                        "server closed after queue drain".to_string();
+                                    priority_specs::log_external_progress(format!(
+                                        "phase=server-control status=close-received target_id={} submit_host={} submit_pid={} submit_ts={} reason={}",
+                                        request.target_id,
+                                        request.submitted_host,
+                                        request.submitted_pid,
+                                        request.submitted_at_utc,
+                                        request.reason
+                                    ));
+                                }
+                                build_lock::ServerControlAction::Kill => {
+                                    if let Err(err) =
+                                        build_lock::mark_server_closing(&topdir, &target_id)
+                                    {
+                                        priority_specs::log_external_progress(format!(
+                                            "phase=server-control status=kill-marker-error target_id={} detail={}",
+                                            args.effective_target_id(),
+                                            err
+                                        ));
+                                    }
+                                    server_stop_reason = "server killed by operator".to_string();
+                                    priority_specs::log_external_progress(format!(
+                                        "phase=server-control status=kill-received target_id={} submit_host={} submit_pid={} submit_ts={} reason={}",
+                                        request.target_id,
+                                        request.submitted_host,
+                                        request.submitted_pid,
+                                        request.submitted_at_utc,
+                                        request.reason
+                                    ));
+                                    priority_specs::request_cancellation(
+                                        "server kill requested by operator",
+                                    );
+                                    if let Err(err) = build_lock::stop_all_build_containers(
+                                        &args.container_engine,
+                                    ) {
+                                        priority_specs::log_external_progress(format!(
+                                            "phase=server-control status=kill-container-stop-error target_id={} detail={}",
+                                            args.effective_target_id(),
+                                            err
+                                        ));
+                                    }
+                                }
+                            }
                         }
                     }
                     Err(err) => {
                         priority_specs::log_external_progress(format!(
-                            "phase=server status=queue-drain-error target_id={} detail={}",
+                            "phase=server-control status=drain-error target_id={} detail={}",
                             args.effective_target_id(),
                             err
                         ));
                     }
+                }
+                if priority_specs::cancellation_requested_public() {
+                    break;
                 }
 
                 pending_packages.sort_by(|a, b| a.0.cmp(&b.0));
@@ -355,6 +492,13 @@ fn main() -> ExitCode {
                 }
                 pending_packages = merged_packages;
                 if pending_packages.is_empty() {
+                    if closing {
+                        priority_specs::log_external_progress(format!(
+                            "phase=server status=closed target_id={} detail=queue-drained",
+                            args.effective_target_id()
+                        ));
+                        break;
+                    }
                     priority_specs::log_external_progress(format!(
                         "phase=server status=waiting target_id={} detail=idle-until-forwarded-build-or-ctrl-c",
                         args.effective_target_id()
@@ -459,7 +603,7 @@ fn main() -> ExitCode {
 
             priority_specs::clear_progress_sink();
             if let Some(ui) = progress_ui.take() {
-                ui.finish("server stopped by user".to_string());
+                ui.finish(server_stop_reason);
             }
         }
         cli::Command::Remove(args) => {

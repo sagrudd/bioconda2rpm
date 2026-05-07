@@ -15,6 +15,8 @@ Production expectation:
 
 ```bash
 bioconda2rpm server [build-options] [<initial-package...>]
+bioconda2rpm server --close [build-options]
+bioconda2rpm server --kill [build-options]
 ```
 
 Production expectation:
@@ -22,6 +24,9 @@ Production expectation:
 - It launches the progress TUI and remains alive after each build batch completes.
 - It drains forwarded requests from secondary `build` invocations until Ctrl-C is provided by the user.
 - Initial packages are optional; without them the server starts idle and waits for forwarded work.
+- `server --close` submits a close request to the active server for the selected target id. The server stops accepting newly forwarded work, drains queue items it already accepted, and exits when the queue is empty.
+- `server --kill` submits an immediate kill request to the active server for the selected target id and force-removes active `bioconda2rpm-*` build containers. No queue drain is expected.
+- Once an active server has observed close or kill, later `build` invocations for that target id shall fail instead of being forwarded into a queue that will not be serviced.
 
 ## Remove Command
 

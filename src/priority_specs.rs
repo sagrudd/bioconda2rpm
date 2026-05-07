@@ -1879,6 +1879,54 @@ fn run_build_batch_queue(
 
     while !ready.is_empty() || running > 0 || !pending_fail_queue.is_empty() {
         if !cancellation_requested() {
+            match build_lock::drain_kill_server_control_requests(
+                build_config.topdir.as_path(),
+                &build_config.target_id,
+            ) {
+                Ok(control_requests) => {
+                    if !control_requests.is_empty() {
+                        for request in &control_requests {
+                            log_progress(format!(
+                                "phase=server-control status=kill-received target_id={} submit_host={} submit_pid={} submit_ts={} reason={}",
+                                request.target_id,
+                                request.submitted_host,
+                                request.submitted_pid,
+                                request.submitted_at_utc,
+                                compact_reason(&request.reason, 180)
+                            ));
+                        }
+                        if let Err(err) = build_lock::mark_server_closing(
+                            build_config.topdir.as_path(),
+                            &build_config.target_id,
+                        ) {
+                            log_progress(format!(
+                                "phase=server-control status=kill-marker-error target_id={} detail={}",
+                                build_config.target_id,
+                                compact_reason(&err.to_string(), 220)
+                            ));
+                        }
+                        request_cancellation("server kill requested by operator");
+                        if let Err(err) =
+                            build_lock::stop_all_build_containers(&build_config.container_engine)
+                        {
+                            log_progress(format!(
+                                "phase=server-control status=kill-container-stop-error target_id={} detail={}",
+                                build_config.target_id,
+                                compact_reason(&err.to_string(), 220)
+                            ));
+                        }
+                    }
+                }
+                Err(err) => {
+                    log_progress(format!(
+                        "phase=server-control status=kill-drain-error target_id={} detail={}",
+                        build_config.target_id,
+                        compact_reason(&err.to_string(), 220)
+                    ));
+                }
+            }
+        }
+        if !cancellation_requested() {
             match build_lock::drain_removed_build_requests(
                 build_config.topdir.as_path(),
                 &build_config.target_id,
