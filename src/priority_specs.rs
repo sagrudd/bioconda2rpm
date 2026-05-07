@@ -6224,6 +6224,34 @@ fn requirement_hits_python_abi_incompatible_legacy_dep(requirement: &str) -> boo
     matches!(name.as_str(), "fa2" | "mnnpy")
 }
 
+fn normalized_pip_requirement_name(requirement: &str) -> String {
+    let split_at = requirement
+        .char_indices()
+        .find(|(_, c)| ['[', '<', '>', '=', '!', '~'].contains(c))
+        .map(|(idx, _)| idx)
+        .unwrap_or(requirement.len());
+    normalize_dependency_token(&requirement[..split_at])
+}
+
+fn add_native_build_requires_for_python_requirements(
+    build_requires: &mut BTreeSet<String>,
+    python_requirements: &[String],
+) {
+    for requirement in python_requirements {
+        match normalized_pip_requirement_name(requirement).as_str() {
+            "pybedtools" => {
+                // pybedtools builds a C++ extension from source in our locked
+                // venv path and includes zlib/bzip2/lzma-backed headers.
+                build_requires.insert("bzip2-devel".to_string());
+                build_requires.insert("gcc-c++".to_string());
+                build_requires.insert("xz-devel".to_string());
+                build_requires.insert("zlib-devel".to_string());
+            }
+            _ => {}
+        }
+    }
+}
+
 fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
     let cleaned = raw
         .split('#')
@@ -8816,6 +8844,7 @@ mkdir -p %{bioconda_source_subdir}\n"
         RpmDependencyKind::Build,
         python_recipe,
     ));
+    add_native_build_requires_for_python_requirements(&mut build_requires, &python_requirements);
     remove_phoreus_python_runtime_requirements(&mut build_requires);
     if scope.python_runtime_required {
         build_requires.insert(python_runtime.package.to_string());
@@ -9560,6 +9589,7 @@ mkdir -p %{bioconda_source_subdir}\n"
         build_requires.insert("gcc-c++".to_string());
         build_requires.insert("make".to_string());
     }
+    add_native_build_requires_for_python_requirements(&mut build_requires, &python_requirements);
     remove_phoreus_python_runtime_requirements(&mut build_requires);
     build_requires.insert(python_runtime.package.to_string());
     // Core C dependencies may be provisioned in-prefix by the deterministic
@@ -20420,6 +20450,56 @@ requirements:
         assert!(spec.contains("BuildRequires:  make"));
         assert!(!spec.contains("BuildArch:      noarch"));
         assert!(spec.contains("noarch suppressed"));
+    }
+
+    #[test]
+    fn python_pybedtools_requirement_adds_native_header_build_requires() {
+        let parsed = ParsedMeta {
+            package_name: "variantbreak".to_string(),
+            version: "1.0.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/variantbreak-1.0.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/variantbreak".to_string(),
+            license: "MIT".to_string(),
+            summary: "variantbreak".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec![
+                "python".to_string(),
+                "pip".to_string(),
+                "pybedtools >=0.9.1".to_string(),
+            ],
+            run_dep_specs_raw: vec!["python".to_string(), "pybedtools >=0.9.1".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::from([
+                "python".to_string(),
+                "pip".to_string(),
+                "pybedtools".to_string(),
+            ]),
+            run_deps: BTreeSet::from(["python".to_string(), "pybedtools".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "variantbreak",
+            &parsed,
+            "bioconda-variantbreak-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            true,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("BuildRequires:  bzip2-devel"));
+        assert!(spec.contains("BuildRequires:  gcc-c++"));
+        assert!(spec.contains("BuildRequires:  xz-devel"));
+        assert!(spec.contains("BuildRequires:  zlib-devel"));
+        assert!(spec.contains("pybedtools>=0.9.1"));
     }
 
     #[test]
