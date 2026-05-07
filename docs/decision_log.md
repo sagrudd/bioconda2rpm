@@ -247,6 +247,7 @@
 - If the generated SPEC differs from the SPEC embedded in the authoritative SRPM, the container extracts source assets from the old SRPM and prepares a new SRPM from the current SPEC without external source fetches.
 - `build --refresh-files` is the explicit source-refresh path: it bypasses authoritative SRPM reuse, redownloads original sources, and records the newly prepared SRPM as authoritative.
 - Forwarded build requests carry request-scoped `--refresh-files`; persistent `server` rejects startup-level `--refresh-files` for the same reason it rejects startup-level `--force`.
+- `build --files <path>...` is the manual provenance-preserving source ingress path for archives that require human retrieval. Exact filename matching and declared checksum verification are required before the supplied archive can replace upstream fetch and define a new authoritative SRPM.
 
 ### Server drain and kill controls
 - `bioconda2rpm server --close` is an operator control request, not a second server instance. It records a close request in the workspace control queue for the selected target id.

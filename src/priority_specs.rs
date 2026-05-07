@@ -119,6 +119,7 @@ struct BuildConfig {
     build_jobs: usize,
     force_rebuild: bool,
     refresh_files: bool,
+    manual_source_files: Vec<PathBuf>,
     source_srpm_path: Option<PathBuf>,
 }
 
@@ -1018,6 +1019,7 @@ pub fn run_generate_priority_specs(args: &GeneratePrioritySpecsArgs) -> Result<G
         build_jobs: args.effective_build_jobs(),
         force_rebuild: false,
         refresh_files: false,
+        manual_source_files: Vec::new(),
         source_srpm_path: None,
     };
     let indexed_tools: Vec<(usize, PriorityTool)> = tools.into_iter().enumerate().collect();
@@ -1203,6 +1205,7 @@ pub fn run_build(args: &BuildArgs) -> Result<BuildSummary> {
         build_jobs: args.effective_build_jobs(),
         force_rebuild: args.force,
         refresh_files: args.refresh_files,
+        manual_source_files: args.files.clone(),
         source_srpm_path: None,
     };
     if requested_packages.len() > 1 {
@@ -2827,6 +2830,7 @@ pub fn run_regression(args: &RegressionArgs) -> Result<RegressionSummary> {
             no_deps: args.no_deps,
             force: false,
             refresh_files: false,
+            files: Vec::new(),
             container_mode: ContainerMode::Ephemeral,
             container_profile: args.container_profile,
             container_engine: args.container_engine.clone(),
@@ -4430,6 +4434,39 @@ fn process_tool(
             }
         }
     }
+    let mut manual_source_staged = false;
+    match stage_matching_manual_source_file(
+        &build_config.manual_source_files,
+        &parsed,
+        &resolved,
+        sources_dir,
+        &software_slug,
+        &build_config.target_arch,
+    ) {
+        Ok(Some(staged_source_name)) => {
+            parsed.source_url = staged_source_name;
+            manual_source_staged = true;
+        }
+        Ok(None) => {}
+        Err(err) => {
+            let reason = format!("failed to stage manual source file: {err}");
+            quarantine_note(bad_spec_dir, &software_slug, &reason);
+            return ReportEntry {
+                software: tool.software.clone(),
+                priority: tool.priority,
+                status: "quarantined".to_string(),
+                reason,
+                overlap_recipe: resolved.recipe_name,
+                overlap_reason: resolved.overlap_reason,
+                variant_dir: resolved.variant_dir.display().to_string(),
+                package_name: parsed.package_name,
+                version: parsed.version,
+                payload_spec_path: String::new(),
+                meta_spec_path: String::new(),
+                staged_build_sh: staged_build_sh.display().to_string(),
+            };
+        }
+    }
     if package_requires_original_build_script(&software_slug, &parsed, &interpreted_build_plan) {
         let build_sh_source_name = format!("bioconda-{software_slug}-build.sh");
         let build_sh_source_path = sources_dir.join(&build_sh_source_name);
@@ -4618,7 +4655,7 @@ fn process_tool(
     }
 
     let mut package_build_config = build_config.clone();
-    if package_build_config.refresh_files {
+    if package_build_config.refresh_files || manual_source_staged {
         package_build_config.source_srpm_path = None;
     } else {
         package_build_config.source_srpm_path =
@@ -7025,6 +7062,117 @@ fn extract_source_url(source: Option<&Value>) -> Option<String> {
         }),
         Some(Value::String(s)) => Some(s.to_string()),
         _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SourceFileExpectation {
+    filename: Option<String>,
+    sha256: Option<String>,
+    md5: Option<String>,
+}
+
+fn extract_source_file_expectation(source: Option<&Value>) -> SourceFileExpectation {
+    fn from_map(map: &serde_yaml::Mapping) -> SourceFileExpectation {
+        SourceFileExpectation {
+            filename: map
+                .get(Value::String("fn".to_string()))
+                .and_then(value_to_string)
+                .filter(|v| !v.trim().is_empty()),
+            sha256: map
+                .get(Value::String("sha256".to_string()))
+                .and_then(value_to_string)
+                .filter(|v| !v.trim().is_empty()),
+            md5: map
+                .get(Value::String("md5".to_string()))
+                .and_then(value_to_string)
+                .filter(|v| !v.trim().is_empty()),
+        }
+    }
+
+    match source {
+        Some(Value::Mapping(map)) => from_map(map),
+        Some(Value::Sequence(seq)) => seq
+            .iter()
+            .find_map(|item| {
+                let map = item.as_mapping()?;
+                if map.contains_key(Value::String("url".to_string()))
+                    || map.contains_key(Value::String("git_url".to_string()))
+                    || map.contains_key(Value::String("path".to_string()))
+                {
+                    Some(from_map(map))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default(),
+        _ => SourceFileExpectation::default(),
+    }
+}
+
+fn source_file_expectation_for_resolved(
+    resolved: &ResolvedRecipe,
+    target_arch: &str,
+) -> Result<SourceFileExpectation> {
+    let meta_text = fs::read_to_string(&resolved.meta_path)
+        .with_context(|| format!("failed to read metadata {}", resolved.meta_path.display()))?;
+    let selector_ctx = if meta_text_requests_python2(&meta_text) {
+        SelectorContext::for_rpm_build_with_python(target_arch, 2, 7)
+    } else {
+        SelectorContext::for_rpm_build(target_arch)
+    };
+    let selected_meta = apply_selectors(&meta_text, &selector_ctx);
+    let rendered = render_meta_yaml(&selected_meta).with_context(|| {
+        format!(
+            "failed to render Jinja for {}",
+            resolved.meta_path.display()
+        )
+    })?;
+    let root: Value =
+        serde_yaml::from_str(&rendered).context("deserializing rendered meta.yaml")?;
+    Ok(extract_source_file_expectation(root.get("source")))
+}
+
+fn source_url_filename_rust(url: &str) -> Option<String> {
+    let no_fragment = url.split('#').next().unwrap_or(url);
+    let query = no_fragment
+        .split_once('?')
+        .map(|(_, query)| query)
+        .unwrap_or_default();
+    for kv in query.split('&') {
+        let Some((key, value)) = kv.split_once('=') else {
+            continue;
+        };
+        if matches!(key, "filepath" | "filename" | "file" | "path") {
+            let decoded = value
+                .replace("%2F", "/")
+                .replace("%2f", "/")
+                .replace("%20", " ")
+                .replace("%2B", "+")
+                .replace("%2b", "+")
+                .replace("%24", "$");
+            if let Some(name) = Path::new(&decoded).file_name().and_then(|v| v.to_str())
+                && !name.trim().is_empty()
+            {
+                return Some(name.to_string());
+            }
+        }
+        if matches!(key, "download" | "source")
+            && let Some(name) = Path::new(value).file_name().and_then(|v| v.to_str())
+            && !name.trim().is_empty()
+        {
+            return Some(name.to_string());
+        }
+    }
+    let no_query = no_fragment
+        .split_once('?')
+        .map(|(base, _)| base)
+        .unwrap_or(no_fragment);
+    let name = Path::new(no_query).file_name().and_then(|v| v.to_str())?;
+    if name.trim().is_empty() {
+        None
+    } else {
+        Some(name.replace("%20", " "))
     }
 }
 
@@ -12709,6 +12857,168 @@ fn source_validation_shell_function() -> &'static str {
 }\n"
 }
 
+fn extract_hex_token(output: &str, expected_len: usize) -> Option<String> {
+    output
+        .split(|ch: char| !ch.is_ascii_hexdigit())
+        .find(|token| token.len() == expected_len)
+        .map(|token| token.to_ascii_lowercase())
+}
+
+fn command_digest(path: &Path, algorithm: &str) -> Result<String> {
+    let commands: Vec<(&str, Vec<&str>, usize)> = match algorithm {
+        "sha256" => vec![
+            ("sha256sum", vec![], 64),
+            ("shasum", vec!["-a", "256"], 64),
+            ("openssl", vec!["dgst", "-sha256", "-r"], 64),
+        ],
+        "md5" => vec![
+            ("md5sum", vec![], 32),
+            ("md5", vec!["-q"], 32),
+            ("openssl", vec!["dgst", "-md5", "-r"], 32),
+        ],
+        other => anyhow::bail!("unsupported checksum algorithm {other}"),
+    };
+
+    let mut errors = Vec::new();
+    for (program, args, expected_len) in commands {
+        let output = Command::new(program).args(args).arg(path).output();
+        match output {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(digest) = extract_hex_token(&stdout, expected_len) {
+                    return Ok(digest);
+                }
+                errors.push(format!("{program}: digest not found in output"));
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                errors.push(format!(
+                    "{program}: status={} {}",
+                    output.status,
+                    compact_reason(&stderr, 160)
+                ));
+            }
+            Err(err) => errors.push(format!("{program}: {err}")),
+        }
+    }
+    anyhow::bail!(
+        "unable to compute {algorithm} digest for {}: {}",
+        path.display(),
+        errors.join("; ")
+    )
+}
+
+fn verify_manual_source_checksum(
+    file: &Path,
+    expectation: &SourceFileExpectation,
+) -> Result<Option<&'static str>> {
+    if let Some(expected) = expectation.sha256.as_deref() {
+        let actual = command_digest(file, "sha256")?;
+        if actual != expected.to_ascii_lowercase() {
+            anyhow::bail!(
+                "sha256 mismatch for {}: expected {} actual {}",
+                file.display(),
+                expected,
+                actual
+            );
+        }
+        return Ok(Some("sha256"));
+    }
+    if let Some(expected) = expectation.md5.as_deref() {
+        let actual = command_digest(file, "md5")?;
+        if actual != expected.to_ascii_lowercase() {
+            anyhow::bail!(
+                "md5 mismatch for {}: expected {} actual {}",
+                file.display(),
+                expected,
+                actual
+            );
+        }
+        return Ok(Some("md5"));
+    }
+    Ok(None)
+}
+
+fn stage_matching_manual_source_file(
+    manual_source_files: &[PathBuf],
+    parsed: &ParsedMeta,
+    resolved: &ResolvedRecipe,
+    sources_dir: &Path,
+    software_slug: &str,
+    target_arch: &str,
+) -> Result<Option<String>> {
+    if manual_source_files.is_empty() || parsed.source_url.trim().is_empty() {
+        return Ok(None);
+    }
+    if source_archive_kind(&parsed.source_url) == SourceArchiveKind::Git {
+        return Ok(None);
+    }
+
+    let expectation = match source_file_expectation_for_resolved(resolved, target_arch) {
+        Ok(v) => v,
+        Err(err) => {
+            log_progress(format!(
+                "phase=manual-source status=metadata-unavailable package={} reason={}",
+                software_slug,
+                compact_reason(&err.to_string(), 220)
+            ));
+            SourceFileExpectation::default()
+        }
+    };
+    let expected_filename = expectation
+        .filename
+        .clone()
+        .or_else(|| source_url_filename_rust(&parsed.source_url))
+        .filter(|v| !v.trim().is_empty());
+    let Some(expected_filename) = expected_filename else {
+        return Ok(None);
+    };
+
+    for file in manual_source_files {
+        let Some(file_name) = file.file_name().and_then(|v| v.to_str()) else {
+            continue;
+        };
+        if file_name != expected_filename {
+            continue;
+        }
+        if !file.is_file() {
+            anyhow::bail!(
+                "manual source file is not a regular file: {}",
+                file.display()
+            );
+        }
+        let checksum_status = verify_manual_source_checksum(file, &expectation)?;
+        fs::create_dir_all(sources_dir)
+            .with_context(|| format!("creating sources dir {}", sources_dir.display()))?;
+        let staged = sources_dir.join(&expected_filename);
+        if file.as_path() != staged.as_path() {
+            fs::copy(file, &staged).with_context(|| {
+                format!(
+                    "staging manual source {} to {}",
+                    file.display(),
+                    staged.display()
+                )
+            })?;
+        }
+        log_progress(format!(
+            "phase=manual-source status=staged package={} file={} staged={} checksum={}",
+            software_slug,
+            file.display(),
+            staged.display(),
+            checksum_status.unwrap_or("not-declared")
+        ));
+        return Ok(Some(expected_filename));
+    }
+
+    log_progress(format!(
+        "phase=manual-source status=no-match package={} expected={} supplied={}",
+        software_slug,
+        expected_filename,
+        manual_source_files.len()
+    ));
+    Ok(None)
+}
+
 fn stage_recipe_patches(
     source_patches: &[String],
     resolved: &ResolvedRecipe,
@@ -17481,6 +17791,91 @@ source:
             parsed.source_url,
             "https://bioconductor.org/packages/3.20/bioc/src/contrib/edgeR_4.4.0.tar.gz"
         );
+    }
+
+    #[test]
+    fn source_file_expectation_reads_fn_and_checksum_from_primary_source() {
+        let rendered = r#"
+package:
+  name: cap3
+  version: "10.2011"
+source:
+  - url: https://iastate.box.com/s/q1f2ypcltu62bducv0wymy8cup9srvs1
+    sha256: 52e2d03601c8cc3875c104295bb8caf1aa9b136b4f5d37c4fec0ed6efeb06001
+    fn: cap3.linux.x86_64.tar
+"#;
+        let root: Value = serde_yaml::from_str(rendered).expect("parse yaml");
+        let expectation = extract_source_file_expectation(root.get("source"));
+        assert_eq!(
+            expectation.filename.as_deref(),
+            Some("cap3.linux.x86_64.tar")
+        );
+        assert_eq!(
+            expectation.sha256.as_deref(),
+            Some("52e2d03601c8cc3875c104295bb8caf1aa9b136b4f5d37c4fec0ed6efeb06001")
+        );
+    }
+
+    #[test]
+    fn manual_source_file_stages_only_when_filename_and_checksum_match() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let recipe_dir = tmp.path().join("recipe");
+        let sources_dir = tmp.path().join("SOURCES");
+        fs::create_dir_all(&recipe_dir).expect("create recipe dir");
+        let meta_path = recipe_dir.join("meta.yaml");
+        fs::write(
+            &meta_path,
+            r#"
+package:
+  name: cap3
+  version: "10.2011"
+source:
+  - url: https://iastate.box.com/s/q1f2ypcltu62bducv0wymy8cup9srvs1
+    sha256: 258f2d4f0226d7a0def9d036501c967dbdd5cc89e896c1a950d9eb0287eab57b
+    fn: cap3.linux.x86_64.tar
+"#,
+        )
+        .expect("write meta");
+        let supplied = tmp.path().join("cap3.linux.x86_64.tar");
+        fs::write(&supplied, b"manual source\n").expect("write supplied source");
+        let parsed = ParsedMeta {
+            package_name: "cap3".to_string(),
+            version: "10.2011".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://iastate.box.com/s/q1f2ypcltu62bducv0wymy8cup9srvs1".to_string(),
+            source_folder: String::new(),
+            homepage: String::new(),
+            license: "NOASSERTION".to_string(),
+            summary: "cap3".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let resolved = ResolvedRecipe {
+            recipe_name: "cap3".to_string(),
+            recipe_dir: recipe_dir.clone(),
+            variant_dir: recipe_dir,
+            meta_path,
+            build_sh_path: None,
+            overlap_reason: "test".to_string(),
+        };
+        let staged = stage_matching_manual_source_file(
+            &[supplied],
+            &parsed,
+            &resolved,
+            &sources_dir,
+            "cap3",
+            "x86_64",
+        )
+        .expect("stage manual source");
+        assert_eq!(staged.as_deref(), Some("cap3.linux.x86_64.tar"));
+        assert!(sources_dir.join("cap3.linux.x86_64.tar").is_file());
     }
 
     #[test]

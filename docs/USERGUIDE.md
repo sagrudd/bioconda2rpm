@@ -222,6 +222,8 @@ Common optional flags:
 - `--packages-file <path>`:
   - optional newline-delimited package roots (supports `#` comments).
   - combined with positional package roots; duplicates are deduplicated.
+- `--files <path>...`:
+  - optional manually retrieved source archive(s), accepted only on exact expected filename match and declared checksum match when present.
 - `--topdir <path>`: artifact/report root override.
 - `--bad-spec-dir <path>`: quarantine override.
 - `--reports-dir <path>`: report directory override.
@@ -365,6 +367,14 @@ Use `--refresh-files` when you explicitly want the original sources fetched agai
 ```bash
 bioconda2rpm build --refresh-files blast
 ```
+
+Use `--files` when upstream distribution requires manual retrieval but the package recipe still identifies the expected archive:
+
+```bash
+bioconda2rpm build cap3 --files ./cap3.linux.x86_64.tar
+```
+
+The supplied file is accepted only when its basename exactly matches the recipe `source.fn` value, or the derived `Source0` filename when `fn` is absent. If the recipe declares `sha256` or `md5`, the checksum must match before the file is staged and included in the newly prepared SRPM. `bioconda2rpm server` rejects startup-level `--files`; run a direct `build --files ...` request when manual source intervention is needed.
 
 If the generated SPEC has changed but `--refresh-files` is not set, bioconda2rpm extracts source assets from the authoritative SRPM and prepares a new SRPM from the current SPEC without contacting upstream. That new SRPM becomes the authoritative SRPM for the package version.
 

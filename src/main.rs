@@ -107,13 +107,26 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let _build_session = match build_lock::BuildSessionGuard::acquire_or_forward_build(
-                &topdir,
-                &args.effective_target_id(),
-                &requested_packages,
-                args.force,
-                args.refresh_files,
-            ) {
+            let acquire_outcome = if args.files.is_empty() {
+                build_lock::BuildSessionGuard::acquire_or_forward_build(
+                    &topdir,
+                    &args.effective_target_id(),
+                    &requested_packages,
+                    args.force,
+                    args.refresh_files,
+                )
+            } else {
+                build_lock::BuildSessionGuard::acquire(
+                    &topdir,
+                    &args.effective_target_id(),
+                    &requested_packages,
+                    build_lock::BuildSessionKind::Build,
+                    args.force,
+                    args.refresh_files,
+                )
+                .map(build_lock::BuildAcquireOutcome::Owner)
+            };
+            let _build_session = match acquire_outcome {
                 Ok(build_lock::BuildAcquireOutcome::Owner(guard)) => {
                     priority_specs::log_external_progress(format!(
                         "phase=workspace-lock status=acquired topdir={} target_id={} packages={}",
@@ -333,6 +346,12 @@ fn main() -> ExitCode {
             if args.refresh_files {
                 eprintln!(
                     "server does not accept --refresh-files; start the server without --refresh-files and submit refreshed work with `bioconda2rpm build --refresh-files <package>`"
+                );
+                return ExitCode::FAILURE;
+            }
+            if !args.files.is_empty() {
+                eprintln!(
+                    "server does not accept --files; run `bioconda2rpm build --files <file> <package>` when the manual source file is needed"
                 );
                 return ExitCode::FAILURE;
             }

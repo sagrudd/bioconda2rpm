@@ -102,6 +102,7 @@ The product is structured as layered components:
   - RPM rebuild from SRPM (`rpmbuild --rebuild`) in container
 - When an authoritative SRPM exists for the same package version, the SRPM is reused as the rebuild source unless `--refresh-files` is set. If the current SPEC has changed, source files are extracted from the authoritative SRPM and repacked into a new SRPM without contacting upstream.
 - `--refresh-files` is the only build flag that forces redownload of original upstream source assets and definition of a new authoritative SRPM.
+- `build --files <path>...` provides a manual source-ingress path for packages whose upstream archive requires human retrieval. Files are admitted only on exact expected filename match and declared checksum approval, then included in a newly prepared SRPM for that package.
 - Container image is provided at runtime via CLI flag.
 - Build concurrency is policy-driven:
   - `serial`: initial single-core execution

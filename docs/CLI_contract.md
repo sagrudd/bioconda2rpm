@@ -108,6 +108,11 @@ Production expectation:
 - `--refresh-files`
   - Forces original source-file download and preparation of a new authoritative SRPM.
   - Also bypasses the up-to-date skip for matching local binary artifacts.
+- `--files <path>...`
+  - Supplies local source archive files for packages whose upstream download requires manual retrieval.
+  - A supplied file is used only when its basename exactly matches the recipe `source.fn` value, or the derived `Source0` filename when `fn` is absent.
+  - If the recipe declares `sha256` or `md5`, the file must match that checksum before it is staged into `SOURCES` and bundled into the SRPM.
+  - Manual files are request-scoped and are not accepted as persistent `server` startup policy.
 - `--recipe-root <path>`
   - Optional override for recipes root.
 - `--sync-recipes`
@@ -207,6 +212,7 @@ Regression-only options:
 - RPM stage is executed as SRPM rebuild (`rpmbuild --rebuild <src.rpm>`).
 - SRPMs are copied to `<topdir>/targets/<target-id>/SRPMS` as soon as `rpmbuild -bs` succeeds so the catalog can record an SRPM-prepared state independently of later binary RPM success.
 - Existing authoritative SRPMs for the same package version are reused as the rebuild source unless `--refresh-files` is set.
+- A matching `--files` source disables SRPM reuse for that package version so a new SRPM can be prepared from the operator-supplied, checksum-approved source artifact.
 - When the generated SPEC has changed, the existing authoritative SRPM is used as the source-asset cache and a new SRPM is prepared from the current SPEC without upstream downloads.
 - Adaptive mode records package-level `parallel_unstable` outcomes in `<topdir>/targets/<target-id>/reports/build_stability.json` and forces serial first pass on subsequent runs for those specs.
 - Successful package builds clear stale `<topdir>/targets/<target-id>/BAD_SPEC/<tool>.txt` quarantine notes.

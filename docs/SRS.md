@@ -140,6 +140,10 @@ FR-015 Containerized build chain
 - When an authoritative SRPM exists for the requested package version and `--refresh-files` is not set, the RPM rebuild shall use that SRPM instead of redownloading original upstream source assets.
 - If the current generated SPEC differs from the SPEC embedded in the authoritative SRPM, the system shall extract source assets from the authoritative SRPM and prepare a new SRPM from the current SPEC without redownloading upstream assets.
 - `--refresh-files` shall force original source-file downloads and preparation of a new authoritative SRPM.
+- `build --files <path>...` shall allow operator-supplied source archives for upstream sources requiring manual retrieval.
+- A file supplied through `--files` shall be staged only when its basename exactly matches the recipe-declared `source.fn` value or the generated `Source0` filename when `source.fn` is absent.
+- If the recipe declares a source checksum such as `sha256` or `md5`, an operator-supplied source file shall be rejected unless the checksum matches before SRPM preparation.
+- When an operator-supplied source file is accepted, SRPM reuse shall be bypassed for that package so the accepted source is included in a newly prepared authoritative SRPM.
 - The CLI shall expose a container profile flag for this selection.
 - If the selected container image is missing locally, the system shall build it automatically from the repository-controlled Dockerfile for that profile before build execution continues.
 

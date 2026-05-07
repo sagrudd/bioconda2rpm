@@ -21,6 +21,12 @@ Single package:
 cargo run -- build samtools
 ```
 
+Manually supplied source archive:
+
+```bash
+bioconda2rpm build cap3 --files ./cap3.linux.x86_64.tar
+```
+
 Batch queue build:
 
 ```bash
