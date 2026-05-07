@@ -11,6 +11,30 @@ Production expectation:
 - Build order is dependency-first for Bioconda packages, then target package.
 - Stage order per package is `SPEC -> SRPM -> RPM`.
 
+## Persistent Server Command
+
+```bash
+bioconda2rpm server [build-options] [<initial-package...>]
+```
+
+Production expectation:
+- `server` owns the workspace build lock for the selected target id.
+- It launches the progress TUI and remains alive after each build batch completes.
+- It drains forwarded requests from secondary `build` invocations until Ctrl-C is provided by the user.
+- Initial packages are optional; without them the server starts idle and waits for forwarded work.
+
+## Remove Command
+
+```bash
+bioconda2rpm remove [--topdir <path>] [--target-id <target-id>] [--queue-only] <package...>
+```
+
+Production expectation:
+- `remove` prunes matching packages from the pending forwarded request queue.
+- It submits an active remove request for the owning build/server process so in-memory queued nodes are skipped.
+- Unless `--queue-only` is set, it stops matching running `bioconda2rpm-<package>-...` package build containers to free worker capacity.
+- Removal targets the same derived `<target-id>` semantics as `build`, unless `--target-id` is provided explicitly.
+
 ## Priority SPEC Generation Command
 
 ```bash
@@ -140,6 +164,8 @@ Regression-only options:
 - Multi-package queue mode enforces dependency gates: a package is dispatched only after its Bioconda dependency nodes succeed.
 - Workspace-lock ownership is authoritative: secondary `build` invocations submit package names into the active session queue instead of failing lock-acquisition.
 - Forwarded packages inherit the authoritative session force-rebuild policy (`--force`) and do not override other scheduler/container settings.
+- Persistent `server` ownership keeps the queue interface available between batches and exits only on user Ctrl-C.
+- Operator removals are explicit queue events; removed package nodes are reported as skipped and their dependents are blocked by normal dependency-gate handling.
 - Recipes with `outputs:` are expanded into discrete package outputs.
 - Highest versioned recipe subdirectory is selected when present.
 - Unresolved dependencies quarantine by default.

@@ -74,6 +74,25 @@ cargo run -- build \
   --packages-file ./docs/verification_software.txt
 ```
 
+Persistent server mode:
+
+```bash
+cargo run -- server \
+  --sync-recipes \
+  --parallel-policy adaptive \
+  --build-jobs 4
+```
+
+`server` owns the workspace build lock, launches the same progress TUI, and remains alive after each batch completes. Additional `bioconda2rpm build <package>` invocations with the same target id are forwarded into the server queue. The server exits only when the user sends Ctrl-C.
+
+Remove queued or stalled package work:
+
+```bash
+cargo run -- remove emboss blast
+```
+
+`remove` prunes matching packages from the pending forwarded queue, submits an active remove request for the owning build/server process, and stops matching `bioconda2rpm-<package>-...` build containers unless `--queue-only` is used. This is intended for long-running or blocked package work where freeing worker capacity is more useful than waiting for timeout.
+
 Optional container controls:
 
 ```bash
@@ -228,6 +247,8 @@ Per `build <tool>` run:
    - if another local `bioconda2rpm build ...` process starts while this run owns the workspace lock, that secondary request is forwarded into this queue as additional root package(s)
    - forwarded requests contribute package names only; queue/scheduler/container configuration remains authoritative from the owning process
    - when the owning process is running with `--force`, forwarded packages are rebuilt under the same force policy
+   - `bioconda2rpm server` uses the same queue but keeps ownership after a batch completes, draining future forwarded requests until Ctrl-C
+   - `bioconda2rpm remove <package...>` records operator removals so pending nodes are skipped and matching active package containers can be stopped
 5. For each package:
    - Resolve/prepare sources from recipe metadata.
    - Stage and apply any `source.patches` entries during `%prep`.

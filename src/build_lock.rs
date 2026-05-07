@@ -9,6 +9,7 @@ use std::process::Command;
 const LOCK_FILE_NAME: &str = ".bioconda2rpm-artifacts.lock";
 const STATE_FILE_NAME: &str = ".bioconda2rpm-active-builds.json";
 const REQUESTS_FILE_NAME: &str = ".bioconda2rpm-build-requests.jsonl";
+const REMOVE_REQUESTS_FILE_NAME: &str = ".bioconda2rpm-remove-requests.jsonl";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildSessionKind {
@@ -63,6 +64,22 @@ pub struct LookupQueuedBuildRequest {
     pub submitted_at_utc: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct RemovedQueuedPackage {
+    pub package: String,
+    pub target_id: String,
+    pub submitted_host: String,
+    pub submitted_pid: u32,
+    pub submitted_at_utc: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct QueueRemovalSummary {
+    pub removed_packages: usize,
+    pub retained_requests: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BuildLookupSnapshot {
     pub topdir: String,
@@ -106,6 +123,18 @@ struct BuildQueueRequest {
     #[serde(default = "default_host_name")]
     submitted_host: String,
     submitted_at_utc: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BuildRemoveRequest {
+    pid: u32,
+    target_id: String,
+    packages: Vec<String>,
+    #[serde(default = "default_host_name")]
+    submitted_host: String,
+    submitted_at_utc: String,
+    #[serde(default)]
+    reason: String,
 }
 
 pub struct BuildSessionGuard {
@@ -357,6 +386,9 @@ impl Drop for BuildSessionGuard {
             let _ = fs::remove_file(&self.state_file);
             if self.session_kind == BuildSessionKind::Build {
                 let _ = fs::remove_file(&self.requests_file);
+                if let Some(topdir) = self.requests_file.parent() {
+                    let _ = fs::remove_file(topdir.join(REMOVE_REQUESTS_FILE_NAME));
+                }
             }
         } else {
             let _ = write_state(&self.state_file, &state);
@@ -442,6 +474,253 @@ pub fn drain_forwarded_build_requests(
     Ok(queued)
 }
 
+pub fn append_remove_request(
+    topdir: &Path,
+    target_id: &str,
+    packages: &[String],
+    reason: &str,
+) -> Result<()> {
+    fs::create_dir_all(topdir)
+        .with_context(|| format!("creating topdir {}", topdir.to_string_lossy()))?;
+    let remove_file = topdir.join(REMOVE_REQUESTS_FILE_NAME);
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .read(true)
+        .open(&remove_file)
+        .with_context(|| format!("opening remove requests file {}", remove_file.display()))?;
+    file.lock_exclusive()
+        .with_context(|| format!("locking remove requests file {}", remove_file.display()))?;
+
+    let request = BuildRemoveRequest {
+        pid: std::process::id(),
+        target_id: target_id.to_string(),
+        packages: packages.to_vec(),
+        submitted_host: current_host_name(),
+        submitted_at_utc: chrono::Utc::now().to_rfc3339(),
+        reason: reason.to_string(),
+    };
+    let payload = serde_json::to_string(&request).context("serializing build remove request")?;
+    writeln!(file, "{payload}")
+        .with_context(|| format!("writing remove requests file {}", remove_file.display()))?;
+    file.flush()
+        .with_context(|| format!("flushing remove requests file {}", remove_file.display()))?;
+    file.unlock()
+        .with_context(|| format!("unlocking remove requests file {}", remove_file.display()))?;
+    Ok(())
+}
+
+pub fn drain_removed_build_requests(
+    topdir: &Path,
+    target_id: &str,
+) -> Result<Vec<RemovedQueuedPackage>> {
+    let remove_file = topdir.join(REMOVE_REQUESTS_FILE_NAME);
+    if !remove_file.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&remove_file)
+        .with_context(|| format!("opening remove requests file {}", remove_file.display()))?;
+    match file.try_lock_exclusive() {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::WouldBlock => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("locking remove requests file {}", remove_file.display())
+            });
+        }
+    }
+
+    file.seek(SeekFrom::Start(0))
+        .with_context(|| format!("seeking remove requests file {}", remove_file.display()))?;
+    let mut raw = String::new();
+    file.read_to_string(&mut raw)
+        .with_context(|| format!("reading remove requests file {}", remove_file.display()))?;
+
+    let mut removed = Vec::new();
+    let mut retained_lines = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(req) = serde_json::from_str::<BuildRemoveRequest>(trimmed) else {
+            retained_lines.push(trimmed.to_string());
+            continue;
+        };
+        if req.target_id == target_id {
+            for package in req.packages {
+                let package = package.trim().to_string();
+                if package.is_empty() {
+                    continue;
+                }
+                removed.push(RemovedQueuedPackage {
+                    package,
+                    target_id: req.target_id.clone(),
+                    submitted_host: req.submitted_host.clone(),
+                    submitted_pid: req.pid,
+                    submitted_at_utc: req.submitted_at_utc.clone(),
+                    reason: req.reason.clone(),
+                });
+            }
+        } else {
+            retained_lines.push(trimmed.to_string());
+        }
+    }
+
+    file.set_len(0)
+        .with_context(|| format!("truncating remove requests file {}", remove_file.display()))?;
+    file.seek(SeekFrom::Start(0))
+        .with_context(|| format!("rewinding remove requests file {}", remove_file.display()))?;
+    if !retained_lines.is_empty() {
+        let payload = format!("{}\n", retained_lines.join("\n"));
+        file.write_all(payload.as_bytes())
+            .with_context(|| format!("writing remove requests file {}", remove_file.display()))?;
+    }
+    file.flush()
+        .with_context(|| format!("flushing remove requests file {}", remove_file.display()))?;
+    file.unlock()
+        .with_context(|| format!("unlocking remove requests file {}", remove_file.display()))?;
+
+    Ok(removed)
+}
+
+pub fn remove_queued_build_requests(
+    topdir: &Path,
+    target_id: Option<&str>,
+    packages: &[String],
+) -> Result<QueueRemovalSummary> {
+    let requests_file = topdir.join(REQUESTS_FILE_NAME);
+    if !requests_file.exists() {
+        return Ok(QueueRemovalSummary {
+            removed_packages: 0,
+            retained_requests: 0,
+        });
+    }
+    let remove_keys = packages
+        .iter()
+        .map(|pkg| normalize_package_key(pkg))
+        .filter(|pkg| !pkg.is_empty())
+        .collect::<std::collections::BTreeSet<_>>();
+    if remove_keys.is_empty() {
+        return Ok(QueueRemovalSummary {
+            removed_packages: 0,
+            retained_requests: 0,
+        });
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&requests_file)
+        .with_context(|| format!("opening build requests file {}", requests_file.display()))?;
+    file.lock_exclusive()
+        .with_context(|| format!("locking build requests file {}", requests_file.display()))?;
+    file.seek(SeekFrom::Start(0))
+        .with_context(|| format!("seeking build requests file {}", requests_file.display()))?;
+    let mut raw = String::new();
+    file.read_to_string(&mut raw)
+        .with_context(|| format!("reading build requests file {}", requests_file.display()))?;
+
+    let mut removed_packages = 0usize;
+    let mut retained_lines = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(mut req) = serde_json::from_str::<BuildQueueRequest>(trimmed) else {
+            retained_lines.push(trimmed.to_string());
+            continue;
+        };
+        if target_id.is_some_and(|target| req.target_id != target) {
+            retained_lines.push(trimmed.to_string());
+            continue;
+        }
+        let before = req.packages.len();
+        req.packages
+            .retain(|pkg| !remove_keys.contains(&normalize_package_key(pkg)));
+        removed_packages += before.saturating_sub(req.packages.len());
+        if req.packages.is_empty() {
+            continue;
+        }
+        retained_lines
+            .push(serde_json::to_string(&req).context("serializing retained queue request")?);
+    }
+
+    file.set_len(0)
+        .with_context(|| format!("truncating build requests file {}", requests_file.display()))?;
+    file.seek(SeekFrom::Start(0))
+        .with_context(|| format!("rewinding build requests file {}", requests_file.display()))?;
+    if !retained_lines.is_empty() {
+        let payload = format!("{}\n", retained_lines.join("\n"));
+        file.write_all(payload.as_bytes())
+            .with_context(|| format!("writing build requests file {}", requests_file.display()))?;
+    }
+    file.flush()
+        .with_context(|| format!("flushing build requests file {}", requests_file.display()))?;
+    file.unlock()
+        .with_context(|| format!("unlocking build requests file {}", requests_file.display()))?;
+
+    Ok(QueueRemovalSummary {
+        removed_packages,
+        retained_requests: retained_lines.len(),
+    })
+}
+
+pub fn stop_matching_build_containers(engine: &str, packages: &[String]) -> Result<Vec<String>> {
+    let package_prefixes = packages
+        .iter()
+        .map(|pkg| sanitize_container_component(pkg))
+        .filter(|pkg| !pkg.is_empty())
+        .map(|pkg| format!("bioconda2rpm-{pkg}-"))
+        .collect::<Vec<_>>();
+    if package_prefixes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let output = Command::new(engine)
+        .args(["ps", "--format", "{{.Names}}"])
+        .output()
+        .with_context(|| format!("probing running build containers with {engine}"))?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!(
+            "container probe failed: {}",
+            if err.is_empty() {
+                output.status.to_string()
+            } else {
+                err
+            }
+        );
+    }
+    let matches = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|name| {
+            !name.is_empty()
+                && package_prefixes
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    for name in &matches {
+        let status = Command::new(engine)
+            .args(["rm", "-f", name])
+            .status()
+            .with_context(|| format!("stopping build container {name} with {engine}"))?;
+        if !status.success() {
+            bail!("failed to stop build container {name}: {status}");
+        }
+    }
+    Ok(matches)
+}
+
 fn load_state(path: &Path) -> Result<ActiveBuildState> {
     if !path.exists() {
         return Ok(ActiveBuildState::default());
@@ -453,6 +732,23 @@ fn load_state(path: &Path) -> Result<ActiveBuildState> {
     }
     serde_json::from_str(&raw)
         .with_context(|| format!("parsing active build state {}", path.to_string_lossy()))
+}
+
+fn normalize_package_key(raw: &str) -> String {
+    raw.trim().to_ascii_lowercase().replace('_', "-")
+}
+
+fn sanitize_container_component(input: &str) -> String {
+    input
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn detect_lock_held(lock_path: &Path) -> Result<bool> {
@@ -664,6 +960,94 @@ mod tests {
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].package, "blast");
         assert!(!drained[0].submitted_host.is_empty());
+
+        let _ = fs::remove_dir_all(&topdir);
+    }
+
+    #[test]
+    fn remove_queued_build_requests_prunes_matching_packages() {
+        let topdir = tempdir("remove-queued");
+        let requests = topdir.join(REQUESTS_FILE_NAME);
+        let req_a = BuildQueueRequest {
+            pid: 1,
+            target_id: "target-a".to_string(),
+            packages: vec![
+                "emboss".to_string(),
+                "blast".to_string(),
+                "samtools".to_string(),
+            ],
+            submitted_host: "host-a".to_string(),
+            submitted_at_utc: "2026-05-07T00:00:00Z".to_string(),
+        };
+        let req_b = BuildQueueRequest {
+            pid: 2,
+            target_id: "target-b".to_string(),
+            packages: vec!["emboss".to_string()],
+            submitted_host: "host-b".to_string(),
+            submitted_at_utc: "2026-05-07T00:00:01Z".to_string(),
+        };
+        let payload = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&req_a).expect("serialize req a"),
+            serde_json::to_string(&req_b).expect("serialize req b")
+        );
+        fs::write(&requests, payload).expect("seed queue");
+
+        let summary = remove_queued_build_requests(
+            &topdir,
+            Some("target-a"),
+            &["blast".to_string(), "emboss".to_string()],
+        )
+        .expect("remove queued packages");
+        assert_eq!(summary.removed_packages, 2);
+        assert_eq!(summary.retained_requests, 2);
+
+        let remaining = fs::read_to_string(&requests).expect("read queue");
+        assert!(!remaining.contains("\"blast\""));
+        assert!(remaining.contains("\"samtools\""));
+        assert!(remaining.contains("\"target-b\""));
+        assert!(remaining.contains("\"emboss\""));
+
+        let _ = fs::remove_dir_all(&topdir);
+    }
+
+    #[test]
+    fn drain_removed_build_requests_filters_by_target() {
+        let topdir = tempdir("drain-removed");
+        let remove_file = topdir.join(REMOVE_REQUESTS_FILE_NAME);
+        let req_a = BuildRemoveRequest {
+            pid: 9,
+            target_id: "target-a".to_string(),
+            packages: vec!["emboss".to_string(), "blast".to_string()],
+            submitted_host: "host-a".to_string(),
+            submitted_at_utc: "2026-05-07T00:00:00Z".to_string(),
+            reason: "operator removed".to_string(),
+        };
+        let req_b = BuildRemoveRequest {
+            pid: 10,
+            target_id: "target-b".to_string(),
+            packages: vec!["samtools".to_string()],
+            submitted_host: "host-b".to_string(),
+            submitted_at_utc: "2026-05-07T00:00:01Z".to_string(),
+            reason: "other target".to_string(),
+        };
+        let payload = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&req_a).expect("serialize req a"),
+            serde_json::to_string(&req_b).expect("serialize req b")
+        );
+        fs::write(&remove_file, payload).expect("seed remove queue");
+
+        let removed =
+            drain_removed_build_requests(&topdir, "target-a").expect("drain remove requests");
+        assert_eq!(removed.len(), 2);
+        assert_eq!(removed[0].package, "emboss");
+        assert_eq!(removed[0].reason, "operator removed");
+        assert_eq!(removed[1].target_id, "target-a");
+
+        let remaining = fs::read_to_string(&remove_file).expect("read remaining remove queue");
+        assert!(remaining.contains("\"target-b\""));
+        assert!(!remaining.contains("\"target-a\""));
 
         let _ = fs::remove_dir_all(&topdir);
     }

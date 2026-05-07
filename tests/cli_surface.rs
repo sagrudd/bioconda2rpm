@@ -16,6 +16,8 @@ fn help_lists_primary_commands() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     for command in [
         "build",
+        "server",
+        "remove",
         "regression",
         "generate-priority-specs",
         "recipes",

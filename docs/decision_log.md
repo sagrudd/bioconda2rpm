@@ -224,3 +224,8 @@
 - Source candidate generation now adds a deterministic SourceForge-hosted source mirror for the exact EMBOSS tarball basename before falling back to raw FTP, so workers do not park for hours on a dead origin.
 - Raw FTP fallback remains available but is bounded to short retry windows (`wget --tries=2 --timeout=20 --read-timeout=60`, `curl --retry 2 --max-time 300`) to make source unavailability a visible failure instead of a long-running hidden stall.
 - Minimal build-scope detection now treats `./configure --prefix=$PREFIX` in either the interpreted build phase or install phase as a buildroot-text-scrub trigger when followed by `make install`; EMBOSS configures during `%install` and otherwise leaves buildroot-prefixed `.la` and wrapper metadata in the payload.
+
+### Persistent build server and operator removal
+- `bioconda2rpm server` is now the long-lived owner for the existing forwarded-build queue: it acquires the target workspace lock, launches the TUI, accepts optional initial packages, and continues draining forwarded `build` requests after each batch until Ctrl-C.
+- `bioconda2rpm remove` adds an explicit remove-request side channel and prunes the pending forwarded queue. Active owners poll this side channel between scheduling passes and mark removed nodes skipped.
+- Running package containers use deterministic `bioconda2rpm-<package>-...` names, so `remove` also stops matching containers by default; this releases worker capacity for stalled package builds while preserving an auditable queue event. `--queue-only` leaves containers untouched.

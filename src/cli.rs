@@ -18,6 +18,10 @@ pub struct Cli {
 pub enum Command {
     /// Build RPM artifacts for a package and optionally its dependency closure.
     Build(BuildArgs),
+    /// Run a persistent build owner that drains forwarded build requests until Ctrl-C.
+    Server(BuildArgs),
+    /// Remove queued or running package build work from an active build owner.
+    Remove(RemoveArgs),
     /// Run a regression corpus campaign (PR top-N or full nightly).
     Regression(RegressionArgs),
     /// Generate Phoreus payload/meta SPECs for top-priority tools from tools.csv.
@@ -531,6 +535,41 @@ pub struct FailuresArgs {
     pub json: bool,
 }
 
+#[derive(Debug, clap::Args)]
+pub struct RemoveArgs {
+    /// Workspace topdir. Defaults to ~/bioconda2rpm.
+    #[arg(long)]
+    pub topdir: Option<PathBuf>,
+
+    /// Explicit target id. Defaults to the container profile plus selected arch.
+    #[arg(long)]
+    pub target_id: Option<String>,
+
+    /// Controlled build container profile used to derive the default target id.
+    #[arg(long, value_enum, default_value_t = BuildContainerProfile::Almalinux97)]
+    pub container_profile: BuildContainerProfile,
+
+    /// Target architecture used to derive the default target id.
+    #[arg(long, value_enum, default_value_t = BuildArch::Host)]
+    pub arch: BuildArch,
+
+    /// Container engine binary. Defaults to docker.
+    #[arg(long, default_value = "docker")]
+    pub container_engine: String,
+
+    /// Do not stop currently running package containers; only update queue state.
+    #[arg(long)]
+    pub queue_only: bool,
+
+    /// Operator-visible reason recorded in the active build log.
+    #[arg(long, default_value = "removed by operator")]
+    pub reason: String,
+
+    /// Package names to remove from queued or active build work.
+    #[arg(value_name = "PACKAGE", required = true)]
+    pub packages: Vec<String>,
+}
+
 pub fn default_topdir() -> PathBuf {
     match env::var_os("HOME") {
         Some(home) => PathBuf::from(home).join("bioconda2rpm"),
@@ -955,6 +994,33 @@ impl FailuresArgs {
     }
 }
 
+impl RemoveArgs {
+    pub fn effective_topdir(&self) -> PathBuf {
+        self.topdir.clone().unwrap_or_else(default_topdir)
+    }
+
+    pub fn effective_container_image(&self) -> &'static str {
+        self.container_profile.image()
+    }
+
+    pub fn effective_target_arch(&self) -> String {
+        match self.arch {
+            BuildArch::Host => canonical_arch_name(std::env::consts::ARCH).to_string(),
+            BuildArch::X86_64 => "x86_64".to_string(),
+            BuildArch::Aarch64 => "aarch64".to_string(),
+        }
+    }
+
+    pub fn effective_target_id(&self) -> String {
+        self.target_id.clone().unwrap_or_else(|| {
+            default_build_target_id(
+                self.effective_container_image(),
+                &self.effective_target_arch(),
+            )
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1024,6 +1090,48 @@ mod tests {
         };
         assert!(args.effective_topdir().ends_with("bioconda2rpm"));
         assert!(!args.compact);
+    }
+
+    #[test]
+    fn remove_command_uses_expected_defaults() {
+        let cli = Cli::try_parse_from(["bioconda2rpm", "remove", "emboss", "blast"])
+            .expect("remove defaults should parse");
+        let Command::Remove(args) = cli.command else {
+            panic!("expected remove command")
+        };
+        assert_eq!(
+            args.packages,
+            vec!["emboss".to_string(), "blast".to_string()]
+        );
+        assert!(!args.queue_only);
+        assert_eq!(args.container_profile, BuildContainerProfile::Almalinux97);
+        assert_eq!(
+            args.effective_container_image(),
+            "phoreus/bioconda2rpm-build:almalinux-9.7"
+        );
+        assert!(!args.effective_target_id().is_empty());
+    }
+
+    #[test]
+    fn server_command_accepts_idle_build_surface() {
+        let cli = Cli::try_parse_from([
+            "bioconda2rpm",
+            "server",
+            "--ui",
+            "plain",
+            "--topdir",
+            "/tmp/bioconda2rpm-server",
+        ])
+        .expect("server should parse without initial packages");
+        let Command::Server(args) = cli.command else {
+            panic!("expected server command")
+        };
+        assert!(args.packages.is_empty());
+        assert_eq!(args.ui, UiMode::Plain);
+        assert_eq!(
+            args.effective_topdir(),
+            PathBuf::from("/tmp/bioconda2rpm-server")
+        );
     }
 
     #[test]

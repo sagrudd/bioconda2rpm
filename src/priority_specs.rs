@@ -531,6 +531,10 @@ fn cancellation_requested() -> bool {
     CANCELLATION_REQUESTED.load(AtomicOrdering::SeqCst)
 }
 
+pub fn cancellation_requested_public() -> bool {
+    cancellation_requested()
+}
+
 fn cancellation_reason() -> String {
     let lock = CANCELLATION_REASON.get_or_init(|| Mutex::new(None));
     match lock.lock() {
@@ -1420,6 +1424,69 @@ fn process_failed_dependency_queue(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn finalize_removed_node(
+    key: &str,
+    reason: &str,
+    global_nodes: &BTreeMap<String, BuildPlanNode>,
+    pending_deps: &mut HashMap<String, usize>,
+    dependents: &HashMap<String, Vec<String>>,
+    finalized: &mut HashSet<String>,
+    failed_by: &mut HashMap<String, BTreeSet<String>>,
+    results: &mut Vec<ReportEntry>,
+    fail_queue: &mut VecDeque<String>,
+) -> bool {
+    if finalized.contains(key) {
+        return false;
+    }
+    let Some(node) = global_nodes.get(key) else {
+        finalized.insert(key.to_string());
+        return false;
+    };
+    log_progress(format!(
+        "phase=batch-queue status=removed key={} package={} reason={}",
+        key,
+        node.name,
+        compact_reason(reason, 220)
+    ));
+    results.push(ReportEntry {
+        software: node.name.clone(),
+        priority: 0,
+        status: "skipped".to_string(),
+        reason: reason.to_string(),
+        overlap_recipe: node.name.clone(),
+        overlap_reason: "operator-remove".to_string(),
+        variant_dir: String::new(),
+        package_name: String::new(),
+        version: String::new(),
+        payload_spec_path: String::new(),
+        meta_spec_path: String::new(),
+        staged_build_sh: String::new(),
+    });
+    finalized.insert(key.to_string());
+
+    if let Some(children) = dependents.get(key) {
+        for child in children {
+            if finalized.contains(child) {
+                continue;
+            }
+            if let Some(pending) = pending_deps.get_mut(child)
+                && *pending > 0
+            {
+                *pending -= 1;
+            }
+            failed_by
+                .entry(child.clone())
+                .or_default()
+                .insert(key.to_string());
+            if pending_deps.get(child).copied().unwrap_or(0) == 0 {
+                fail_queue.push_back(child.clone());
+            }
+        }
+    }
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
 fn merge_dynamic_plan_nodes(
     nodes: BTreeMap<String, BuildPlanNode>,
     global_nodes: &mut BTreeMap<String, BuildPlanNode>,
@@ -1758,9 +1825,75 @@ fn run_build_batch_queue(
     let mut failed_by: HashMap<String, BTreeSet<String>> = HashMap::new();
     let mut pending_fail_queue: VecDeque<String> = VecDeque::new();
     let mut build_order = Vec::new();
+    let mut removed_keys: HashMap<String, String> = HashMap::new();
 
     while !ready.is_empty() || running > 0 || !pending_fail_queue.is_empty() {
         if !cancellation_requested() {
+            match build_lock::drain_removed_build_requests(
+                build_config.topdir.as_path(),
+                &build_config.target_id,
+            ) {
+                Ok(removed_roots) => {
+                    for removed in removed_roots {
+                        let key = normalize_name(&removed.package);
+                        if key.is_empty() {
+                            continue;
+                        }
+                        let reason = if removed.reason.trim().is_empty() {
+                            "removed from active build queue by operator".to_string()
+                        } else {
+                            removed.reason.clone()
+                        };
+                        removed_keys.insert(key.clone(), reason.clone());
+                        ready.retain(|queued| queued != &key);
+                        pending_fail_queue.retain(|queued| queued != &key);
+                        log_progress(format!(
+                            "phase=workspace-lock status=remove-request-received package={} key={} target_id={} submit_host={} submit_pid={} submit_ts={} reason={}",
+                            removed.package,
+                            key,
+                            removed.target_id,
+                            removed.submitted_host,
+                            removed.submitted_pid,
+                            removed.submitted_at_utc,
+                            compact_reason(&reason, 180)
+                        ));
+                        if !running_keys.contains(&key) && global_nodes.contains_key(&key) {
+                            let mut fail_queue = VecDeque::new();
+                            if finalize_removed_node(
+                                &key,
+                                &reason,
+                                &global_nodes,
+                                &mut pending_deps,
+                                &dependents,
+                                &mut finalized,
+                                &mut failed_by,
+                                &mut results,
+                                &mut fail_queue,
+                            ) {
+                                process_failed_dependency_queue(
+                                    &mut fail_queue,
+                                    &global_nodes,
+                                    &mut pending_deps,
+                                    &dependents,
+                                    &mut finalized,
+                                    &mut failed_by,
+                                    &mut results,
+                                    bad_spec_dir.as_path(),
+                                    &args.missing_dependency,
+                                    &mut fail_reason,
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    log_progress(format!(
+                        "phase=workspace-lock status=remove-request-drain-error target_id={} detail={}",
+                        build_config.target_id,
+                        compact_reason(&err.to_string(), 220)
+                    ));
+                }
+            }
             match build_lock::drain_forwarded_build_requests(
                 build_config.topdir.as_path(),
                 &build_config.target_id,
@@ -1964,6 +2097,34 @@ fn run_build_batch_queue(
             if key.is_empty() || finalized.contains(&key) {
                 continue;
             }
+            if let Some(reason) = removed_keys.get(&key).cloned() {
+                let mut fail_queue = VecDeque::new();
+                if finalize_removed_node(
+                    &key,
+                    &reason,
+                    &global_nodes,
+                    &mut pending_deps,
+                    &dependents,
+                    &mut finalized,
+                    &mut failed_by,
+                    &mut results,
+                    &mut fail_queue,
+                ) {
+                    process_failed_dependency_queue(
+                        &mut fail_queue,
+                        &global_nodes,
+                        &mut pending_deps,
+                        &dependents,
+                        &mut finalized,
+                        &mut failed_by,
+                        &mut results,
+                        bad_spec_dir.as_path(),
+                        &args.missing_dependency,
+                        &mut fail_reason,
+                    );
+                }
+                continue;
+            }
             if fail_reason.is_some() && args.missing_dependency == MissingDependencyPolicy::Fail {
                 break;
             }
@@ -2037,6 +2198,12 @@ fn run_build_batch_queue(
         running_keys.remove(&done_key);
         if finalized.contains(&done_key) {
             continue;
+        }
+        let mut entry = entry;
+        if let Some(reason) = removed_keys.get(&done_key).cloned() {
+            entry.status = "skipped".to_string();
+            entry.reason = reason;
+            entry.overlap_reason = "operator-remove".to_string();
         }
         finalized.insert(done_key.clone());
         log_progress(format!(
