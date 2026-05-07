@@ -1631,6 +1631,14 @@ pub struct TodoTask {
     pub report_path: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct FailureRebuildPlan {
+    pub packages: Vec<String>,
+    pub selected_failures: usize,
+    pub skipped_without_srpm: usize,
+    pub arch: Option<String>,
+}
+
 fn source_failure_is_human_actionable(reason: &str) -> bool {
     let lower = reason.to_ascii_lowercase();
     lower.contains("source_unavailable")
@@ -1965,6 +1973,65 @@ pub fn run_failures(topdir: &Path, args: &crate::cli::FailuresArgs) -> Result<()
     }
 
     Ok(())
+}
+
+pub fn failure_rebuild_plan(
+    topdir: &Path,
+    args: &crate::cli::FailuresArgs,
+) -> Result<FailureRebuildPlan> {
+    let catalog = if args.refresh {
+        update_catalog(topdir)
+    } else {
+        read_catalog(topdir)
+    };
+
+    let name_pat = args
+        .name
+        .as_deref()
+        .map(Pattern::new)
+        .transpose()
+        .with_context(|| "invalid --name glob pattern")?;
+    let version_pat = args
+        .version
+        .as_deref()
+        .map(Pattern::new)
+        .transpose()
+        .with_context(|| "invalid --version glob pattern")?;
+    let blacklisted_packages = blacklisted_packages_from_default_path();
+
+    let filtered = filter_failures(
+        &catalog.failures,
+        name_pat.as_ref(),
+        version_pat.as_ref(),
+        args.arch.as_deref(),
+        &blacklisted_packages,
+    );
+    let selected_failures = filtered.len();
+    let mut packages = BTreeSet::new();
+    let mut arches = BTreeSet::new();
+    let mut skipped_without_srpm = 0usize;
+
+    for failure in filtered {
+        if authoritative_srpm_for(topdir, &failure.software, &failure.version).is_some() {
+            packages.insert(failure.software.clone());
+            if !failure.arch.trim().is_empty() {
+                arches.insert(failure.arch.clone());
+            }
+        } else {
+            skipped_without_srpm += 1;
+        }
+    }
+
+    Ok(FailureRebuildPlan {
+        packages: packages.into_iter().collect(),
+        selected_failures,
+        skipped_without_srpm,
+        arch: if arches.len() == 1 {
+            arches.into_iter().next()
+        } else {
+            None
+        },
+    })
 }
 
 pub fn run_todo(topdir: &Path, args: &crate::cli::TodoArgs) -> Result<()> {
@@ -2559,6 +2626,70 @@ mod tests {
             authoritative_srpm_for(&tmp, "treeswirl", "2.0.0"),
             Some(catalog_srpm)
         );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn failure_rebuild_plan_selects_only_failures_with_authoritative_srpm() {
+        let tmp = std::env::temp_dir().join(format!(
+            "bioconda2rpm-failure-rebuild-plan-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        fs::create_dir_all(&tmp).expect("create temp dir");
+        let srpm = tmp.join("phoreus-srpmbacked-rebuild-test-1.0-1.0-1.el9.src.rpm");
+        fs::write(&srpm, b"placeholder srpm").expect("write srpm");
+        let catalog = Catalog {
+            packages: vec![CatalogPackage {
+                software: "srpmbacked-rebuild-test".to_string(),
+                versions: vec![CatalogVersion {
+                    version: "1.0".to_string(),
+                    authoritative_srpm: Some(srpm_artifact_from_path(&srpm)),
+                    builds: Vec::new(),
+                }],
+            }],
+            failures: vec![
+                FailureEntry {
+                    software: "srpmbacked-rebuild-test".to_string(),
+                    version: "1.0".to_string(),
+                    arch: "x86_64".to_string(),
+                    target_id: "phoreus-bioconda2rpm-build-almalinux-9.7-x86_64".to_string(),
+                    status: "quarantined".to_string(),
+                    reason: "payload spec build failed in container".to_string(),
+                    report_path: tmp.join("build_srpmbacked.json").display().to_string(),
+                    failed_at: "2026-05-07T10:00:00Z".to_string(),
+                },
+                FailureEntry {
+                    software: "sourceonly-rebuild-test".to_string(),
+                    version: "1.0".to_string(),
+                    arch: "x86_64".to_string(),
+                    target_id: "phoreus-bioconda2rpm-build-almalinux-9.7-x86_64".to_string(),
+                    status: "quarantined".to_string(),
+                    reason: "source download failed after retries".to_string(),
+                    report_path: tmp.join("build_sourceonly.json").display().to_string(),
+                    failed_at: "2026-05-07T10:05:00Z".to_string(),
+                },
+            ],
+            ..Catalog::default()
+        };
+        write_catalog(&tmp, &catalog).expect("write catalog");
+
+        let args = crate::cli::FailuresArgs {
+            topdir: Some(tmp.clone()),
+            name: None,
+            version: None,
+            arch: Some("x86_64".to_string()),
+            refresh: false,
+            rebuild: true,
+            json: false,
+        };
+        let plan = failure_rebuild_plan(&tmp, &args).expect("failure rebuild plan");
+
+        assert_eq!(plan.packages, vec!["srpmbacked-rebuild-test".to_string()]);
+        assert_eq!(plan.selected_failures, 2);
+        assert_eq!(plan.skipped_without_srpm, 1);
+        assert_eq!(plan.arch.as_deref(), Some("x86_64"));
 
         let _ = fs::remove_dir_all(&tmp);
     }

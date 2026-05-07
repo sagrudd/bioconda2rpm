@@ -164,7 +164,7 @@ pub enum UiMode {
     Auto,
 }
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct BuildArgs {
     /// Optional root directory containing Bioconda recipes.
     /// When omitted, bioconda2rpm manages a local clone at <topdir>/bioconda-recipes/recipes.
@@ -567,8 +567,12 @@ pub struct FailuresArgs {
     #[arg(long)]
     pub refresh: bool,
 
-    /// Emit JSON output.
+    /// Rebuild current failed packages that already have a matching authoritative SRPM.
     #[arg(long)]
+    pub rebuild: bool,
+
+    /// Emit JSON output.
+    #[arg(long, conflicts_with = "rebuild")]
     pub json: bool,
 }
 

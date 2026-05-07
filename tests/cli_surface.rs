@@ -78,6 +78,14 @@ fn failures_json_emits_catalogue_failures() {
 }
 
 #[test]
+fn failures_help_exposes_rebuild_mode() {
+    let output = run(&["failures", "--help"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--rebuild"));
+}
+
+#[test]
 fn todo_json_emits_manual_source_file_task() {
     let topdir = tempdir().expect("tempdir");
     let topdir_arg = topdir.path().to_string_lossy().to_string();
