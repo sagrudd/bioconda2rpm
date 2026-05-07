@@ -667,6 +667,18 @@ fn main() -> ExitCode {
                 }
             }
         }
+        cli::Command::Catalog(args) => match args.command {
+            cli::CatalogCommand::Migrate(migrate_args) => {
+                let topdir = migrate_args.effective_topdir();
+                match list::run_catalog_migrate(&topdir, migrate_args.json) {
+                    Ok(_) => {}
+                    Err(err) => {
+                        eprintln!("catalog migrate failed: {err:#}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+        },
     }
 
     ExitCode::SUCCESS

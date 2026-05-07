@@ -331,6 +331,19 @@ This layout keeps one canonical SPEC set while isolating binary artifacts by bui
 
 When a package builds successfully (or is confirmed up-to-date), stale `<topdir>/targets/<target-id>/BAD_SPEC/<tool>.txt` notes are removed for that package.
 
+Source RPMs are copied into `targets/<target-id>/SRPMS/` immediately after the SRPM build step succeeds. This means `.catalog.json` can show a package version as `srpm-prepared` even if the later binary RPM rebuild fails.
+
+The internal `.catalog.json` is schema-versioned. The current structure groups package entries as package name -> version -> target build records, while retaining a flat `entries` compatibility list for `bioconda2rpm list` and automation already consuming the old shape. Build records include OS profile, architecture, target id, build host, build user, timestamp, status, SRPM path, binary RPM paths, and report path when known. Each package version may also carry one authoritative SRPM.
+
+To migrate an existing catalog and inject discovered SRPM artifacts:
+
+```bash
+bioconda2rpm catalog migrate --topdir ~/bioconda2rpm
+bioconda2rpm catalog migrate --topdir ~/bioconda2rpm --json
+```
+
+Migration scans `targets/*/SRPMS/*.src.rpm`, identifies package/version metadata from RPM headers when possible and filename fallback otherwise, and records matching authoritative SRPMs even when no binary RPMs exist yet.
+
 ## 8. Reports and Status Interpretation
 
 Each report entry includes:
@@ -343,7 +356,7 @@ Each report entry includes:
 - reason/message
 
 Use the Markdown report for quick review and JSON/CSV for automation.
-For batch builds, `build_batch_*.json` is updated atomically as each package finishes, and the internal `.catalog.json` failure state is refreshed from those same terminal package results. The CSV and Markdown summaries are finalized at batch completion.
+For batch builds, `build_batch_*.json` is updated atomically as each package finishes, and the internal `.catalog.json` status, SRPM, binary RPM, and failure state is refreshed from those same terminal package results. The CSV and Markdown summaries are finalized at batch completion.
 For dependency analysis, inspect `targets/<target-id>/reports/dependency_graphs/`:
 - `status=resolved` entries include `source` (`installed`, `local_rpm`, `repo`).
 - `status=unresolved` entries include captured package-manager detail.

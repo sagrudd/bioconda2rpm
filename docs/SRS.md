@@ -105,6 +105,10 @@ FR-011 Reporting
   - CSV report
   - Markdown summary
   - Per-package dependency graph reports (JSON + Markdown) capturing dependency resolution source and status.
+- The internal `.catalog.json` shall use a versioned schema that groups entries by package name, software version, and build records.
+- Each catalog build record shall capture target OS, target architecture, target id, build host, build user, build timestamp, status, SRPM path, binary RPM paths, and report path where available.
+- Each package version may have a single authoritative SRPM recorded independently of binary RPM completion; the catalog shall allow an SRPM-prepared version entry with no binary RPMs.
+- The catalog migration command shall remap old flat entries into the current schema, infer missing provenance from existing files where possible, and inject discovered SRPMs from `<topdir>/targets/*/SRPMS`.
 
 FR-012 Naming profile
 - Default naming profile shall follow Phoreus:
@@ -127,6 +131,7 @@ FR-015 Containerized build chain
 - For generated SPECs, the build order shall always be `SPEC -> SRPM -> RPM`.
 - SRPM generation shall execute inside a selected controlled container profile image.
 - RPM generation shall rebuild from the generated SRPM (not direct SPEC-to-RPM).
+- Generated SRPMs shall be copied into the target-scoped SRPM artifact directory immediately after `rpmbuild -bs` succeeds, before dependency preflight or binary RPM rebuild begins.
 - The CLI shall expose a container profile flag for this selection.
 - If the selected container image is missing locally, the system shall build it automatically from the repository-controlled Dockerfile for that profile before build execution continues.
 
@@ -242,6 +247,7 @@ NFR-003 Traceability
 - Quarantine, resolution, and build decisions shall be recorded in structured reports, including dependency resolution graphs with source attribution (`installed`, `local_rpm`, `repo`, `unresolved`).
 - Build-script rewrites and transitive-source compatibility patches executed by package policy shall be report-visible and reproducibly attributable to generated spec logic.
 - Long-running batch builds shall maintain an incrementally refreshed JSON report and catalogue state as each package reaches a terminal state, so interrupted campaigns still expose current successes and direct failures.
+- Catalog provenance shall be sufficient to distinguish builds of the same package version across operating-system profile, architecture, host, user, and build timestamp.
 
 NFR-004 Maintainability
 - CLI behavior shall be covered by unit tests for parsing defaults and overrides.

@@ -13952,6 +13952,8 @@ if [[ -z \"${{companion_srpm_path}}\" ]]; then\n\
   echo 'no SRPM produced from companion spec build step' >&2\n\
   exit 4\n\
 fi\n\
+cp -f \"$companion_srpm_path\" '{target_srpms_dir}'/\n\
+echo \"BIOCONDA2RPM_SRPM_READY label={companion_label} path={target_srpms_dir}/$(basename \"$companion_srpm_path\")\"\n\
 mapfile -t companion_build_requires < <(rpmspec -q --buildrequires --define \"_topdir $companion_build_root\" --define \"_sourcedir $companion_sourcedir\" --define \"_smp_build_ncpus ${{BIOCONDA2RPM_CPU_COUNT}}\" \"$companion_spec\" 2>/dev/null | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
 for dep in \"${{companion_build_requires[@]:-}}\"; do\n\
   if [[ -z \"$dep\" ]]; then\n\
@@ -13967,7 +13969,6 @@ for dep in \"${{companion_build_requires[@]:-}}\"; do\n\
   fi\n\
 done\n\
 rpmbuild --rebuild --nodeps --define \"_topdir $companion_build_root\" --define \"_sourcedir $companion_sourcedir\" \"${{rpm_smp_flags[@]}}\" \"${{companion_srpm_path}}\"\n\
-find \"$companion_build_root/SRPMS\" -type f -name '*.src.rpm' -exec cp -f {{}} '{target_srpms_dir}'/ \\;\n\
 while IFS= read -r rpmf; do\n\
   rel=\"${{rpmf#$companion_build_root/RPMS/}}\"\n\
   rpm_subarch=$(printf '%s' \"$rel\" | cut -d'/' -f1)\n\
@@ -14378,6 +14379,8 @@ if [[ -z \"${{srpm_path}}\" ]]; then\n\
   echo 'no SRPM produced from spec build step' >&2\n\
   exit 4\n\
 fi\n\
+cp -f \"$srpm_path\" '{target_srpms_dir}'/\n\
+echo \"BIOCONDA2RPM_SRPM_READY label={label} path={target_srpms_dir}/$(basename \"$srpm_path\")\"\n\
 \n\
 pm=''\n\
 if command -v dnf >/dev/null 2>&1; then\n\
@@ -14615,7 +14618,6 @@ for dep in \"${{build_requires[@]}}\"; do\n\
 done\n\
 \n\
 rpmbuild --rebuild --nodeps --define \"_topdir $build_root\" --define \"_sourcedir $build_sourcedir\" \"${{rpm_smp_flags[@]}}\" \"${{srpm_path}}\"\n\
-find \"$build_root/SRPMS\" -type f -name '*.src.rpm' -exec cp -f {{}} '{target_srpms_dir}'/ \\;\n\
 while IFS= read -r rpmf; do\n\
   rel=\"${{rpmf#$build_root/RPMS/}}\"\n\
   rpm_subarch=$(printf '%s' \"$rel\" | cut -d'/' -f1)\n\

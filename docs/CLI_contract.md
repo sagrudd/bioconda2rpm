@@ -68,6 +68,18 @@ bioconda2rpm regression \
 bioconda2rpm recipes [--topdir <path>] [--recipe-root <path>] [--sync] [--recipe-ref <branch|tag|commit>]
 ```
 
+## Catalog Management Command
+
+```bash
+bioconda2rpm catalog migrate [--topdir <path>] [--json]
+```
+
+Production expectation:
+- `catalog migrate` upgrades old flat `.catalog.json` files to the current package/version/build schema.
+- Migration preserves the compatibility `entries` list used by `list` and `failures`, while adding nested package/version/build provenance.
+- Migration injects discovered SRPMs from `<topdir>/targets/*/SRPMS/*.src.rpm` and records an authoritative SRPM for each matching package version even when no binary RPM has been produced.
+- Missing host/user/date values are inferred from the current host and existing file metadata where available.
+
 ## Required Inputs
 
 - `<package...>`: one or more Bioconda package names.
@@ -179,6 +191,7 @@ Regression-only options:
 - Priority SPEC generation performs overlap resolution and SPEC creation in parallel workers.
 - For each generated SPEC, build order is always `SPEC -> SRPM -> RPM` in the selected controlled container profile image.
 - RPM stage is executed as SRPM rebuild (`rpmbuild --rebuild <src.rpm>`).
+- SRPMs are copied to `<topdir>/targets/<target-id>/SRPMS` as soon as `rpmbuild -bs` succeeds so the catalog can record an SRPM-prepared state independently of later binary RPM success.
 - Adaptive mode records package-level `parallel_unstable` outcomes in `<topdir>/targets/<target-id>/reports/build_stability.json` and forces serial first pass on subsequent runs for those specs.
 - Successful package builds clear stale `<topdir>/targets/<target-id>/BAD_SPEC/<tool>.txt` quarantine notes.
 - If local payload artifacts already match the requested Bioconda version, `build` exits with `up-to-date` status.

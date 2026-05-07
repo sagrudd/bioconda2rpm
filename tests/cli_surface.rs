@@ -24,12 +24,22 @@ fn help_lists_primary_commands() {
         "lookup",
         "list",
         "failures",
+        "catalog",
     ] {
         assert!(
             stdout.contains(command),
             "expected --help to list `{command}`"
         );
     }
+}
+
+#[test]
+fn catalog_migrate_help_is_exposed() {
+    let output = run(&["catalog", "migrate", "--help"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--topdir <TOPDIR>"));
+    assert!(stdout.contains("--json"));
 }
 
 #[test]

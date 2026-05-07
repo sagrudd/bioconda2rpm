@@ -235,3 +235,9 @@
 - Forwarded queue entries now persist request-level force intent instead of relying only on the server owner's startup flags.
 - `server --force` is rejected because a persistent server must not broadcast force policy across unrelated future submissions.
 - Recipe-declared skips now record adapter, target architecture, rendered skip value, and selector-family detail at the moment of exclusion, and append missing skip entries to `blacklist.txt` when the process is running from the repository root.
+
+### Catalog provenance schema and SRPM injection
+- `.catalog.json` now writes schema version 2 with nested package -> version -> build records, while preserving the flat `entries` list for existing `list` and JSON consumers.
+- Build records capture OS profile, architecture, target id, host, user, timestamp, status, SRPM path, binary RPM paths, and report path when known.
+- `bioconda2rpm catalog migrate` upgrades legacy catalogs and injects authoritative SRPMs discovered under `<topdir>/targets/*/SRPMS`.
+- Container builds copy the SRPM into the target SRPM directory immediately after `rpmbuild -bs` succeeds so an SRPM-prepared package version can be recorded before binary RPM rebuild completion.

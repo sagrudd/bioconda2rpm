@@ -34,6 +34,8 @@ pub enum Command {
     List(ListArgs),
     /// List packages currently in failed build state.
     Failures(FailuresArgs),
+    /// Manage and migrate the internal build catalogue.
+    Catalog(CatalogArgs),
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
@@ -536,6 +538,29 @@ pub struct FailuresArgs {
 }
 
 #[derive(Debug, clap::Args)]
+pub struct CatalogArgs {
+    #[command(subcommand)]
+    pub command: CatalogCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CatalogCommand {
+    /// Migrate .catalog.json to the current schema and inject discovered SRPMs.
+    Migrate(CatalogMigrateArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct CatalogMigrateArgs {
+    /// Workspace topdir. Defaults to ~/bioconda2rpm.
+    #[arg(long)]
+    pub topdir: Option<PathBuf>,
+
+    /// Emit JSON summary output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
 pub struct RemoveArgs {
     /// Workspace topdir. Defaults to ~/bioconda2rpm.
     #[arg(long)]
@@ -989,6 +1014,12 @@ impl ListArgs {
 }
 
 impl FailuresArgs {
+    pub fn effective_topdir(&self) -> PathBuf {
+        self.topdir.clone().unwrap_or_else(default_topdir)
+    }
+}
+
+impl CatalogMigrateArgs {
     pub fn effective_topdir(&self) -> PathBuf {
         self.topdir.clone().unwrap_or_else(default_topdir)
     }
