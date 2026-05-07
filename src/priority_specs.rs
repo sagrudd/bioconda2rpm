@@ -6256,6 +6256,8 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
         "python-kaleido" => "kaleido".to_string(),
         "matplotlib-base" => "matplotlib".to_string(),
         "seaborn-base" => "seaborn".to_string(),
+        "pytorch" => "torch".to_string(),
+        "pytables" => "tables".to_string(),
         other => other.to_string(),
     };
 
@@ -6295,11 +6297,39 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
 
 fn normalize_conda_version_spec_for_pip(spec: &str) -> String {
     let trimmed = spec.trim();
-    if trimmed.starts_with('=') && !trimmed.starts_with("==") {
+    let normalized = if trimmed.starts_with('=') && !trimmed.starts_with("==") {
         format!("=={}", trimmed.trim_start_matches('='))
     } else {
         trimmed.to_string()
+    };
+    normalized
+        .split(',')
+        .map(normalize_pip_version_clause)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn normalize_pip_version_clause(clause: &str) -> String {
+    let trimmed = clause.trim();
+    for op in [">=", "<=", ">", "<", "~="] {
+        if let Some(version) = trimmed.strip_prefix(op) {
+            let version = version.trim();
+            if let Some(base) = version.strip_suffix(".*") {
+                let base = base.trim_end_matches('.');
+                if !base.is_empty() {
+                    return format!("{op}{base}");
+                }
+            }
+            return format!("{op}{version}");
+        }
     }
+    if let Some(version) = trimmed.strip_prefix("==") {
+        return format!("=={}", version.trim());
+    }
+    if let Some(version) = trimmed.strip_prefix("!=") {
+        return format!("!={}", version.trim());
+    }
+    trimmed.to_string()
 }
 
 fn normalized_dependency_name_from_spec(raw: &str) -> Option<String> {
@@ -6412,6 +6442,7 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "mafft"
             | "muscle"
             | "openmpi"
+            | "openblas"
             | "pcre"
             | "prank"
             | "raxml"
@@ -7825,16 +7856,28 @@ fn command_mentions_symlink_install(commands: &[String]) -> bool {
 
 fn ln_command_creates_symlink(line: &str) -> bool {
     let Some(words) = split_shell_words_for_rewrite(line.trim()) else {
-        return line.to_ascii_lowercase().contains("ln -s");
+        return shell_line_contains_symlink_command(line);
     };
     if words.first().map(String::as_str) != Some("ln") {
-        return false;
+        return shell_line_contains_symlink_command(line);
     }
     words
         .iter()
         .skip(1)
         .take_while(|word| word.starts_with('-') && word.as_str() != "-")
         .any(|word| word.contains('s'))
+}
+
+fn shell_line_contains_symlink_command(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.starts_with("ln -s")
+        || lower.contains(" ln -s")
+        || lower.contains(";ln -s")
+        || lower.contains("; ln -s")
+        || lower.contains("&&ln -s")
+        || lower.contains("&& ln -s")
+        || lower.contains("||ln -s")
+        || lower.contains("|| ln -s")
 }
 
 fn command_mentions_buildroot_text_risk_with_aliases(
@@ -18124,6 +18167,18 @@ source:
             Some("matplotlib>=3.5.2".to_string())
         );
         assert_eq!(
+            conda_dep_to_pip_requirement("seaborn-base >=0.11.*"),
+            Some("seaborn>=0.11".to_string())
+        );
+        assert_eq!(
+            conda_dep_to_pip_requirement("pytorch >=2.* cpu_*"),
+            Some("torch>=2".to_string())
+        );
+        assert_eq!(
+            conda_dep_to_pip_requirement("pytables >=3.5.*"),
+            Some("tables>=3.5".to_string())
+        );
+        assert_eq!(
             conda_dep_to_pip_requirement("pandas>=0.21,<0.24"),
             Some("pandas>=0.21,<0.24".to_string())
         );
@@ -18133,6 +18188,7 @@ source:
         );
         assert_eq!(conda_dep_to_pip_requirement("bedtools"), None);
         assert_eq!(conda_dep_to_pip_requirement("bats"), None);
+        assert_eq!(conda_dep_to_pip_requirement("openblas"), None);
         assert_eq!(conda_dep_to_pip_requirement("python >=3.8"), None);
         assert_eq!(conda_dep_to_pip_requirement("c-compiler"), None);
     }
@@ -22165,6 +22221,9 @@ cp dupsifter ${BIN}
         ]));
         assert!(command_mentions_symlink_install(&[
             "ln -snf target link".to_string()
+        ]));
+        assert!(command_mentions_symlink_install(&[
+            "mkdir -p $PREFIX/bin && ln -s $PREFIX/share/tool.py $PREFIX/bin/tool".to_string()
         ]));
         assert!(!command_mentions_symlink_install(&[
             "ln target link".to_string()
