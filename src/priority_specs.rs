@@ -4467,6 +4467,18 @@ fn process_tool(
             };
         }
     }
+    if let Err(err) = stage_source_checksum_policy(
+        &resolved,
+        sources_dir,
+        &software_slug,
+        &build_config.target_arch,
+    ) {
+        log_progress(format!(
+            "phase=source-checksum status=metadata-unavailable package={} reason={}",
+            software_slug,
+            compact_reason(&err.to_string(), 220)
+        ));
+    }
     if package_requires_original_build_script(&software_slug, &parsed, &interpreted_build_plan) {
         let build_sh_source_name = format!("bioconda-{software_slug}-build.sh");
         let build_sh_source_path = sources_dir.join(&build_sh_source_name);
@@ -13019,6 +13031,48 @@ fn stage_matching_manual_source_file(
     Ok(None)
 }
 
+fn stage_source_checksum_policy(
+    resolved: &ResolvedRecipe,
+    sources_dir: &Path,
+    software_slug: &str,
+    target_arch: &str,
+) -> Result<()> {
+    let expectation = source_file_expectation_for_resolved(resolved, target_arch)?;
+    if expectation.sha256.is_none() && expectation.md5.is_none() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(sources_dir)
+        .with_context(|| format!("creating sources dir {}", sources_dir.display()))?;
+    let policy_path = sources_dir.join(format!(
+        ".bioconda2rpm-source-checksum-{}.env",
+        sanitize_label(software_slug)
+    ));
+    let mut policy = String::new();
+    if let Some(sha256) = expectation.sha256.as_deref() {
+        policy.push_str(&format!(
+            "BIOCONDA2RPM_SOURCE_SHA256='{}'\n",
+            sh_single_quote(&sha256.to_ascii_lowercase())
+        ));
+    }
+    if let Some(md5) = expectation.md5.as_deref() {
+        policy.push_str(&format!(
+            "BIOCONDA2RPM_SOURCE_MD5='{}'\n",
+            sh_single_quote(&md5.to_ascii_lowercase())
+        ));
+    }
+    fs::write(&policy_path, policy)
+        .with_context(|| format!("writing source checksum policy {}", policy_path.display()))?;
+    log_progress(format!(
+        "phase=source-checksum status=staged package={} policy={} sha256={} md5={}",
+        software_slug,
+        policy_path.display(),
+        expectation.sha256.is_some(),
+        expectation.md5.is_some()
+    ));
+    Ok(())
+}
+
 fn stage_recipe_patches(
     source_patches: &[String],
     resolved: &ResolvedRecipe,
@@ -15100,6 +15154,51 @@ source_url_filename() {{\n\
   no_fragment=\"${{no_fragment//%20/ }}\"\n\
   printf '%s\\n' \"$no_fragment\"\n\
 }}\n\
+source_checksum_policy=\"/work/SOURCES/.bioconda2rpm-source-checksum-{label}.env\"\n\
+expected_source_sha256=''\n\
+expected_source_md5=''\n\
+if [[ -s \"$source_checksum_policy\" ]]; then\n\
+  # shellcheck disable=SC1090\n\
+  source \"$source_checksum_policy\"\n\
+  expected_source_sha256=\"${{BIOCONDA2RPM_SOURCE_SHA256:-}}\"\n\
+  expected_source_md5=\"${{BIOCONDA2RPM_SOURCE_MD5:-}}\"\n\
+fi\n\
+source_file_digest() {{\n\
+  local algorithm=\"$1\"\n\
+  local source_path=\"$2\"\n\
+  case \"$algorithm\" in\n\
+    sha256)\n\
+      if command -v sha256sum >/dev/null 2>&1; then sha256sum \"$source_path\" | awk '{{print tolower($1); exit}}'; return 0; fi\n\
+      if command -v shasum >/dev/null 2>&1; then shasum -a 256 \"$source_path\" | awk '{{print tolower($1); exit}}'; return 0; fi\n\
+      if command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 -r \"$source_path\" | awk '{{print tolower($1); exit}}'; return 0; fi\n\
+      ;;\n\
+    md5)\n\
+      if command -v md5sum >/dev/null 2>&1; then md5sum \"$source_path\" | awk '{{print tolower($1); exit}}'; return 0; fi\n\
+      if command -v md5 >/dev/null 2>&1; then md5 -q \"$source_path\" | awk '{{print tolower($1); exit}}'; return 0; fi\n\
+      if command -v openssl >/dev/null 2>&1; then openssl dgst -md5 -r \"$source_path\" | awk '{{print tolower($1); exit}}'; return 0; fi\n\
+      ;;\n\
+  esac\n\
+  return 1\n\
+}}\n\
+validate_source_checksum() {{\n\
+  local source_path=\"$1\"\n\
+  local actual\n\
+  if [[ -n \"$expected_source_sha256\" ]]; then\n\
+    actual=$(source_file_digest sha256 \"$source_path\" || true)\n\
+    if [[ -z \"$actual\" || \"$actual\" != \"${{expected_source_sha256,,}}\" ]]; then\n\
+      echo \"source sha256 mismatch for $source_path: expected=$expected_source_sha256 actual=${{actual:-unavailable}}\" >&2\n\
+      return 1\n\
+    fi\n\
+  fi\n\
+  if [[ -n \"$expected_source_md5\" ]]; then\n\
+    actual=$(source_file_digest md5 \"$source_path\" || true)\n\
+    if [[ -z \"$actual\" || \"$actual\" != \"${{expected_source_md5,,}}\" ]]; then\n\
+      echo \"source md5 mismatch for $source_path: expected=$expected_source_md5 actual=${{actual:-unavailable}}\" >&2\n\
+      return 1\n\
+    fi\n\
+  fi\n\
+  return 0\n\
+}}\n\
 source_fetch_required=1\n\
 srpm_path=''\n\
 reuse_srpm='{reuse_srpm}'\n\
@@ -15281,7 +15380,7 @@ else\n\
     candidate_file=$(source_url_filename \"$candidate\")\n\
     if ! is_remote_source \"$candidate\"; then\n\
       if [[ -n \"$candidate_file\" && -s \"$build_sourcedir/$candidate_file\" ]]; then\n\
-        if validate_source_file \"$build_sourcedir/$candidate_file\"; then\n\
+        if validate_source_file \"$build_sourcedir/$candidate_file\" && validate_source_checksum \"$build_sourcedir/$candidate_file\"; then\n\
           spectool_ok=1\n\
           break\n\
         fi\n\
@@ -15302,7 +15401,7 @@ else\n\
       fi\n\
       if \"${{spectool_cmd[@]}}\"; then\n\
         if [[ -n \"$candidate_file\" && -s \"$build_sourcedir/$candidate_file\" ]]; then\n\
-          if validate_source_file \"$build_sourcedir/$candidate_file\"; then\n\
+          if validate_source_file \"$build_sourcedir/$candidate_file\" && validate_source_checksum \"$build_sourcedir/$candidate_file\"; then\n\
             spectool_ok=1\n\
             break 2\n\
           fi\n\
@@ -15354,7 +15453,7 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
     manual_file=$(source_url_filename \"$manual_url\")\n\
     [[ -n \"$manual_file\" ]] || continue\n\
     if ! is_remote_source \"$manual_url\"; then\n\
-      if [[ -s \"$build_sourcedir/$manual_file\" ]] && validate_source_file \"$build_sourcedir/$manual_file\"; then\n\
+      if [[ -s \"$build_sourcedir/$manual_file\" ]] && validate_source_file \"$build_sourcedir/$manual_file\" && validate_source_checksum \"$build_sourcedir/$manual_file\"; then\n\
         spectool_ok=1\n\
         break\n\
       fi\n\
@@ -15362,7 +15461,13 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
     fi\n\
     rm -f \"$build_sourcedir/$manual_file\" || true\n\
     echo \"Attempting manual prefetch fallback: $manual_url\"\n\
-    if [[ \"$manual_url\" =~ ^https?://(www\\.)?circos\\.ca/ ]]; then\n\
+    if [[ \"$manual_url\" =~ ^https?://data\\.broadinstitute\\.org/igv/ && -n \"$expected_source_sha256\" ]]; then\n\
+      if command -v curl >/dev/null 2>&1; then\n\
+        curl -k -L --fail --retry 5 --retry-all-errors --connect-timeout 20 --speed-time 120 --speed-limit 1024 --max-time 1800 --output \"$build_sourcedir/$manual_file\" \"$manual_url\" || true\n\
+      elif command -v wget >/dev/null 2>&1; then\n\
+        wget --no-check-certificate --tries=5 --timeout=30 --read-timeout=120 -O \"$build_sourcedir/$manual_file\" \"$manual_url\" || true\n\
+      fi\n\
+    elif [[ \"$manual_url\" =~ ^https?://(www\\.)?circos\\.ca/ ]]; then\n\
       if command -v curl >/dev/null 2>&1; then\n\
         curl -k -L --fail --retry 5 --retry-all-errors --connect-timeout 20 --speed-time 120 --speed-limit 1024 --max-time 1800 --output \"$build_sourcedir/$manual_file\" \"$manual_url\" || true\n\
       elif command -v wget >/dev/null 2>&1; then\n\
@@ -15376,7 +15481,7 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
       fi\n\
     fi\n\
     if [[ -s \"$build_sourcedir/$manual_file\" ]]; then\n\
-      if validate_source_file \"$build_sourcedir/$manual_file\"; then\n\
+      if validate_source_file \"$build_sourcedir/$manual_file\" && validate_source_checksum \"$build_sourcedir/$manual_file\"; then\n\
         spectool_ok=1\n\
         break\n\
       fi\n\
@@ -15394,7 +15499,7 @@ if [[ \"$spectool_ok\" -ne 1 ]]; then\n\
         curl -L --fail --retry 2 --retry-all-errors --connect-timeout 20 --speed-time 60 --speed-limit 1024 --max-time 300 --output \"$build_sourcedir/$ftp_file\" \"$source0_url\" || true\n\
       fi\n\
       if [[ -s \"$build_sourcedir/$ftp_file\" ]]; then\n\
-        if validate_source_file \"$build_sourcedir/$ftp_file\"; then\n\
+        if validate_source_file \"$build_sourcedir/$ftp_file\" && validate_source_checksum \"$build_sourcedir/$ftp_file\"; then\n\
           spectool_ok=1\n\
         else\n\
           echo \"source archive validation failed for $build_sourcedir/$ftp_file; removing corrupt download\" >&2\n\
@@ -17876,6 +17981,52 @@ source:
         .expect("stage manual source");
         assert_eq!(staged.as_deref(), Some("cap3.linux.x86_64.tar"));
         assert!(sources_dir.join("cap3.linux.x86_64.tar").is_file());
+    }
+
+    #[test]
+    fn source_checksum_policy_is_staged_from_recipe_hash() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let recipe_dir = tmp.path().join("recipe");
+        let sources_dir = tmp.path().join("SOURCES");
+        fs::create_dir_all(&recipe_dir).expect("create recipe dir");
+        let meta_path = recipe_dir.join("meta.yaml");
+        fs::write(
+            &meta_path,
+            r#"
+package:
+  name: igvtools
+  version: "2.17.3"
+source:
+  url: http://data.broadinstitute.org/igv/projects/downloads/2.17/IGV_2.17.3.zip
+  sha256: 58369ad1e156dc27a7cd2861c238049563396be605a2ab1b172a008a69ad7cb4
+"#,
+        )
+        .expect("write meta");
+        let resolved = ResolvedRecipe {
+            recipe_name: "igvtools".to_string(),
+            recipe_dir: recipe_dir.clone(),
+            variant_dir: recipe_dir,
+            meta_path,
+            build_sh_path: None,
+            overlap_reason: "test".to_string(),
+        };
+        stage_source_checksum_policy(&resolved, &sources_dir, "igvtools", "x86_64")
+            .expect("stage checksum policy");
+        let policy =
+            fs::read_to_string(sources_dir.join(".bioconda2rpm-source-checksum-igvtools.env"))
+                .expect("read policy");
+        assert!(policy.contains(
+            "BIOCONDA2RPM_SOURCE_SHA256='58369ad1e156dc27a7cd2861c238049563396be605a2ab1b172a008a69ad7cb4'"
+        ));
+    }
+
+    #[test]
+    fn container_source_download_checksums_and_allows_igv_tls_fallback() {
+        const SOURCE: &str = include_str!("priority_specs.rs");
+        assert!(SOURCE.contains("validate_source_checksum()"));
+        assert!(SOURCE.contains("source sha256 mismatch"));
+        assert!(SOURCE.contains("data\\\\.broadinstitute\\\\.org/igv/"));
+        assert!(SOURCE.contains("curl -k -L --fail --retry 5"));
     }
 
     #[test]
