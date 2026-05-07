@@ -988,6 +988,13 @@ fn is_success_status(status: &str) -> bool {
     matches!(status, "generated" | "up-to-date")
 }
 
+fn is_container_build_success(entry: &crate::priority_specs::ReportEntry) -> bool {
+    entry.status == "generated"
+        && entry
+            .reason
+            .contains("generated from bioconda metadata in container")
+}
+
 fn compare_catalog_version_labels(a: &str, b: &str) -> std::cmp::Ordering {
     let a_parts = catalog_version_parts(a);
     let b_parts = catalog_version_parts(b);
@@ -1408,7 +1415,9 @@ pub fn record_build_results(
         }
         if is_success_status(&entry.status) {
             failures.remove(&key);
-            if let Ok(true) = remove_default_blacklist_row(&entry.software) {
+            if is_container_build_success(entry)
+                && let Ok(true) = remove_default_blacklist_row(&entry.software)
+            {
                 eprintln!(
                     "blacklist removed: package={} reason=successful-build",
                     entry.software
@@ -2365,6 +2374,20 @@ mod tests {
         assert_eq!(rows[0].package, "bam2fasta");
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn blacklist_healing_requires_container_build_success() {
+        let mut spec_only = report_entry(
+            "python-consensuscore2",
+            "generated",
+            "spec generated from bioconda metadata without container build",
+        );
+        assert!(!is_container_build_success(&spec_only));
+
+        spec_only.reason =
+            "spec/srpm/rpm generated from bioconda metadata in container".to_string();
+        assert!(is_container_build_success(&spec_only));
     }
 
     #[test]
