@@ -10050,7 +10050,7 @@ while IFS= read -r -d '' dep_include; do\n\
     *\":$dep_include:\"*) ;;\n\
     *) export CPATH=\"${{CPATH:+$CPATH:}}$dep_include\" ;;\n\
   esac\n\
-done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name include -print0 2>/dev/null)\n\
+done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 5 -type d -name include -print0 2>/dev/null)\n\
 while IFS= read -r -d '' dep_lib; do\n\
   case \":${{LIBRARY_PATH:-}}:\" in\n\
     *\":$dep_lib:\"*) ;;\n\
@@ -10064,7 +10064,7 @@ while IFS= read -r -d '' dep_lib; do\n\
     *\" -L$dep_lib \"*) ;;\n\
     *) export LDFLAGS=\"-L$dep_lib ${{LDFLAGS:-}}\" ;;\n\
   esac\n\
-done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name lib -print0 2>/dev/null)\n\
+done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 5 -type d \\( -name lib -o -name lib64 \\) -print0 2>/dev/null)\n\
 while IFS= read -r -d '' dep_pc; do\n\
   case \":${{PKG_CONFIG_PATH:-}}:\" in\n\
     *\":$dep_pc:\"*) ;;\n\
@@ -10076,7 +10076,7 @@ while IFS= read -r -d '' dep_bin; do\n\
     *\":$dep_bin:\"*) ;;\n\
     *) export PATH=\"$dep_bin:$PATH\" ;;\n\
   esac\n\
-done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name bin -print0 2>/dev/null)\n\
+done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 5 -type d -name bin -print0 2>/dev/null)\n\
 fi\n\
 \n\
 # Ensure common install subdirectories exist for build.sh scripts that assume them.\n\
@@ -10123,7 +10123,7 @@ while IFS= read -r -d '' dep_include; do\n\
     [[ -e \"$target\" ]] && continue\n\
     ln -snf \"$entry\" \"$target\" || true\n\
   done\n\
-done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name include -print0 2>/dev/null)\n\
+done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 5 -type d -name include -print0 2>/dev/null)\n\
 while IFS= read -r -d '' dep_lib; do\n\
   for lib in \"$dep_lib\"/*; do\n\
     [[ -e \"$lib\" ]] || continue\n\
@@ -10131,7 +10131,7 @@ while IFS= read -r -d '' dep_lib; do\n\
     [[ -e \"$target\" ]] && continue\n\
     ln -snf \"$lib\" \"$target\" || true\n\
   done\n\
-done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name lib -print0 2>/dev/null)\n\
+done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 5 -type d \\( -name lib -o -name lib64 \\) -print0 2>/dev/null)\n\
 fi\n\
 \n\
 # EL9 ships some HDF5 headers under /usr/include/hdf5/serial.\n\
@@ -17975,8 +17975,11 @@ requirements:
         assert!(spec.contains("BIOCONDA2RPM_SERIAL_RETRY_TRIGGERED=1"));
         assert!(spec.contains("/opt/rh/autoconf271/bin/autoconf"));
         assert!(
-            spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name include")
+            spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 5 -type d -name include")
         );
+        assert!(spec.contains(
+            "find /usr/local/phoreus -mindepth 3 -maxdepth 5 -type d \\( -name lib -o -name lib64 \\)"
+        ));
         assert!(spec.contains(
             "export BUILD_PREFIX=\"${BUILD_PREFIX:-$(pwd)/.bioconda2rpm-build-prefix}\""
         ));
@@ -18002,7 +18005,7 @@ requirements:
         assert!(spec.contains(
             "export LDFLAGS=\"-L$h5libdir -L$PREFIX/lib -L$PREFIX/lib/hdf5 ${LDFLAGS:-}\""
         ));
-        assert!(spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 3 -type d -name bin"));
+        assert!(spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 5 -type d -name bin"));
         assert!(spec.contains("export PATH=\"$dep_bin:$PATH\""));
         assert!(spec.contains("disabled by bioconda2rpm for EL9 compatibility"));
         assert!(spec.contains("if [[ \"${CONFIG_SITE:-}\" == \"NONE\" ]]; then"));
