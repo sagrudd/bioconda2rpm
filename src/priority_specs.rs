@@ -16232,6 +16232,9 @@ install_local_with_hydration() {{\n\
       candidate=\"$req\"\n\
       if [[ \"$candidate\" == *\"(\"* || \"$candidate\" == *\")\"* || \"$candidate\" == *\":\"* ]]; then\n\
         if [[ \"$candidate\" == lib*.so* ]]; then\n\
+          if pm_install \"$req\" >>\"$dep_log\" 2>&1; then\n\
+            continue\n\
+          fi\n\
           candidate=\"${{candidate%%.so*}}\"\n\
         else\n\
           pm_install \"$req\" >>\"$dep_log\" 2>&1 || true\n\
@@ -16275,6 +16278,9 @@ for dep in \"${{build_requires[@]}}\"; do\n\
   fi\n\
   if rpm -q --whatprovides \"$dep\" >/dev/null 2>&1; then\n\
     provider=$(rpm -q --whatprovides \"$dep\" | head -n 1 || true)\n\
+    if [[ \"$provider\" == phoreus-* ]]; then\n\
+      install_local_with_hydration \"$dep\" >>\"$dep_log\" 2>&1 || true\n\
+    fi\n\
     emit_depgraph \"$dep\" 'resolved' 'installed' \"$provider\" 'already_installed'\n\
     continue\n\
   fi\n\
@@ -23296,6 +23302,20 @@ error: build stopped\n";
         assert!(source.contains("mode=rebuild-existing"));
         assert!(source.contains("mode=extracted-sources-for-current-spec"));
         assert!(source.contains("if [[ '{refresh_files}' != '1'"));
+    }
+
+    #[test]
+    fn container_dependency_preflight_hydrates_installed_phoreus_runtime_dependencies() {
+        let source = include_str!("priority_specs.rs");
+        assert!(source.contains("if [[ \\\"$provider\\\" == phoreus-* ]]; then\\n\\"));
+        assert!(source.contains("install_local_with_hydration \\\"$dep\\\""));
+    }
+
+    #[test]
+    fn container_dependency_preflight_installs_shared_library_capabilities() {
+        let source = include_str!("priority_specs.rs");
+        assert!(source.contains("if pm_install \\\"$req\\\" >>\\\"$dep_log\\\" 2>&1; then\\n\\"));
+        assert!(source.contains("candidate=\\\"${{candidate%%.so*}}\\\""));
     }
 
     #[test]
