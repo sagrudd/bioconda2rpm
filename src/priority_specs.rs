@@ -15538,6 +15538,11 @@ if [[ \"$source0_url\" =~ ^https://bioconductor.org/packages/.*/bioc/src/contrib
   archive_url=$(printf '%s' \"$source0_url\" | sed -E \"s#(/bioc/src/contrib/)#\\\\1Archive/$bioc_pkg/#\")\n\
   source_candidates+=(\"$archive_url\")\n\
 fi\n\
+if [[ \"$source0_url\" =~ ^https?://cran\\.r-project\\.org/src/contrib/([^/]+)_([^/]+\\.tar\\.gz)$ ]]; then\n\
+  cran_pkg=\"${{BASH_REMATCH[1]}}\"\n\
+  cran_file=\"${{cran_pkg}}_${{BASH_REMATCH[2]}}\"\n\
+  source_candidates+=(\"https://cran.r-project.org/src/contrib/Archive/${{cran_pkg}}/${{cran_file}}\")\n\
+fi\n\
 if [[ \"$source0_url\" =~ ^(.*/)([^/]+)-([0-9][0-9\\.]*)-([0-9]+)\\.zip$ ]]; then\n\
   source_prefix=\"${{BASH_REMATCH[1]}}\"\n\
   source_name=\"${{BASH_REMATCH[2]}}\"\n\
@@ -17546,6 +17551,9 @@ requirements:
             SOURCE.contains("codeload.github.com/${{gh_owner}}/${{gh_repo}}/tar.gz/${{gh_ref}}")
         );
         assert!(SOURCE.contains("downloads.sourceforge.net/project/${{sf_project}}/${{sf_path}}"));
+        assert!(
+            SOURCE.contains("cran.r-project.org/src/contrib/Archive/${{cran_pkg}}/${{cran_file}}")
+        );
     }
 
     #[test]
