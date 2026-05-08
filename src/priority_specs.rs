@@ -6846,6 +6846,8 @@ fn harden_build_script_text(script: &str) -> String {
             rewritten_lines.push(rewritten);
         } else if let Some(rewritten) = rewrite_plain_rm_line_to_force(line) {
             rewritten_lines.push(rewritten);
+        } else if let Some(rewritten) = rewrite_cmake_system_dependency_prefix_line(line) {
+            rewritten_lines.push(rewritten);
         } else if let Some(expanded) = rewrite_symlink_install_to_prefix_bin_line(line) {
             rewritten_lines.extend(expanded);
         } else if line.trim() == r#"WORK_DIR="$BASEDIR/$BUILD_DIR""# {
@@ -6873,6 +6875,51 @@ fn harden_build_script_text(script: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+fn rewrite_cmake_system_dependency_prefix_line(line: &str) -> Option<String> {
+    let mut rewritten = line.to_string();
+    for prefix in ["${PREFIX}", "$PREFIX"] {
+        rewritten = rewritten
+            .replace(&format!("-DZLIB_ROOT={prefix}"), "-DZLIB_ROOT=/usr")
+            .replace(
+                &format!("-DZLIB_LIBRARY={prefix}/lib/libz${{SHLIB_EXT}}"),
+                "-DZLIB_LIBRARY=/usr/lib64/libz.so",
+            )
+            .replace(
+                &format!("-DZLIB_LIBRARY={prefix}/lib/libz$SHLIB_EXT"),
+                "-DZLIB_LIBRARY=/usr/lib64/libz.so",
+            )
+            .replace(
+                &format!("-DZLIB_LIBRARY={prefix}/lib/libz"),
+                "-DZLIB_LIBRARY=/usr/lib64/libz.so",
+            )
+            .replace(
+                &format!("-DZLIB_INCLUDE_DIR={prefix}/include"),
+                "-DZLIB_INCLUDE_DIR=/usr/include",
+            )
+            .replace(
+                &format!("-DBZIP2_ROOT_DIR={prefix}"),
+                "-DBZIP2_ROOT_DIR=/usr",
+            )
+            .replace(
+                &format!("-DBZIP2_INCLUDE_DIR={prefix}/include"),
+                "-DBZIP2_INCLUDE_DIR=/usr/include",
+            )
+            .replace(
+                &format!("-DBZIP2_LIBRARIES={prefix}/lib/libbz2${{SHLIB_EXT}}"),
+                "-DBZIP2_LIBRARIES=/usr/lib64/libbz2.so",
+            )
+            .replace(
+                &format!("-DBZIP2_LIBRARIES={prefix}/lib/libbz2$SHLIB_EXT"),
+                "-DBZIP2_LIBRARIES=/usr/lib64/libbz2.so",
+            )
+            .replace(
+                &format!("-DBZIP2_LIBRARIES={prefix}/lib/libbz2"),
+                "-DBZIP2_LIBRARIES=/usr/lib64/libbz2.so",
+            );
+    }
+    (rewritten != line).then_some(rewritten)
 }
 
 fn rewrite_plain_rm_line_to_force(line: &str) -> Option<String> {
@@ -24040,6 +24087,30 @@ ${R} CMD INSTALL --build shinyngs ${R_ARGS}
 
         assert!(hardened.contains("mkdir -p ${PREFIX}/bin/"));
         assert!(hardened.contains("cp -r bin/* ${PREFIX}/bin/"));
+    }
+
+    #[test]
+    fn harden_build_script_rewrites_cmake_system_dependency_hints() {
+        let script = r#"
+cmake \
+  -DCMAKE_INSTALL_PREFIX=${PREFIX} \
+  -DZLIB_ROOT=${PREFIX} \
+  -DZLIB_LIBRARY=${PREFIX}/lib/libz${SHLIB_EXT} \
+  -DZLIB_INCLUDE_DIR=${PREFIX}/include \
+  -DBZIP2_ROOT_DIR=${PREFIX} \
+  -DBZIP2_INCLUDE_DIR=${PREFIX}/include \
+  -DBZIP2_LIBRARIES=${PREFIX}/lib/libbz2${SHLIB_EXT} \
+  ..
+"#;
+        let hardened = harden_build_script_text(script);
+
+        assert!(hardened.contains("-DCMAKE_INSTALL_PREFIX=${PREFIX}"));
+        assert!(hardened.contains("-DZLIB_ROOT=/usr"));
+        assert!(hardened.contains("-DZLIB_LIBRARY=/usr/lib64/libz.so"));
+        assert!(hardened.contains("-DZLIB_INCLUDE_DIR=/usr/include"));
+        assert!(hardened.contains("-DBZIP2_ROOT_DIR=/usr"));
+        assert!(hardened.contains("-DBZIP2_INCLUDE_DIR=/usr/include"));
+        assert!(hardened.contains("-DBZIP2_LIBRARIES=/usr/lib64/libbz2.so"));
     }
 
     #[test]
