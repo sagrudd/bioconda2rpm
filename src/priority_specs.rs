@@ -12533,8 +12533,11 @@ python - <<'PYREQSAN'
 from pathlib import Path
 import re
 drop = {{
+    'git', 'git-lfs', 'conda', 'mamba', 'micromamba',
     'openblas', 'libopenblas', 'libblas', 'libcblas', 'mkl', 'mkl-devel',
-    'pytorch', 'torch', 'tensorflow', 'tensorflow-base', 'jax', 'jaxlib', 'triton',
+    'pytorch', 'pytorch-cpu', 'pytorch-gpu', 'torch', 'torchaudio', 'torchtext',
+    'torchvision', 'tensorflow', 'tensorflow-base', 'tensorflow-estimator',
+    'jax', 'jaxlib', 'triton',
 }}
 path = Path('requirements.in')
 lines = []
@@ -18637,8 +18640,11 @@ requirements:
             true,
             &[
                 "seaborn>=0.11.*".to_string(),
+                "git".to_string(),
                 "openblas".to_string(),
                 "pytorch>=2.*".to_string(),
+                "pytorch-cpu>=2.*".to_string(),
+                "torchvision>=0.17".to_string(),
                 "nvidia-cublas>=13".to_string(),
             ],
         );
@@ -18648,7 +18654,10 @@ requirements:
             block.contains("for raw in path.read_text().splitlines():\n    line = raw.strip()")
         );
         assert!(block.contains("if not line or line.startswith('#'):\n        continue"));
+        assert!(block.contains("'git'"));
         assert!(block.contains("'openblas'"));
+        assert!(block.contains("'pytorch-cpu'"));
+        assert!(block.contains("'torchvision'"));
         assert!(block.contains("name.startswith('nvidia-')"));
         assert!(block.contains(
             "pip-compile --generate-hashes requirements.in --output-file requirements.lock --pip-args \"--no-build-isolation\""
