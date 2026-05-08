@@ -7109,6 +7109,10 @@ fn script_text_indicates_python(script: &str) -> bool {
         || lower.contains("python3 -m pip")
         || lower.contains("python setup.py")
         || lower.contains("setup.py install")
+        || lower.contains("exec python ")
+        || lower.contains("exec python\"")
+        || lower.contains("exec python3 ")
+        || lower.contains("exec python3\"")
 }
 
 fn script_text_indicates_r(script: &str) -> bool {
@@ -22594,6 +22598,12 @@ requirements:
         ));
         assert!(script_text_indicates_python(
             "#!/bin/bash\npython setup.py install\n"
+        ));
+        assert!(script_text_indicates_python(
+            "#!/bin/bash\nexec python \"${DEST}/tool.py\" \"$@\"\n"
+        ));
+        assert!(script_text_indicates_python(
+            "#!/bin/bash\nexec python3 \"${DEST}/tool.py\" \"$@\"\n"
         ));
         assert!(!script_text_indicates_python(
             "#!/bin/bash\nmake -j${CPU_COUNT}\n"
