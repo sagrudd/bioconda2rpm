@@ -8269,6 +8269,12 @@ fn package_requires_original_build_script(
     {
         return true;
     }
+    if all_commands
+        .iter()
+        .any(|command| shell_line_mentions_bash_array(command))
+    {
+        return true;
+    }
     if parsed
         .build_script
         .as_deref()
@@ -8317,7 +8323,13 @@ fn package_requires_original_build_script(
 
 fn build_script_uses_stateful_bash_arrays(script: &str) -> bool {
     let lower = script.to_ascii_lowercase();
-    lower.contains("for ") && script.contains("=(") && script.contains("[@]")
+    (lower.contains("for ") && script.contains("=(") && script.contains("[@]"))
+        || ((lower.contains("declare -a") || script.contains("+=("))
+            && (script.contains("[@]") || script.contains("[*]")))
+}
+
+fn shell_line_mentions_bash_array(line: &str) -> bool {
+    line.contains("[@]") || line.contains("[*]")
 }
 
 fn build_script_uses_heredoc(script: &str) -> bool {
@@ -24088,6 +24100,44 @@ ${R} CMD INSTALL --build shinyngs ${R_ARGS}
             "r-shinyngs",
             &parsed,
             &plan
+        ));
+    }
+
+    #[test]
+    fn bash_array_build_scripts_keep_original_build_script_scope() {
+        let parsed = ParsedMeta {
+            package_name: "modle".to_string(),
+            version: "1.1.0".to_string(),
+            build_number: "1".to_string(),
+            source_url: "https://example.invalid/modle.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/modle".to_string(),
+            license: "MIT".to_string(),
+            summary: "modle".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let external_build_sh = r#"
+declare -a CMAKE_PLATFORM_FLAGS
+if [[ ${HOST} =~ .*darwin.* ]]; then
+  CMAKE_PLATFORM_FLAGS+=(-DCMAKE_OSX_SYSROOT="${CONDA_BUILD_SYSROOT}")
+else
+  CMAKE_PLATFORM_FLAGS+=(-DCMAKE_TOOLCHAIN_FILE="${RECIPE_DIR}/cross-linux.cmake")
+fi
+cmake "${CMAKE_PLATFORM_FLAGS[@]}" -B build/ -S .
+"#;
+        let plan = interpret_build_script_minimal(external_build_sh);
+
+        assert!(build_script_uses_stateful_bash_arrays(external_build_sh));
+        assert!(package_requires_original_build_script(
+            "modle", &parsed, &plan
         ));
     }
 
