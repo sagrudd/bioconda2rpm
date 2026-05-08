@@ -8324,6 +8324,7 @@ fn package_requires_original_build_script(
 fn build_script_uses_stateful_bash_arrays(script: &str) -> bool {
     let lower = script.to_ascii_lowercase();
     (lower.contains("for ") && script.contains("=(") && script.contains("[@]"))
+        || (script.contains("=(") && (script.contains("[@]") || script.contains("[*]")))
         || ((lower.contains("declare -a") || script.contains("+=("))
             && (script.contains("[@]") || script.contains("[*]")))
 }
@@ -24138,6 +24139,46 @@ cmake "${CMAKE_PLATFORM_FLAGS[@]}" -B build/ -S .
         assert!(build_script_uses_stateful_bash_arrays(external_build_sh));
         assert!(package_requires_original_build_script(
             "modle", &parsed, &plan
+        ));
+    }
+
+    #[test]
+    fn parenthesized_bash_arrays_keep_original_build_script_scope() {
+        let parsed = ParsedMeta {
+            package_name: "gromacs_mddb".to_string(),
+            version: "2025.3".to_string(),
+            build_number: "3".to_string(),
+            source_url: "https://example.invalid/gromacs.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/gromacs".to_string(),
+            license: "LGPL-2.1-or-later".to_string(),
+            summary: "gromacs mddb".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let external_build_sh = r#"
+cmake_args=(
+    -DSHARED_LIBS_DEFAULT=ON
+    -DCMAKE_PREFIX_PATH="${PREFIX}"
+    -DCMAKE_INSTALL_PREFIX="${PREFIX}"
+    -DGMX_VERSION_STRING_OF_FORK="conda-forge"
+)
+cmake .. "${cmake_args[@]}"
+"#;
+        let plan = interpret_build_script_minimal(external_build_sh);
+
+        assert!(build_script_uses_stateful_bash_arrays(external_build_sh));
+        assert!(package_requires_original_build_script(
+            "gromacs-mddb",
+            &parsed,
+            &plan
         ));
     }
 
