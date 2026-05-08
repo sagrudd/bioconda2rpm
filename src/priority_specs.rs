@@ -12488,8 +12488,19 @@ pip-compile --generate-hashes requirements.in --output-file requirements.lock{co
 
     format!(
         "# Charter-compliant Python dependency handling: build hermetic venv and lock deps.\n\
-mkdir -p \"$PREFIX/venv\"\n\
-\"$PYTHON\" -m venv \"$PREFIX/venv\"\n\
+mkdir -p \"$PREFIX\"\n\
+if \"$PYTHON\" - <<'PYCHECK'\n\
+import sys\n\
+sys.exit(0 if sys.version_info[0] < 3 else 1)\n\
+PYCHECK\n\
+then\n\
+  if ! \"$PYTHON\" -m virtualenv \"$PREFIX/venv\"; then\n\
+    \"$PIP\" install 'virtualenv<20.22'\n\
+    \"$PYTHON\" -m virtualenv \"$PREFIX/venv\"\n\
+  fi\n\
+else\n\
+  \"$PYTHON\" -m venv \"$PREFIX/venv\"\n\
+fi\n\
 export VIRTUAL_ENV=\"$PREFIX/venv\"\n\
 export PATH=\"$VIRTUAL_ENV/bin:$PATH\"\n\
 export PYTHON=\"$VIRTUAL_ENV/bin/python\"\n\
@@ -18563,6 +18574,15 @@ requirements:
         assert!(block.contains("export SP_DIR=\"$($PYTHON -c"));
         assert!(block.contains("getsitepackages"));
         assert!(block.contains("purelib"));
+    }
+
+    #[test]
+    fn python_venv_setup_uses_virtualenv_for_python2_runtime() {
+        let block = render_python_venv_setup_block(true, &[]);
+        assert!(block.contains("sys.version_info[0] < 3"));
+        assert!(block.contains("\"$PYTHON\" -m virtualenv \"$PREFIX/venv\""));
+        assert!(block.contains("\"$PIP\" install 'virtualenv<20.22'"));
+        assert!(block.contains("\"$PYTHON\" -m venv \"$PREFIX/venv\""));
     }
 
     #[test]
