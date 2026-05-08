@@ -7646,6 +7646,12 @@ fn interpret_build_script_minimal(script: &str) -> InterpretedBuildPlan {
         if ends_shell_control_flow_block(trimmed) {
             continue;
         }
+        if line_is_runtime_wrapper_exec_fragment(trimmed) {
+            // Launcher bodies from noarch/generic recipes can be split out of
+            // quoted wrapper creation. They describe runtime dispatch and must
+            // not be executed during RPM build/install phases.
+            continue;
+        }
         if build_script_uses_heredoc(trimmed) {
             build_commands.push(trimmed.to_string());
             install_commands.push(trimmed.to_string());
@@ -7938,6 +7944,12 @@ fn is_shell_control_flow_line(line: &str) -> bool {
         || line.starts_with("case ")
         || line.starts_with("function ")
         || line.ends_with(')')
+}
+
+fn line_is_runtime_wrapper_exec_fragment(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    (lower.starts_with("exec ") || lower.contains(" exec "))
+        && (line.contains("$@") || line.contains("\"$@\"") || line.contains("\"\\$@\""))
 }
 
 fn shell_assignment_name_and_rhs(line: &str) -> Option<(&str, &str)> {
@@ -25283,6 +25295,39 @@ $R CMD INSTALL --build .
         assert!(spec.contains("cp %{SOURCE1} buildsrc/build.sh"));
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(!spec.contains("bioconda2rpm minimal mode: no explicit build commands extracted"));
+    }
+
+    #[test]
+    fn minimal_interpreter_drops_runtime_wrapper_exec_fragments() {
+        let script = r#"
+mkdir -p $PREFIX/bin
+module_dir=$PREFIX/MODULES
+mkdir -p $module_dir
+cp QuantWiz_IQ.pl $PREFIX/bin
+cp MODULES/*.pm $PREFIX/MODULES/
+PERL5LIB=$module_dir exec perl $PREFIX/bin/QuantWiz_IQ.pl "\$@"
+chmod +x $PREFIX/bin/QuantWiz_IQ
+"#;
+        let plan = interpret_build_script_minimal(script);
+
+        assert!(
+            !plan
+                .build_commands
+                .iter()
+                .chain(plan.install_commands.iter())
+                .any(|line| line.contains("exec perl")),
+            "{plan:?}"
+        );
+        assert!(
+            plan.install_commands
+                .iter()
+                .any(|line| line == "cp QuantWiz_IQ.pl $PREFIX/bin")
+        );
+        assert!(
+            plan.install_commands
+                .iter()
+                .any(|line| line == "chmod +x $PREFIX/bin/QuantWiz_IQ")
+        );
     }
 
     #[test]
