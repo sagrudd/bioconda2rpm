@@ -7589,6 +7589,11 @@ fn interpret_build_script_minimal(script: &str) -> InterpretedBuildPlan {
         if ends_shell_control_flow_block(trimmed) {
             continue;
         }
+        if build_script_uses_heredoc(trimmed) {
+            build_commands.push(trimmed.to_string());
+            install_commands.push(trimmed.to_string());
+            continue;
+        }
 
         let Some(line) = normalize_interpreted_build_line(trimmed) else {
             continue;
@@ -8144,6 +8149,12 @@ fn package_requires_original_build_script(
         .build_script
         .as_deref()
         .is_some_and(build_script_uses_heredoc)
+    {
+        return true;
+    }
+    if all_commands
+        .iter()
+        .any(|command| build_script_uses_heredoc(command))
     {
         return true;
     }
@@ -23804,6 +23815,43 @@ build:
         ));
         assert!(package_requires_original_build_script(
             "ezaai", &parsed, &plan
+        ));
+    }
+
+    #[test]
+    fn external_heredoc_build_scripts_keep_original_build_script_scope() {
+        let parsed = ParsedMeta {
+            package_name: "tir-learner".to_string(),
+            version: "4.02".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/tir-learner.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/tir-learner".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "tir-learner".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let external_build_sh = r#"
+mkdir -p "${PREFIX}/bin"
+cat > "${PREFIX}/bin/tirlearner4" <<EOF
+#!/bin/sh
+exec python3 "${PREFIX}/lib/tir-learner4/TIR-Learner.py" "$@"
+EOF
+"#;
+        let plan = interpret_build_script_minimal(external_build_sh);
+
+        assert!(package_requires_original_build_script(
+            "tir-learner",
+            &parsed,
+            &plan
         ));
     }
 
