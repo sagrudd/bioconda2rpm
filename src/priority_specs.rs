@@ -8257,8 +8257,7 @@ fn compute_minimal_build_scope(
         arch_env_required,
         parallel_env_required,
         symlink_normalization_required: buildroot_text_scrub_required
-            || (!recipe_build_sh_required
-                && command_mentions_symlink_install(&interpreted_build_plan.install_commands)),
+            || command_mentions_symlink_install(&interpreted_build_plan.install_commands),
         buildroot_text_scrub_required,
         sparsehash_configure_fallback_required,
         recipe_build_sh_required,
@@ -25152,6 +25151,37 @@ ${CXX} -O3 -o "${PREFIX}/bin/helper" "${SRC_DIR}/helper.cpp"
 
         assert!(scope.buildroot_text_scrub_required);
         assert!(scope.label_string().contains("buildroot-text-scrub"));
+    }
+
+    #[test]
+    fn retained_build_sh_symlink_installs_enable_symlink_normalization() {
+        let parsed = ParsedMeta {
+            package_name: "das_tool".to_string(),
+            version: "1.1.7".to_string(),
+            build_number: "1".to_string(),
+            source_url: "https://example.invalid/das_tool-1.1.7.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/das_tool".to_string(),
+            license: "BSD".to_string(),
+            summary: "das_tool".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "DESTDIR=$PREFIX/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM\nln -s $DESTDIR/DAS_Tool $PREFIX/bin/\n"
+                    .to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let plan = interpret_build_script_minimal(parsed.build_script.as_deref().unwrap());
+        let scope = compute_minimal_build_scope("das-tool", &parsed, &plan, false, false, false);
+
+        assert!(scope.symlink_normalization_required);
+        assert!(scope.label_string().contains("symlink-normalization"));
     }
 
     #[test]
