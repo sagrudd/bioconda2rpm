@@ -12476,8 +12476,12 @@ for raw in path.read_text().splitlines():
 path.write_text('\n'.join(lines) + ('\n' if lines else ''))
 PYREQSAN
 {preinstall_legacy_build_bits}"$PIP" install pip-tools
-pip-compile --generate-hashes requirements.in --output-file requirements.lock{compile_flags}
-"$PIP" install{install_flags} --require-hashes -r requirements.lock
+if pip-compile --generate-hashes requirements.in --output-file requirements.lock{compile_flags}; then
+    "$PIP" install{install_flags} --require-hashes -r requirements.lock
+else
+    echo "bioconda2rpm: pip-compile failed; falling back to direct no-build-isolation install for legacy sdists" >&2
+    "$PIP" install{install_flags} -r requirements.in
+fi
 "#,
             requirements_body = requirements_body,
             preinstall_legacy_build_bits = preinstall_legacy_build_bits,
@@ -18542,6 +18546,14 @@ requirements:
     }
 
     #[test]
+    fn python_venv_install_falls_back_for_legacy_sdist_lock_failures() {
+        let block = render_python_venv_setup_block(true, &["cigar".to_string()]);
+        assert!(block.contains("if pip-compile --generate-hashes requirements.in"));
+        assert!(block.contains("pip-compile failed; falling back to direct no-build-isolation"));
+        assert!(block.contains("\"$PIP\" install --no-build-isolation -r requirements.in"));
+    }
+
+    #[test]
     fn python_venv_setup_sanitizes_conda_only_lock_inputs() {
         let block = render_python_venv_setup_block(
             true,
@@ -18566,6 +18578,7 @@ requirements:
         assert!(block.contains(
             "\"$PIP\" install --no-build-isolation --require-hashes -r requirements.lock"
         ));
+        assert!(block.contains("\"$PIP\" install --no-build-isolation -r requirements.in"));
     }
 
     #[test]
