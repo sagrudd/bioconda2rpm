@@ -8301,6 +8301,12 @@ fn package_requires_original_build_script(
     {
         return true;
     }
+    if all_commands
+        .iter()
+        .any(|command| command.contains(">> $") || command.contains(">>$"))
+    {
+        return true;
+    }
     if interpreted_plan_has_shell_continuation_fragments(interpreted_build_plan) {
         return true;
     }
@@ -24138,9 +24144,22 @@ sed -i 's/<TAB>/\t/g' ${KSW2_DIR}/Makefile
 ammend_description_for_packrat(){
     description=$1
     remoterepo=$2
-    echo -e "RemoteRepo: $remoterepo" >> $description
+    remoteusername=$3
+    remoteref=$4
+    remotesha=$(git ls-remote https://github.com/$remoteusername/$remoterepo tags/$remoteref | cut -f1)
+    echo -e """RemoteType: github
+RemoteHost: api.github.com
+RemoteRepo: $remoterepo
+RemoteUsername: $remoteusername
+RemoteRef: $remoteref
+RemoteSha: $remotesha
+GithubRepo: $remoterepo
+GithubUsername: $remoteusername
+GithubRef: $remoteref
+GithubSHA1: $remotesha
+NeedsCompilation: no""" >> $description
 }
-ammend_description_for_packrat "shinyngs/DESCRIPTION" "shinyngs"
+ammend_description_for_packrat "shinyngs/DESCRIPTION" "shinyngs" "pinin4fjords" "v$PKG_VERSION"
 ${R} CMD INSTALL --build shinyngs ${R_ARGS}
 "#;
         let plan = interpret_build_script_minimal(external_build_sh);
@@ -24150,6 +24169,23 @@ ${R} CMD INSTALL --build shinyngs ${R_ARGS}
             &parsed,
             &plan
         ));
+        let spec = render_payload_spec_minimal(
+            "r-shinyngs",
+            &parsed,
+            &plan,
+            Some("bioconda-r-shinyngs-build.sh"),
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            true,
+            false,
+        );
+
+        assert!(spec.contains("Source1:        bioconda-r-shinyngs-build.sh"));
+        assert!(spec.contains("bash -eo pipefail ./build.sh"));
+        assert!(!spec.contains(">> $description"));
     }
 
     #[test]
