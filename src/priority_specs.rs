@@ -7581,6 +7581,12 @@ fn interpret_build_script_minimal(script: &str) -> InterpretedBuildPlan {
             continue;
         }
 
+        if is_shell_function_definition(trimmed) {
+            build_commands.push(trimmed.to_string());
+            install_commands.push(trimmed.to_string());
+            control_flow_depth += 1;
+            continue;
+        }
         if starts_shell_control_flow_block(trimmed) {
             // Keep minimal mode deterministic: skip conditional/case bodies entirely.
             control_flow_depth += 1;
@@ -7743,6 +7749,22 @@ fn starts_shell_control_flow_block(line: &str) -> bool {
         || line.starts_with("until ")
         || line.starts_with("case ")
         || line.starts_with("function ")
+        || is_shell_function_definition(line)
+}
+
+fn is_shell_function_definition(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("function ") {
+        return true;
+    }
+    let compact = trimmed.replace(char::is_whitespace, "");
+    let Some(name) = compact.strip_suffix("(){") else {
+        return false;
+    };
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 fn ends_shell_control_flow_block(line: &str) -> bool {
@@ -8155,6 +8177,12 @@ fn package_requires_original_build_script(
     if all_commands
         .iter()
         .any(|command| build_script_uses_heredoc(command))
+    {
+        return true;
+    }
+    if all_commands
+        .iter()
+        .any(|command| is_shell_function_definition(command))
     {
         return true;
     }
@@ -23850,6 +23878,45 @@ EOF
 
         assert!(package_requires_original_build_script(
             "tir-learner",
+            &parsed,
+            &plan
+        ));
+    }
+
+    #[test]
+    fn external_function_build_scripts_keep_original_build_script_scope() {
+        let parsed = ParsedMeta {
+            package_name: "r-shinyngs".to_string(),
+            version: "2.4.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/r-shinyngs.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/r-shinyngs".to_string(),
+            license: "AGPL-3.0".to_string(),
+            summary: "r-shinyngs".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let external_build_sh = r#"
+ammend_description_for_packrat(){
+    description=$1
+    remoterepo=$2
+    echo -e "RemoteRepo: $remoterepo" >> $description
+}
+ammend_description_for_packrat "shinyngs/DESCRIPTION" "shinyngs"
+${R} CMD INSTALL --build shinyngs ${R_ARGS}
+"#;
+        let plan = interpret_build_script_minimal(external_build_sh);
+
+        assert!(package_requires_original_build_script(
+            "r-shinyngs",
             &parsed,
             &plan
         ));
