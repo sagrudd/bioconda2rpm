@@ -12466,11 +12466,14 @@ echo \"bioconda2rpm metapackage fallback: no payload build steps required\"\n"
 }
 
 fn is_runtime_only_metapackage(parsed: &ParsedMeta) -> bool {
+    let package = normalize_name(&parsed.package_name);
+    let dependency_only_env_package =
+        package.ends_with("-env") || package.ends_with("-environment");
     parsed.source_patches.is_empty()
         && parsed.build_script.is_none()
-        && parsed.build_dep_specs_raw.is_empty()
-        && parsed.host_dep_specs_raw.is_empty()
         && !parsed.run_dep_specs_raw.is_empty()
+        && (dependency_only_env_package
+            || (parsed.build_dep_specs_raw.is_empty() && parsed.host_dep_specs_raw.is_empty()))
 }
 
 fn parse_git_source_descriptor(source_url: &str) -> Option<(String, String)> {
@@ -22840,6 +22843,39 @@ requirements:
         };
         assert!(is_runtime_only_metapackage(&parsed));
         let generated = synthesize_fallback_build_sh(&parsed).expect("metapackage fallback");
+        assert!(generated.contains("metapackage fallback"));
+    }
+
+    #[test]
+    fn fallback_build_script_supports_dependency_only_env_recipes_with_host_deps() {
+        let mut host_deps = BTreeSet::new();
+        host_deps.insert(PHOREUS_PYTHON_PACKAGE.to_string());
+        host_deps.insert("pip".to_string());
+        let mut run_deps = BTreeSet::new();
+        run_deps.insert("snakemake".to_string());
+        run_deps.insert("samtools".to_string());
+        let parsed = ParsedMeta {
+            package_name: "snakeatac_env".to_string(),
+            version: "0.1.1".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/snakeATAC-0.1.1.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/snakeatac".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "dependency environment".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: true,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["python".to_string(), "pip".to_string()],
+            run_dep_specs_raw: vec!["snakemake".to_string(), "samtools".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps,
+            run_deps,
+        };
+
+        assert!(is_runtime_only_metapackage(&parsed));
+        let generated = synthesize_fallback_build_sh(&parsed).expect("env fallback");
         assert!(generated.contains("metapackage fallback"));
     }
 
