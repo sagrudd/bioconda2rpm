@@ -12548,6 +12548,8 @@ for raw in path.read_text().splitlines():
     line = raw.strip()
     if not line or line.startswith('#'):
         continue
+    if line.startswith(('/', './', '../')):
+        continue
     name = re.split(r'[<>=!~\[; ]', line, 1)[0].strip().lower().replace('_', '-')
     if name in drop or name.startswith('nvidia-'):
         continue
@@ -18648,6 +18650,7 @@ requirements:
                 "git".to_string(),
                 "snakemake-minimal<8.0.0,>=5.5.2".to_string(),
                 "tabix".to_string(),
+                "/work/.build-work/btllib/BUILDROOT/phoreus-btllib/lib/btllib/python".to_string(),
                 "openblas".to_string(),
                 "pytorch>=2.*".to_string(),
                 "pytorch-cpu>=2.*".to_string(),
@@ -18661,6 +18664,7 @@ requirements:
             block.contains("for raw in path.read_text().splitlines():\n    line = raw.strip()")
         );
         assert!(block.contains("if not line or line.startswith('#'):\n        continue"));
+        assert!(block.contains("if line.startswith(('/', './', '../')):\n        continue"));
         assert!(block.contains("'apptainer'"));
         assert!(block.contains("'graphviz'"));
         assert!(block.contains("'git'"));
