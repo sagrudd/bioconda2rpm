@@ -12533,8 +12533,11 @@ python - <<'PYREQSAN'
 from pathlib import Path
 import re
 drop = {{
-    'git', 'git-lfs', 'conda', 'mamba', 'micromamba',
-    'openblas', 'libopenblas', 'libblas', 'libcblas', 'mkl', 'mkl-devel',
+    'apptainer', 'bedops', 'boost-cpp', 'conda', 'diamond', 'geos', 'git', 'git-lfs',
+    'graph-tool-base', 'graphviz', 'intarna', 'lamassemble', 'mamba', 'maxbin2',
+    'meme', 'micromamba', 'nb-conda-kernels', 'openblas', 'libopenblas', 'libblas',
+    'libcblas', 'mkl', 'mkl-devel', 'pytaxonkit', 'scala', 'snakemake-minimal',
+    'tabix', 'ucsc-bedgraphtobigwig', 'ucsc-bigwigaverageoverbed', 'vpt-core',
     'pytorch', 'pytorch-cpu', 'pytorch-gpu', 'torch', 'torchaudio', 'torchtext',
     'torchvision', 'tensorflow', 'tensorflow-base', 'tensorflow-estimator',
     'jax', 'jaxlib', 'triton',
@@ -18640,7 +18643,11 @@ requirements:
             true,
             &[
                 "seaborn>=0.11.*".to_string(),
+                "apptainer>=1.3.2".to_string(),
+                "graphviz>=2.40".to_string(),
                 "git".to_string(),
+                "snakemake-minimal<8.0.0,>=5.5.2".to_string(),
+                "tabix".to_string(),
                 "openblas".to_string(),
                 "pytorch>=2.*".to_string(),
                 "pytorch-cpu>=2.*".to_string(),
@@ -18654,7 +18661,11 @@ requirements:
             block.contains("for raw in path.read_text().splitlines():\n    line = raw.strip()")
         );
         assert!(block.contains("if not line or line.startswith('#'):\n        continue"));
+        assert!(block.contains("'apptainer'"));
+        assert!(block.contains("'graphviz'"));
         assert!(block.contains("'git'"));
+        assert!(block.contains("'snakemake-minimal'"));
+        assert!(block.contains("'tabix'"));
         assert!(block.contains("'openblas'"));
         assert!(block.contains("'pytorch-cpu'"));
         assert!(block.contains("'torchvision'"));
