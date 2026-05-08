@@ -7651,10 +7651,23 @@ fn collect_logical_script_lines(script: &str) -> Vec<String> {
     let mut current = String::new();
     let mut in_single_quote = false;
     let mut in_double_quote = false;
+    let mut heredoc_delimiter: Option<String> = None;
 
     for raw in script.lines() {
         let line = raw.trim_end();
         let trimmed = line.trim();
+        if let Some(delimiter) = heredoc_delimiter.as_deref() {
+            if !current.is_empty() {
+                current.push('\n');
+            }
+            current.push_str(line);
+            if trimmed == delimiter {
+                out.push(current.trim().to_string());
+                current.clear();
+                heredoc_delimiter = None;
+            }
+            continue;
+        }
         if trimmed.is_empty() {
             if !current.is_empty() {
                 if shell_line_has_trailing_control_operator(current.trim()) {
@@ -7691,6 +7704,10 @@ fn collect_logical_script_lines(script: &str) -> Vec<String> {
             }
         }
         current.push_str(content);
+        if let Some(delimiter) = heredoc_delimiter_for_line(content) {
+            heredoc_delimiter = Some(delimiter);
+            continue;
+        }
         update_shell_quote_state(content, &mut in_single_quote, &mut in_double_quote);
 
         if !continued && !in_single_quote && !in_double_quote {
@@ -7704,6 +7721,44 @@ fn collect_logical_script_lines(script: &str) -> Vec<String> {
     }
 
     out
+}
+
+fn heredoc_delimiter_for_line(line: &str) -> Option<String> {
+    let mut cursor = 0usize;
+    while let Some(offset) = line[cursor..].find("<<") {
+        let mut rest = &line[cursor + offset + 2..];
+        cursor += offset + 2;
+        if rest.starts_with('<') {
+            continue;
+        }
+        if rest.starts_with('-') {
+            rest = &rest[1..];
+            cursor += 1;
+        }
+        rest = rest.trim_start();
+        if rest.is_empty() || rest.starts_with('&') {
+            continue;
+        }
+        let first = rest.chars().next()?;
+        if matches!(first, '\'' | '"') {
+            let closing = first;
+            let body = &rest[first.len_utf8()..];
+            let end = body.find(closing)?;
+            let delimiter = &body[..end];
+            if !delimiter.is_empty() {
+                return Some(delimiter.to_string());
+            }
+            continue;
+        }
+        let end = rest
+            .find(|ch: char| ch.is_whitespace() || matches!(ch, ';' | '&' | '|'))
+            .unwrap_or(rest.len());
+        let delimiter = &rest[..end];
+        if !delimiter.is_empty() {
+            return Some(delimiter.to_string());
+        }
+    }
+    None
 }
 
 fn shell_line_has_trailing_control_operator(line: &str) -> bool {
@@ -23880,6 +23935,62 @@ EOF
             "tir-learner",
             &parsed,
             &plan
+        ));
+    }
+
+    #[test]
+    fn heredoc_body_lines_do_not_become_minimal_shell_commands() {
+        let parsed = ParsedMeta {
+            package_name: "pecat".to_string(),
+            version: "0.0.3".to_string(),
+            build_number: "2".to_string(),
+            source_url: "https://example.invalid/pecat.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/pecat".to_string(),
+            license: "BSD-2-Clause".to_string(),
+            summary: "pecat".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let external_build_sh = r#"
+cat > "${KSW2_DIR}/Makefile" <<'EOF'
+CC ?= gcc
+AR ?= ar
+CFLAGS += -Wall -O3
+OBJS = ksw2_gg.o ksw2_extz.o ksw2_extd.o
+
+libksw2.a: $(OBJS)
+	$(AR) -rc $@ $^
+EOF
+sed -i 's/<TAB>/\t/g' ${KSW2_DIR}/Makefile
+"#;
+        let plan = interpret_build_script_minimal(external_build_sh);
+        let all_commands = plan
+            .build_commands
+            .iter()
+            .chain(plan.install_commands.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+
+        assert!(
+            all_commands
+                .iter()
+                .any(|command| command.contains("<<'EOF'") && command.contains("OBJS ="))
+        );
+        assert!(
+            !all_commands
+                .iter()
+                .any(|command| command.trim_start().starts_with("OBJS ="))
+        );
+        assert!(package_requires_original_build_script(
+            "pecat", &parsed, &plan
         ));
     }
 
