@@ -8322,7 +8322,8 @@ fn compute_minimal_build_scope(
         conda_pkg_vars_required: command_mentions_conda_pkg_vars(&all_commands),
         arch_env_required,
         parallel_env_required,
-        symlink_normalization_required: buildroot_text_scrub_required
+        symlink_normalization_required: recipe_build_sh_required
+            || buildroot_text_scrub_required
             || command_mentions_symlink_install(&interpreted_build_plan.install_commands),
         buildroot_text_scrub_required,
         sparsehash_configure_fallback_required,
@@ -25350,12 +25351,17 @@ ${CXX} -O3 -o "${PREFIX}/bin/helper" "${SRC_DIR}/helper.cpp"
             host_dep_specs_raw: Vec::new(),
             run_dep_specs_raw: Vec::new(),
             build_deps: BTreeSet::new(),
-            host_deps: BTreeSet::new(),
+            host_deps: BTreeSet::from(["ruby".to_string()]),
             run_deps: BTreeSet::new(),
         };
-        let plan = interpret_build_script_minimal(parsed.build_script.as_deref().unwrap());
+        let plan = InterpretedBuildPlan {
+            build_commands: Vec::new(),
+            install_commands: Vec::new(),
+            prefix_install_vars: BTreeSet::new(),
+        };
         let scope = compute_minimal_build_scope("das-tool", &parsed, &plan, false, false, false);
 
+        assert!(scope.recipe_build_sh_required);
         assert!(scope.symlink_normalization_required);
         assert!(scope.label_string().contains("symlink-normalization"));
     }
