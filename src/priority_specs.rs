@@ -8261,6 +8261,9 @@ fn package_requires_original_build_script(
         .chain(interpreted_build_plan.install_commands.iter())
         .cloned()
         .collect::<Vec<_>>();
+    if parsed.build_script.is_none() && normalize_name(&parsed.package_name).starts_with("perl-") {
+        return true;
+    }
     if recipe_dep_mentions(parsed, "ruby")
         || command_mentions_any(&all_commands, &["GEM_HOME", "gem build", "gem install"])
     {
@@ -8978,7 +8981,7 @@ fn render_payload_spec_minimal(
     } else {
         Vec::new()
     };
-    let scope = compute_minimal_build_scope(
+    let mut scope = compute_minimal_build_scope(
         software_slug,
         parsed,
         interpreted_build_plan,
@@ -8986,6 +8989,14 @@ fn render_payload_spec_minimal(
         r_script_hint,
         rust_script_hint,
     );
+    if staged_build_sh_name.is_some()
+        && parsed.build_script.is_none()
+        && interpreted_build_plan.build_commands.is_empty()
+        && interpreted_build_plan.install_commands.is_empty()
+    {
+        scope.recipe_build_sh_required = true;
+        scope.symlink_normalization_required = true;
+    }
     let all_commands = interpreted_build_plan
         .build_commands
         .iter()
@@ -25048,6 +25059,57 @@ $R CMD INSTALL --build .
         assert!(spec.contains(&format!("BuildRequires:  {PHOREUS_PYTHON_PACKAGE}")));
         assert!(spec.contains("BuildRequires:  flex"));
         assert!(spec.contains("BuildRequires:  bison"));
+    }
+
+    #[test]
+    fn minimal_payload_retains_external_build_sh_when_no_inline_script_exists() {
+        let parsed = ParsedMeta {
+            package_name: "perl-template-toolkit".to_string(),
+            version: "3.102".to_string(),
+            build_number: "1".to_string(),
+            source_url: "https://example.invalid/Template-Toolkit-3.102.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/perl-template-toolkit".to_string(),
+            license: "perl_5".to_string(),
+            summary: "perl-template-toolkit".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::from(["gcc".to_string(), "make".to_string()]),
+            host_deps: BTreeSet::from(["perl".to_string()]),
+            run_deps: BTreeSet::from(["perl".to_string()]),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        assert!(package_requires_original_build_script(
+            "perl-template-toolkit",
+            &parsed,
+            &plan
+        ));
+        let spec = render_payload_spec_minimal(
+            "perl-template-toolkit",
+            &parsed,
+            &plan,
+            Some("bioconda-perl-template-toolkit-build.sh"),
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains(
+            "%global bioconda2rpm_build_scope perl-runtime,compiler-env,symlink-normalization,recipe-build-sh"
+        ));
+        assert!(spec.contains("Source1:        bioconda-perl-template-toolkit-build.sh"));
+        assert!(spec.contains("cp %{SOURCE1} buildsrc/build.sh"));
+        assert!(spec.contains("bash -eo pipefail ./build.sh"));
+        assert!(!spec.contains("bioconda2rpm minimal mode: no explicit build commands extracted"));
     }
 
     #[test]
