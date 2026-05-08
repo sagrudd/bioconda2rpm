@@ -13194,6 +13194,11 @@ while IFS= read -r patch_rel; do\n\
     continue\n\
   fi\n\
   patch_referenced_paths=$((patch_referenced_paths + 1))\n\
+  if [[ \"$patch_rel\" == */* ]]; then\n\
+    patch_exact_find=(find . -type f -path \"*/$patch_rel\" -print)\n\
+  else\n\
+    patch_exact_find=(find . -maxdepth 1 -type f -name \"$patch_rel\" -print)\n\
+  fi\n\
   while IFS= read -r hit; do\n\
     patch_target_seen=1\n\
     patch_exact_target_seen=1\n\
@@ -13212,7 +13217,7 @@ while IFS= read -r patch_rel; do\n\
     if [[ \"$already\" -eq 0 ]]; then\n\
       patch_dirs+=(\"$candidate\")\n\
     fi\n\
-  done < <(find . -type f -path \"*/$patch_rel\" -print 2>/dev/null || true)\n\
+  done < <(\"${{patch_exact_find[@]}}\" 2>/dev/null || true)\n\
   patch_base=\"${{patch_rel##*/}}\"\n\
   if [[ -n \"$patch_base\" ]]; then\n\
     while IFS= read -r hit; do\n\
@@ -18092,6 +18097,12 @@ requirements:
         assert!(spec.contains("patch_target_seen=0"));
         assert!(spec.contains("patch_exact_target_seen=0"));
         assert!(spec.contains("patch_exact_target_seen=1"));
+        assert!(spec.contains("patch_exact_find=(find . -type f -path \"*/$patch_rel\" -print)"));
+        assert!(
+            spec.contains(
+                "patch_exact_find=(find . -maxdepth 1 -type f -name \"$patch_rel\" -print)"
+            )
+        );
         assert!(spec.contains("awk 'BEGIN{emit=0}"));
         assert!(spec.contains("grep -Eq '^(diff --git |\\*\\*\\* |--- |\\+\\+\\+ )'"));
         assert!(spec.contains(
