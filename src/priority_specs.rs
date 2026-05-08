@@ -7972,6 +7972,32 @@ fn command_mentions_compiler_env(commands: &[String]) -> bool {
     )
 }
 
+fn add_lexer_parser_build_requires_for_commands(
+    build_requires: &mut BTreeSet<String>,
+    commands: &[String],
+) {
+    for command in commands {
+        let Some(words) = split_shell_words_for_rewrite(command.trim()) else {
+            continue;
+        };
+        for word in words {
+            let tool = Path::new(&word)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(&word);
+            match tool {
+                "flex" | "lex" => {
+                    build_requires.insert("flex".to_string());
+                }
+                "bison" | "yacc" => {
+                    build_requires.insert("bison".to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 fn command_mentions_symlink_install(commands: &[String]) -> bool {
     commands.iter().any(|line| ln_command_creates_symlink(line))
 }
@@ -8800,6 +8826,12 @@ fn render_payload_spec_minimal(
         r_script_hint,
         rust_script_hint,
     );
+    let all_commands = interpreted_build_plan
+        .build_commands
+        .iter()
+        .chain(interpreted_build_plan.install_commands.iter())
+        .cloned()
+        .collect::<Vec<_>>();
     let r_runtime_required = scope.r_runtime_required;
     let rust_runtime_required = scope.rust_runtime_required;
     let nim_runtime_required = scope.nim_runtime_required;
@@ -8915,6 +8947,7 @@ mkdir -p %{bioconda_source_subdir}\n"
         RpmDependencyKind::Build,
         python_recipe,
     ));
+    add_lexer_parser_build_requires_for_commands(&mut build_requires, &all_commands);
     add_native_build_requires_for_python_requirements(&mut build_requires, &python_requirements);
     remove_phoreus_python_runtime_requirements(&mut build_requires);
     if scope.python_runtime_required {
@@ -9390,6 +9423,11 @@ fn render_payload_spec(
             || recipe_dep_mentions(parsed, "igraph")
             || recipe_dep_mentions(parsed, "python-igraph"));
     let python_venv_setup = render_python_venv_setup_block(python_recipe, &python_requirements);
+    let build_script_commands = parsed
+        .build_script
+        .as_deref()
+        .map(|script| script.lines().map(str::to_string).collect::<Vec<_>>())
+        .unwrap_or_default();
     let r_runtime_setup = render_r_runtime_setup_block(
         &parsed.package_name,
         r_runtime_required,
@@ -9592,6 +9630,7 @@ mkdir -p %{bioconda_source_subdir}\n"
             python_recipe,
         ));
     }
+    add_lexer_parser_build_requires_for_commands(&mut build_requires, &build_script_commands);
     // HEURISTIC-TEMP(issue=HEUR-0004): IGV currently requires Java 21 toolchain at build time.
     if software_slug == "igv" {
         // IGV's Gradle build enforces Java toolchain languageVersion=21.
@@ -13682,6 +13721,8 @@ fn map_build_dependency(dep: &str) -> String {
         "curl" => "libcurl-devel openssl-devel xz-devel bzip2-devel".to_string(),
         "libcurl-devel" => "libcurl-devel openssl-devel".to_string(),
         "eigen" => "eigen3-devel".to_string(),
+        "flex" | "lex" => "flex".to_string(),
+        "bison" | "yacc" => "bison".to_string(),
         "fmt" => "fmt-devel".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
@@ -13831,6 +13872,8 @@ fn map_runtime_dependency(dep: &str) -> String {
         "cereal" => "cereal-devel".to_string(),
         "clangdev" => "clang".to_string(),
         "eigen" => "eigen3-devel".to_string(),
+        "flex" | "lex" => "flex".to_string(),
+        "bison" | "yacc" => "bison".to_string(),
         "font-ttf-dejavu-sans-mono" => "dejavu-sans-mono-fonts".to_string(),
         "fonts-conda-ecosystem" => "fontconfig".to_string(),
         "gmp" => "gmp".to_string(),
@@ -23733,6 +23776,27 @@ build:
 
         assert!(hardened.contains("mkdir -p ${PREFIX}/bin/"));
         assert!(hardened.contains("cp -r bin/* ${PREFIX}/bin/"));
+    }
+
+    #[test]
+    fn lexer_parser_tools_are_mapped_from_recipe_deps_and_commands() {
+        assert_eq!(map_build_dependency("flex"), "flex");
+        assert_eq!(map_build_dependency("lex"), "flex");
+        assert_eq!(map_build_dependency("bison"), "bison");
+        assert_eq!(map_build_dependency("yacc"), "bison");
+
+        let mut build_requires = BTreeSet::new();
+        add_lexer_parser_build_requires_for_commands(
+            &mut build_requires,
+            &[
+                "make parsers/lex.CTBNDL.cc".to_string(),
+                "/usr/bin/flex -o generated.cc parser.l".to_string(),
+                "bison -y grammar.y".to_string(),
+            ],
+        );
+
+        assert!(build_requires.contains("flex"));
+        assert!(build_requires.contains("bison"));
     }
 
     #[test]
