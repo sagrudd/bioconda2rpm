@@ -6840,6 +6840,8 @@ fn harden_build_script_text(script: &str) -> String {
             rewrite_counter += 1;
         } else if let Some(expanded) = rewrite_glob_copy_to_prefix_bin_line(line) {
             rewritten_lines.extend(expanded);
+        } else if let Some(expanded) = rewrite_copy_to_prefix_bin_line(line) {
+            rewritten_lines.extend(expanded);
         } else if let Some(rewritten) = rewrite_cargo_bundle_licenses_line(line) {
             rewritten_lines.push(rewritten);
         } else if let Some(rewritten) = rewrite_plain_rm_line_to_force(line) {
@@ -7060,6 +7062,26 @@ fn rewrite_glob_copy_to_prefix_bin_line(line: &str) -> Option<Vec<String>> {
         format!("{indent}  cp \"$_bioconda2rpm_src\" \"$PREFIX/bin/\""),
         format!("{indent}done < <(find . -maxdepth 2 -type f -name '{pattern}' -print0)"),
     ])
+}
+
+fn rewrite_copy_to_prefix_bin_line(line: &str) -> Option<Vec<String>> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with('#') {
+        return None;
+    }
+    let words = split_shell_words_for_rewrite(trimmed)?;
+    if words.first().map(String::as_str) != Some("cp") || words.len() < 3 {
+        return None;
+    }
+    let dest = words.last()?;
+    if !matches!(
+        dest.as_str(),
+        "$PREFIX/bin" | "$PREFIX/bin/" | "${PREFIX}/bin" | "${PREFIX}/bin/"
+    ) {
+        return None;
+    }
+    let indent = &line[..line.len() - trimmed.len()];
+    Some(vec![format!("{indent}mkdir -p {dest}"), line.to_string()])
 }
 
 fn staged_build_script_indicates_python(path: &Path) -> Result<bool> {
@@ -8088,6 +8110,13 @@ fn package_requires_original_build_script(
     {
         return true;
     }
+    if parsed
+        .build_script
+        .as_deref()
+        .is_some_and(build_script_uses_heredoc)
+    {
+        return true;
+    }
     if interpreted_plan_has_shell_continuation_fragments(interpreted_build_plan) {
         return true;
     }
@@ -8118,6 +8147,13 @@ fn package_requires_original_build_script(
 fn build_script_uses_stateful_bash_arrays(script: &str) -> bool {
     let lower = script.to_ascii_lowercase();
     lower.contains("for ") && script.contains("=(") && script.contains("[@]")
+}
+
+fn build_script_uses_heredoc(script: &str) -> bool {
+    script.lines().any(|line| {
+        let trimmed = line.trim_start();
+        !trimmed.starts_with('#') && trimmed.contains("<<")
+    })
 }
 
 fn interpreted_plan_has_shell_continuation_fragments(plan: &InterpretedBuildPlan) -> bool {
@@ -23658,6 +23694,45 @@ requirements:
             &parsed,
             &plan
         ));
+    }
+
+    #[test]
+    fn heredoc_wrapper_recipes_keep_original_build_script_scope() {
+        let parsed = parse_rendered_meta(
+            r#"
+package:
+  name: ezaai
+  version: 1.2.4
+source:
+  url: https://example.invalid/ezaai-bin.tar.gz
+build:
+  script: |
+    mkdir -p "${PREFIX}/bin"
+    cat << EOF > "${PREFIX}/bin/ezaai"
+    #!/bin/sh
+    exec java -jar "${PREFIX}/share/ezaai/EzAAI.jar" "${@}"
+    EOF
+"#,
+        )
+        .expect("parse heredoc recipe");
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+
+        assert!(build_script_uses_heredoc(
+            parsed.build_script.as_deref().unwrap()
+        ));
+        assert!(package_requires_original_build_script(
+            "ezaai", &parsed, &plan
+        ));
+    }
+
+    #[test]
+    fn harden_build_script_creates_prefix_bin_for_direct_copies() {
+        let script = "cp -r bin/* ${PREFIX}/bin/\n";
+        let hardened = harden_build_script_text(script);
+
+        assert!(hardened.contains("mkdir -p ${PREFIX}/bin/"));
+        assert!(hardened.contains("cp -r bin/* ${PREFIX}/bin/"));
     }
 
     #[test]
