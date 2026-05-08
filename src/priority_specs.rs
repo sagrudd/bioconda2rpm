@@ -15035,18 +15035,20 @@ fn payload_version_state(
         && let Some(existing) =
             list::latest_catalog_payload_version(topdir, target_id, software_slug)
     {
-        if local_payload_has_known_stale_spec(topdir, software_slug) {
-            return Ok(PayloadVersionState::NotBuilt);
-        }
-        let ord = compare_version_labels(&existing, target_version);
-        if ord == Ordering::Less {
-            return Ok(PayloadVersionState::Outdated {
+        if payload_artifact_version_exists(topdir, target_root, software_slug, &existing)? {
+            if local_payload_has_known_stale_spec(topdir, software_slug) {
+                return Ok(PayloadVersionState::NotBuilt);
+            }
+            let ord = compare_version_labels(&existing, target_version);
+            if ord == Ordering::Less {
+                return Ok(PayloadVersionState::Outdated {
+                    existing_version: existing,
+                });
+            }
+            return Ok(PayloadVersionState::UpToDate {
                 existing_version: existing,
             });
         }
-        return Ok(PayloadVersionState::UpToDate {
-            existing_version: existing,
-        });
     }
 
     let Some(existing) = latest_existing_payload_version(topdir, target_root, software_slug)?
@@ -15066,6 +15068,18 @@ fn payload_version_state(
             existing_version: existing,
         })
     }
+}
+
+fn payload_artifact_version_exists(
+    topdir: &Path,
+    target_root: &Path,
+    software_slug: &str,
+    version: &str,
+) -> Result<bool> {
+    Ok(artifact_filenames(topdir, target_root)?.iter().any(|name| {
+        extract_payload_version_from_name(name, software_slug)
+            .is_some_and(|existing| existing == version)
+    }))
 }
 
 fn local_payload_has_known_stale_spec(topdir: &Path, software_slug: &str) -> bool {
@@ -23359,6 +23373,73 @@ error: build stopped\n";
         assert!(matches!(
             payload_version_state(tmp.path(), &target_root, "ncbi-vdb", "3.4.1").unwrap(),
             PayloadVersionState::UpToDate { existing_version } if existing_version == "3.4.1"
+        ));
+    }
+
+    #[test]
+    fn payload_version_state_ignores_catalog_success_without_payload_rpm() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let target_root = tmp.path().join("targets").join("test");
+        fs::create_dir_all(target_root.join("RPMS").join("x86_64")).expect("create rpm dir");
+        fs::write(
+            tmp.path().join(".catalog.json"),
+            r#"{
+  "entries": [
+    {
+      "software": "bioconductor-bsgenome",
+      "version": "1.78.0",
+      "arch": "x86_64",
+      "target_id": "test",
+      "status": "generated"
+    }
+  ]
+}"#,
+        )
+        .expect("write catalog");
+
+        assert!(matches!(
+            payload_version_state(tmp.path(), &target_root, "bioconductor-bsgenome", "1.78.0")
+                .unwrap(),
+            PayloadVersionState::NotBuilt
+        ));
+    }
+
+    #[test]
+    fn payload_version_state_trusts_catalog_success_with_payload_rpm() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let target_root = tmp.path().join("targets").join("test");
+        let rpm_dir = target_root.join("RPMS").join("x86_64");
+        fs::create_dir_all(&rpm_dir).expect("create rpm dir");
+        fs::write(
+            rpm_dir.join("phoreus-bioconductor-bsgenome-1.78.0-1.78.0-1.el9.x86_64.rpm"),
+            [],
+        )
+        .expect("write rpm placeholder");
+        fs::write(
+            tmp.path().join(".catalog.json"),
+            r#"{
+  "entries": [
+    {
+      "software": "bioconductor-bsgenome",
+      "version": "1.78.0",
+      "arch": "x86_64",
+      "target_id": "test",
+      "status": "generated"
+    }
+  ]
+}"#,
+        )
+        .expect("write catalog");
+
+        assert!(matches!(
+            payload_version_state(
+                tmp.path(),
+                &target_root,
+                "bioconductor-bsgenome",
+                "1.78.0"
+            )
+            .unwrap(),
+            PayloadVersionState::UpToDate { existing_version } if existing_version == "1.78.0"
         ));
     }
 
