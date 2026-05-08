@@ -8434,24 +8434,21 @@ fn compute_minimal_build_scope(
     let recipe_build_sh_required =
         package_requires_original_build_script(software_slug, parsed, interpreted_build_plan);
     let buildroot_text_scrub_required = python_recipe
-        || (!recipe_build_sh_required
-            && (command_mentions_buildroot_text_risk_with_aliases(
-                &interpreted_build_plan.install_commands,
-                &interpreted_build_plan.prefix_install_vars,
-            ) || command_runs_prefix_installer_with_aliases(
-                &interpreted_build_plan.install_commands,
-                &interpreted_build_plan.prefix_install_vars,
-            ) || (package_requires_make_install_buildroot_scrub(software_slug)
-                && command_runs_make_install_with_prefix_env(
-                    &interpreted_build_plan.install_commands,
-                ))
-                || ((command_configures_install_prefix_from_prefix(
-                    &interpreted_build_plan.build_commands,
-                ) || command_configures_install_prefix_from_prefix(
-                    &interpreted_build_plan.install_commands,
-                )) && command_installs_configured_prefix(
-                    &interpreted_build_plan.install_commands,
-                ))))
+        || command_mentions_buildroot_text_risk_with_aliases(
+            &interpreted_build_plan.install_commands,
+            &interpreted_build_plan.prefix_install_vars,
+        )
+        || command_runs_prefix_installer_with_aliases(
+            &interpreted_build_plan.install_commands,
+            &interpreted_build_plan.prefix_install_vars,
+        )
+        || (package_requires_make_install_buildroot_scrub(software_slug)
+            && command_runs_make_install_with_prefix_env(&interpreted_build_plan.install_commands))
+        || ((command_configures_install_prefix_from_prefix(
+            &interpreted_build_plan.build_commands,
+        ) || command_configures_install_prefix_from_prefix(
+            &interpreted_build_plan.install_commands,
+        )) && command_installs_configured_prefix(&interpreted_build_plan.install_commands))
         || native_vendored_prefix_required
         || core_c_bootstrap_prefix_required;
     let blast_compat_required = package_requires_blast_compat(software_slug);
@@ -24180,6 +24177,58 @@ cmake .. "${cmake_args[@]}"
             &parsed,
             &plan
         ));
+    }
+
+    #[test]
+    fn retained_heredoc_wrapper_scripts_still_get_buildroot_scrub() {
+        let parsed = ParsedMeta {
+            package_name: "discovir".to_string(),
+            version: "1.0.1.beta".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/discovir.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/discovir".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "discovir".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let external_build_sh = r#"
+mkdir -p ${PREFIX}/bin
+cat << EOF > ${PREFIX}/bin/discovir
+#!/bin/bash
+DIR="\$( cd "\$( dirname "\${BASH_SOURCE[0]}" )" && pwd )"
+bash "\$DIR/../share/${PKG_NAME}-${PKG_VERSION}/DiscoVir.sh" "\$@"
+EOF
+"#;
+        let plan = interpret_build_script_minimal(external_build_sh);
+        let spec = render_payload_spec_minimal(
+            "discovir",
+            &parsed,
+            &plan,
+            Some("bioconda-discovir-build.sh"),
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(package_requires_original_build_script(
+            "discovir", &parsed, &plan
+        ));
+        assert!(spec.contains("recipe-build-sh"));
+        assert!(spec.contains("buildroot-text-scrub"));
+        assert!(spec.contains("grep -RIlZ -- \"$buildroot_prefix\""));
     }
 
     #[test]
