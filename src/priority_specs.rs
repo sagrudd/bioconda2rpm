@@ -6556,6 +6556,10 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "lrzip"
             | "wget"
             | "curl"
+            | "flex"
+            | "lex"
+            | "bison"
+            | "yacc"
             | "swig"
             | "doxygen"
             | "which"
@@ -24993,6 +24997,57 @@ $R CMD INSTALL --build .
         assert!(spec.contains("export PHOREUS_PYTHON_PREFIX="));
         assert!(spec.contains("export PYTHON=\"$PHOREUS_PYTHON_PREFIX/bin/python"));
         assert!(!spec.contains("BuildRequires:  pybind11-global"));
+    }
+
+    #[test]
+    fn python_payload_keeps_declared_lexer_parser_build_tools() {
+        let parsed = ParsedMeta {
+            package_name: "nordic".to_string(),
+            version: "2.7.1".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/nordic-2.7.1.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/nordic".to_string(),
+            license: "MIT".to_string(),
+            summary: "nordic".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "make -j\"${CPU_COUNT}\" install\n\"${PYTHON}\" -m pip install --no-deps . -vvv\n"
+                    .to_string(),
+            ),
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::from([
+                "gcc".to_string(),
+                "gcc-c++".to_string(),
+                "flex".to_string(),
+                "bison".to_string(),
+                "make".to_string(),
+            ]),
+            host_deps: BTreeSet::from([PHOREUS_PYTHON_PACKAGE.to_string()]),
+            run_deps: BTreeSet::new(),
+        };
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "nordic",
+            &parsed,
+            &plan,
+            None,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains(&format!("BuildRequires:  {PHOREUS_PYTHON_PACKAGE}")));
+        assert!(spec.contains("BuildRequires:  flex"));
+        assert!(spec.contains("BuildRequires:  bison"));
     }
 
     #[test]
