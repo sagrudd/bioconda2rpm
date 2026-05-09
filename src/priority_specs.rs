@@ -10422,6 +10422,19 @@ if [[ ! -f \"$BUILD_PREFIX/share/gnuconfig/config.guess\" || ! -f \"$BUILD_PREFI
   fi\n\
 fi\n\
 \n\
+# Python 3.11 moved longintrepr.h under cpython/. Older Cython-generated\n\
+# extensions, including bundled legacy pysam copies, may still include the\n\
+# historical top-level header name.\n\
+if [[ -n \"${{PYTHON:-}}\" ]] && \"$PYTHON\" - <<'PYLONGINT'\n\
+import sys\n\
+raise SystemExit(0 if sys.version_info >= (3, 11) else 1)\n\
+PYLONGINT\n\
+then\n\
+  while IFS= read -r -d '' longint_src; do\n\
+    perl -0pi -e 's/#\\s*include\\s+[\"<]longintrepr\\.h[\">]/#include <cpython\\/longintrepr.h>/g' \"$longint_src\" || true\n\
+  done < <(find . -type f \\( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \\) -print0 2>/dev/null)\n\
+fi\n\
+\n\
 # Conda recipes often assume host/build dependencies are co-located in one PREFIX.\n\
 # Phoreus keeps dependencies in versioned prefixes, so stage compatibility symlinks.\n\
 if [[ -d /usr/local/phoreus ]]; then\n\
@@ -23003,6 +23016,48 @@ requirements:
             "if ! $PYTHON -m pip install --no-deps --use-pep517 . -vvv --no-build-isolation; then"
         ));
         assert!(!generated.contains(";; then"));
+    }
+
+    #[test]
+    fn payload_spec_rewrites_legacy_longintrepr_includes_for_python311() {
+        let parsed = ParsedMeta {
+            package_name: "mimodd".to_string(),
+            version: "0.1.9".to_string(),
+            build_number: "1".to_string(),
+            source_url: "https://example.invalid/MiModD-0.1.9.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/mimodd".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "mimodd".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON setup.py install".to_string()),
+            output_build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: vec!["c-compiler".to_string()],
+            host_dep_specs_raw: vec!["python".to_string(), "zlib".to_string()],
+            run_dep_specs_raw: vec!["python".to_string(), "zlib".to_string()],
+            build_deps: BTreeSet::from(["c-compiler".to_string()]),
+            host_deps: BTreeSet::from(["python".to_string(), "zlib".to_string()]),
+            run_deps: BTreeSet::from(["python".to_string(), "zlib".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "mimodd",
+            &parsed,
+            "bioconda-mimodd-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("PYLONGINT"));
+        assert!(spec.contains("sys.version_info >= (3, 11)"));
+        assert!(spec.contains("cpython\\/longintrepr.h"));
+        assert!(spec.contains("-name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx'"));
     }
 
     #[test]
