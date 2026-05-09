@@ -6528,6 +6528,7 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "hdf5"
             | "iqtree"
             | "mafft"
+            | "mscorefonts"
             | "muscle"
             | "openmpi"
             | "openblas"
@@ -6541,6 +6542,7 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "bbmap"
             | "miniprot"
             | "sepp"
+            | "spades"
             | "fastqc"
             | "trimmomatic"
             | "star"
@@ -19753,12 +19755,14 @@ requirements:
                 "hdf5".to_string(),
                 "iqtree".to_string(),
                 "mafft".to_string(),
+                "mscorefonts".to_string(),
                 "muscle".to_string(),
                 "numpy".to_string(),
                 "openmpi".to_string(),
                 "pcre".to_string(),
                 "prank".to_string(),
                 "raxml".to_string(),
+                "spades".to_string(),
                 "stringtie".to_string(),
             ],
             run_dep_specs_raw: Vec::new(),
@@ -19778,11 +19782,13 @@ requirements:
         assert!(!reqs.iter().any(|r| r == "hdf5"));
         assert!(!reqs.iter().any(|r| r == "iqtree"));
         assert!(!reqs.iter().any(|r| r == "mafft"));
+        assert!(!reqs.iter().any(|r| r == "mscorefonts"));
         assert!(!reqs.iter().any(|r| r == "muscle"));
         assert!(!reqs.iter().any(|r| r == "openmpi"));
         assert!(!reqs.iter().any(|r| r == "pcre"));
         assert!(!reqs.iter().any(|r| r == "prank"));
         assert!(!reqs.iter().any(|r| r == "raxml"));
+        assert!(!reqs.iter().any(|r| r == "spades"));
         assert!(!reqs.iter().any(|r| r == "stringtie"));
     }
 
