@@ -9068,6 +9068,9 @@ fn render_payload_spec_minimal(
     let needs_libhwy = recipe_dep_mentions(parsed, "libhwy");
     let needs_jsoncpp =
         recipe_dep_mentions(parsed, "jsoncpp") || recipe_dep_mentions(parsed, "jsoncpp-devel");
+    let needs_nlohmann_json = recipe_dep_mentions(parsed, "nlohmann-json")
+        || recipe_dep_mentions(parsed, "nlohmann_json")
+        || recipe_dep_mentions(parsed, "nlohmann-json-devel");
     let needs_capnproto =
         recipe_dep_mentions(parsed, "capnproto") || recipe_dep_mentions(parsed, "capnp");
     let core_c_dep_bootstrap = render_core_c_dep_bootstrap_block(
@@ -9077,6 +9080,7 @@ fn render_payload_spec_minimal(
         needs_jemalloc,
         needs_libhwy,
         needs_jsoncpp,
+        needs_nlohmann_json,
         needs_capnproto,
     );
 
@@ -9630,6 +9634,9 @@ fn render_payload_spec(
     let needs_libhwy = recipe_dep_mentions(parsed, "libhwy");
     let needs_jsoncpp =
         recipe_dep_mentions(parsed, "jsoncpp") || recipe_dep_mentions(parsed, "jsoncpp-devel");
+    let needs_nlohmann_json = recipe_dep_mentions(parsed, "nlohmann-json")
+        || recipe_dep_mentions(parsed, "nlohmann_json")
+        || recipe_dep_mentions(parsed, "nlohmann-json-devel");
     let needs_capnproto = recipe_dep_mentions(parsed, "capnproto")
         || recipe_dep_mentions(parsed, "capnp")
         // HEURISTIC-TEMP(issue=HEUR-0024): Mash's configure checks for capnp
@@ -9667,6 +9674,7 @@ fn render_payload_spec(
         needs_jemalloc,
         needs_libhwy,
         needs_jsoncpp,
+        needs_nlohmann_json,
         needs_capnproto,
     );
     let module_lua_env = render_module_lua_env_block(
@@ -12185,6 +12193,7 @@ fn render_core_c_dep_bootstrap_block(
     needs_jemalloc: bool,
     needs_libhwy: bool,
     needs_jsoncpp: bool,
+    needs_nlohmann_json: bool,
     needs_capnproto: bool,
 ) -> String {
     if !needs_isal
@@ -12193,6 +12202,7 @@ fn render_core_c_dep_bootstrap_block(
         && !needs_jemalloc
         && !needs_libhwy
         && !needs_jsoncpp
+        && !needs_nlohmann_json
         && !needs_capnproto
     {
         return String::new();
@@ -12464,6 +12474,34 @@ fi\n\
   cmake -S jsoncpp-1.9.6 -B jsoncpp-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"$PREFIX\" -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=ON -DJSONCPP_WITH_TESTS=OFF -DJSONCPP_WITH_POST_BUILD_UNITTEST=OFF -DJSONCPP_WITH_PKGCONFIG_SUPPORT=ON\n\
   cmake --build jsoncpp-build -j\"${CPU_COUNT:-1}\"\n\
   cmake --install jsoncpp-build\n\
+  popd >/dev/null\n\
+fi\n\
+",
+        );
+    }
+
+    if needs_nlohmann_json {
+        out.push_str(
+            "if [[ ! -e \"$PREFIX/include/nlohmann/json.hpp\" || ! -e \"$PREFIX/share/cmake/nlohmann_json/nlohmann_jsonConfig.cmake\" ]]; then\n\
+  echo \"bioconda2rpm: bootstrapping nlohmann-json into $PREFIX\" >&2\n\
+  if ! command -v cmake >/dev/null 2>&1; then\n\
+    if command -v dnf >/dev/null 2>&1; then dnf -y install cmake >/dev/null 2>&1 || true; fi\n\
+    if command -v microdnf >/dev/null 2>&1; then microdnf -y install cmake >/dev/null 2>&1 || true; fi\n\
+  fi\n\
+  pushd \"$third_party_root\" >/dev/null\n\
+  rm -rf json-3.11.3 nlohmann-json-build\n\
+  if command -v curl >/dev/null 2>&1; then\n\
+    curl -L --fail --output nlohmann-json-3.11.3.tar.gz https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.tar.gz\n\
+  elif command -v wget >/dev/null 2>&1; then\n\
+    wget -O nlohmann-json-3.11.3.tar.gz https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.tar.gz\n\
+  else\n\
+    echo \"missing curl/wget for nlohmann-json bootstrap\" >&2\n\
+    exit 44\n\
+  fi\n\
+  tar -xf nlohmann-json-3.11.3.tar.gz\n\
+  cmake -S json-3.11.3 -B nlohmann-json-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=\"$PREFIX\" -DJSON_BuildTests=OFF\n\
+  cmake --build nlohmann-json-build -j\"${CPU_COUNT:-1}\"\n\
+  cmake --install nlohmann-json-build\n\
   popd >/dev/null\n\
 fi\n\
 ",
@@ -17859,15 +17897,16 @@ requirements:
 
     #[test]
     fn core_c_bootstrap_empty_when_no_deps_requested() {
-        let script =
-            render_core_c_dep_bootstrap_block(false, false, false, false, false, false, false);
+        let script = render_core_c_dep_bootstrap_block(
+            false, false, false, false, false, false, false, false,
+        );
         assert!(script.is_empty());
     }
 
     #[test]
     fn core_c_bootstrap_includes_cereal_and_jemalloc() {
         let script =
-            render_core_c_dep_bootstrap_block(false, false, true, true, false, false, false);
+            render_core_c_dep_bootstrap_block(false, false, true, true, false, false, false, false);
         assert!(script.contains("bootstrapping cereal into $PREFIX"));
         assert!(script.contains("USCiLab/cereal"));
         assert!(script.contains("bootstrapping jemalloc into $PREFIX"));
@@ -17876,8 +17915,9 @@ requirements:
 
     #[test]
     fn core_c_bootstrap_includes_capnproto() {
-        let script =
-            render_core_c_dep_bootstrap_block(false, false, false, false, false, false, true);
+        let script = render_core_c_dep_bootstrap_block(
+            false, false, false, false, false, false, false, true,
+        );
         assert!(script.contains("bootstrapping capnproto into $PREFIX"));
         assert!(script.contains("capnproto-1.0.2.tar.gz"));
         assert!(script.contains("archive/refs/tags/v1.0.2.tar.gz"));
@@ -17886,9 +17926,22 @@ requirements:
     }
 
     #[test]
+    fn core_c_bootstrap_includes_nlohmann_json_cmake_config() {
+        let script = render_core_c_dep_bootstrap_block(
+            false, false, false, false, false, false, true, false,
+        );
+        assert!(script.contains("bootstrapping nlohmann-json into $PREFIX"));
+        assert!(script.contains("nlohmann_jsonConfig.cmake"));
+        assert!(script.contains("nlohmann/json/archive/refs/tags/v3.11.3.tar.gz"));
+        assert!(script.contains("-DJSON_BuildTests=OFF"));
+        assert!(script.contains("cmake --install nlohmann-json-build"));
+    }
+
+    #[test]
     fn core_c_bootstrap_isal_prefers_repo_and_has_retry_fallback_urls() {
-        let script =
-            render_core_c_dep_bootstrap_block(true, false, false, false, false, false, false);
+        let script = render_core_c_dep_bootstrap_block(
+            true, false, false, false, false, false, false, false,
+        );
         assert!(script.contains("dnf -y install isa-l isa-l-devel nasm autoconf automake libtool"));
         assert!(script.contains("codeload.github.com/intel/isa-l/tar.gz/refs/tags/v2.31.1"));
         assert!(script.contains("isa_l_downloaded=0"));
