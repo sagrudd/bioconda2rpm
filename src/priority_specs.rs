@@ -6323,6 +6323,7 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
     let pip_name = match normalized.as_str() {
         "dask-core" => "dask".to_string(),
         "python-annoy" => "annoy".to_string(),
+        "python-edlib" => "edlib".to_string(),
         "python-graphviz" => "graphviz".to_string(),
         "python-kaleido" => "kaleido".to_string(),
         "python-lmdb" => "lmdb".to_string(),
@@ -6515,10 +6516,12 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "bedops"
             | "samtools"
             | "bcftools"
+            | "bracken"
             | "htslib"
             | "tabix"
             | "tabixpp"
             | "bwa"
+            | "bwa-mem2"
             | "blast"
             | "cd-hit"
             | "clustalw"
@@ -6528,7 +6531,9 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "hdf5"
             | "iqtree"
             | "mafft"
+            | "mash"
             | "mscorefonts"
+            | "miniasm"
             | "muscle"
             | "openmpi"
             | "openblas"
@@ -19800,6 +19805,8 @@ requirements:
                 "python".to_string(),
                 "pip".to_string(),
                 "beast2 >=2.6.0".to_string(),
+                "bracken >=2.6.1".to_string(),
+                "bwa-mem2".to_string(),
                 "cd-hit".to_string(),
                 "clustalw".to_string(),
                 "espresso >=1.3.2".to_string(),
@@ -19808,9 +19815,12 @@ requirements:
                 "hdf5".to_string(),
                 "iqtree".to_string(),
                 "mafft".to_string(),
+                "mash >=2.3".to_string(),
                 "mscorefonts".to_string(),
+                "miniasm".to_string(),
                 "muscle".to_string(),
                 "numpy".to_string(),
+                "python-edlib >=1.2.1".to_string(),
                 "openmpi".to_string(),
                 "pcre".to_string(),
                 "prank".to_string(),
@@ -19826,7 +19836,10 @@ requirements:
 
         let reqs = build_python_requirements(&parsed);
         assert!(reqs.iter().any(|r| r == "numpy"));
+        assert!(reqs.iter().any(|r| r == "edlib>=1.2.1"));
         assert!(!reqs.iter().any(|r| r.starts_with("beast2")));
+        assert!(!reqs.iter().any(|r| r.starts_with("bracken")));
+        assert!(!reqs.iter().any(|r| r == "bwa-mem2"));
         assert!(!reqs.iter().any(|r| r == "cd-hit"));
         assert!(!reqs.iter().any(|r| r == "clustalw"));
         assert!(!reqs.iter().any(|r| r.starts_with("espresso")));
@@ -19835,7 +19848,9 @@ requirements:
         assert!(!reqs.iter().any(|r| r == "hdf5"));
         assert!(!reqs.iter().any(|r| r == "iqtree"));
         assert!(!reqs.iter().any(|r| r == "mafft"));
+        assert!(!reqs.iter().any(|r| r.starts_with("mash")));
         assert!(!reqs.iter().any(|r| r == "mscorefonts"));
+        assert!(!reqs.iter().any(|r| r == "miniasm"));
         assert!(!reqs.iter().any(|r| r == "muscle"));
         assert!(!reqs.iter().any(|r| r == "openmpi"));
         assert!(!reqs.iter().any(|r| r == "pcre"));
