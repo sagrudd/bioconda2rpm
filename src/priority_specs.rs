@@ -6511,6 +6511,7 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
     if matches!(
         normalized,
         "bedtools"
+            | "beast2"
             | "bedops"
             | "samtools"
             | "bcftools"
@@ -19742,6 +19743,7 @@ requirements:
             host_dep_specs_raw: vec![
                 "python".to_string(),
                 "pip".to_string(),
+                "beast2 >=2.6.0".to_string(),
                 "cd-hit".to_string(),
                 "clustalw".to_string(),
                 "espresso >=1.3.2".to_string(),
@@ -19766,6 +19768,7 @@ requirements:
 
         let reqs = build_python_requirements(&parsed);
         assert!(reqs.iter().any(|r| r == "numpy"));
+        assert!(!reqs.iter().any(|r| r.starts_with("beast2")));
         assert!(!reqs.iter().any(|r| r == "cd-hit"));
         assert!(!reqs.iter().any(|r| r == "clustalw"));
         assert!(!reqs.iter().any(|r| r.starts_with("espresso")));
