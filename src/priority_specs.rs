@@ -11924,6 +11924,27 @@ PPLACER_BIOC2RPM_SH\n\
     # profile do not currently provide sdsl-lite packages, so bootstrap from\n\
     # upstream source into PREFIX when unavailable.\n\
     if [[ \"%{{tool}}\" == \"goldrush\" ]]; then\n\
+    divsufsort_prefix=\"$(find /usr/local/phoreus/libdivsufsort -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -n 1 || true)\"\n\
+    if [[ -n \"$divsufsort_prefix\" ]]; then\n\
+      mkdir -p /usr/local/include /usr/local/lib\n\
+      for divsufsort_header in \"$divsufsort_prefix\"/include/divsufsort*.h; do\n\
+        [[ -e \"$divsufsort_header\" ]] || continue\n\
+        ln -snf \"$divsufsort_header\" \"/usr/local/include/$(basename \"$divsufsort_header\")\" || true\n\
+      done\n\
+      for divsufsort_lib in \"$divsufsort_prefix\"/lib/libdivsufsort*.so*; do\n\
+        [[ -e \"$divsufsort_lib\" ]] || continue\n\
+        ln -snf \"$divsufsort_lib\" \"/usr/local/lib/$(basename \"$divsufsort_lib\")\" || true\n\
+      done\n\
+      export CPPFLAGS=\"-I$divsufsort_prefix/include -I/usr/local/include ${{CPPFLAGS:-}}\"\n\
+      export CXXFLAGS=\"-I$divsufsort_prefix/include -I/usr/local/include ${{CXXFLAGS:-}}\"\n\
+      export LDFLAGS=\"-L$divsufsort_prefix/lib -L/usr/local/lib -Wl,-rpath,$divsufsort_prefix/lib -Wl,-rpath,/usr/local/lib ${{LDFLAGS:-}}\"\n\
+      export LIBRARY_PATH=\"$divsufsort_prefix/lib:/usr/local/lib${{LIBRARY_PATH:+:$LIBRARY_PATH}}\"\n\
+      export LD_LIBRARY_PATH=\"$divsufsort_prefix/lib:/usr/local/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n\
+      if [[ -d \"$divsufsort_prefix/lib/pkgconfig\" ]]; then\n\
+        export PKG_CONFIG_PATH=\"$divsufsort_prefix/lib/pkgconfig${{PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}}\"\n\
+      fi\n\
+      ldconfig /usr/local/lib \"$divsufsort_prefix/lib\" >/dev/null 2>&1 || true\n\
+    fi\n\
     if command -v dnf >/dev/null 2>&1; then\n\
       dnf -y install zlib-devel >/dev/null 2>&1 || true\n\
     fi\n\
@@ -22778,6 +22799,12 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == \"goldrush\" ]]; then"));
+        assert!(spec.contains("divsufsort_prefix=\"$(find /usr/local/phoreus/libdivsufsort"));
+        assert!(spec.contains(
+            "ln -snf \"$divsufsort_lib\" \"/usr/local/lib/$(basename \"$divsufsort_lib\")\""
+        ));
+        assert!(spec.contains("export LDFLAGS=\"-L$divsufsort_prefix/lib -L/usr/local/lib"));
+        assert!(spec.contains("ldconfig /usr/local/lib \"$divsufsort_prefix/lib\""));
         assert!(spec.contains("dnf -y install zlib-devel >/dev/null 2>&1 || true"));
         assert!(spec.contains("ln -sf /usr/lib64/libz.so.1 /usr/lib64/libz.so || true"));
         assert!(spec.contains("git clone --depth 1 --branch \"v${sdsl_ver}\" --recursive --shallow-submodules https://github.com/simongog/sdsl-lite.git \"$sdsl_src\" || true"));
