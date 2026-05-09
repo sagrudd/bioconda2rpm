@@ -10716,6 +10716,19 @@ EOF\n\
     # optional/release-only prerequisites not represented as strict deps. Keep\n\
     # payload builds deterministic by disabling these brittle test gates.\n\
     if [[ \"%{{tool}}\" == perl-* ]]; then\n\
+    export PERL5LIB=\"$PREFIX/lib/perl5:$PREFIX/lib64/perl5${{PERL5LIB:+:$PERL5LIB}}\"\n\
+    if [[ -d /usr/local/phoreus ]]; then\n\
+      while IFS= read -r -d '' perl_lib; do\n\
+        case \":${{PERL5LIB:-}}:\" in\n\
+          *\":$perl_lib:\"*) ;;\n\
+          *) export PERL5LIB=\"$perl_lib${{PERL5LIB:+:$PERL5LIB}}\" ;;\n\
+        esac\n\
+        case \" ${{PERL5OPT:-}} \" in\n\
+          *\" -I$perl_lib \"*) ;;\n\
+          *) export PERL5OPT=\"${{PERL5OPT:+$PERL5OPT }}-I$perl_lib\" ;;\n\
+        esac\n\
+      done < <(find /usr/local/phoreus -maxdepth 6 -type d \\( -path '*/lib/perl5' -o -path '*/lib64/perl5' \\) -print0 2>/dev/null)\n\
+    fi\n\
     export PERL_MM_USE_DEFAULT=1\n\
     export RELEASE_TESTING=0\n\
     export AUTHOR_TESTING=0\n\
@@ -20725,6 +20738,8 @@ requirements:
         assert!(spec.contains("if [[ \"%{tool}\" == perl-* ]]; then"));
         assert!(spec.contains("BuildRequires:  perl-App-cpanminus"));
         assert!(spec.contains("export RELEASE_TESTING=0"));
+        assert!(spec.contains("find /usr/local/phoreus -maxdepth 6 -type d"));
+        assert!(spec.contains("export PERL5LIB=\"$perl_lib${PERL5LIB:+:$PERL5LIB}\""));
         assert!(spec.contains("dnf -y install perl-App-cpanminus"));
         assert!(spec.contains("find . -mindepth 1 -maxdepth 1 -type l -print0"));
         assert!(spec.contains("rm -f \"$top_link\""));
