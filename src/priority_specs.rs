@@ -12555,6 +12555,9 @@ if [[ -d \"$PREFIX/include\" ]]; then\n\
   export CPLUS_INCLUDE_PATH=\"$PREFIX/include${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}\"\n\
   export CPPFLAGS=\"-I$PREFIX/include ${CPPFLAGS:-}\"\n\
 fi\n\
+if [[ -d \"$PREFIX/share/cmake\" || -d \"$PREFIX/lib/cmake\" || -d \"$PREFIX/lib64/cmake\" ]]; then\n\
+  export CMAKE_PREFIX_PATH=\"$PREFIX${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}\"\n\
+fi\n\
 ",
     );
 
@@ -17987,6 +17990,7 @@ requirements:
         assert!(script.contains("nlohmann/json/archive/refs/tags/v3.11.3.tar.gz"));
         assert!(script.contains("-DJSON_BuildTests=OFF"));
         assert!(script.contains("cmake --install nlohmann-json-build"));
+        assert!(script.contains("export CMAKE_PREFIX_PATH=\"$PREFIX"));
     }
 
     #[test]
