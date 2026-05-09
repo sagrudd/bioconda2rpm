@@ -12804,11 +12804,18 @@ python - <<'PYREQSAN'
 from pathlib import Path
 import re
 drop = {{
-    'apptainer', 'bedops', 'boost-cpp', 'conda', 'diamond', 'geos', 'git', 'git-lfs',
-    'graph-tool-base', 'graphviz', 'intarna', 'lamassemble', 'mamba', 'maxbin2',
-    'meme', 'micromamba', 'nb-conda-kernels', 'openblas', 'libopenblas', 'libblas',
-    'libcblas', 'mkl', 'mkl-devel', 'pytaxonkit', 'scala', 'snakemake-minimal',
-    'tabix', 'ucsc-bedgraphtobigwig', 'ucsc-bigwigaverageoverbed', 'vpt-core',
+    'apptainer', 'augustus', 'bbmap', 'beast2', 'bedops', 'boost-cpp', 'bowtie',
+    'bowtie2', 'bracken', 'bwa', 'bwa-mem2', 'cd-hit', 'clustalw', 'conda',
+    'diamond', 'entrez-direct', 'espresso', 'fastqc', 'fasttree', 'geos', 'git',
+    'git-lfs', 'glimmerhmm', 'gmap', 'graph-tool-base', 'graphviz', 'hdf5',
+    'hmmer', 'htslib', 'intarna', 'iqtree', 'kallisto', 'lamassemble', 'mafft',
+    'mamba', 'mash', 'maxbin2', 'meme', 'metaeuk', 'micromamba', 'miniasm',
+    'minimap2', 'miniprot', 'mscorefonts', 'muscle', 'mummer', 'nb-conda-kernels',
+    'openblas', 'libopenblas', 'libblas', 'libcblas', 'mkl', 'mkl-devel', 'pcre',
+    'prank', 'prodigal', 'pytaxonkit', 'raxml', 'salmon', 'scala', 'sepp',
+    'seqkit', 'snakemake-minimal', 'spades', 'star', 'stringtie', 'tabix',
+    'taxonkit', 'trimmomatic', 'ucsc-bedgraphtobigwig', 'ucsc-bigwigaverageoverbed',
+    'vpt-core',
     'pytorch', 'pytorch-cpu', 'pytorch-gpu', 'torch', 'torchaudio', 'torchtext',
     'torchvision', 'tensorflow', 'tensorflow-base', 'tensorflow-estimator',
     'jax', 'jaxlib', 'triton',
@@ -12828,6 +12835,10 @@ for raw in path.read_text().splitlines():
     lines.append(line)
 path.write_text('\n'.join(lines) + ('\n' if lines else ''))
 PYREQSAN
+if grep -Eiq '^(rpy2|rpy2-rinterface)([<>=!~ ;]|$)' requirements.in; then
+    if command -v dnf >/dev/null 2>&1; then dnf -y install readline-devel ncurses-devel >/dev/null 2>&1 || true; fi
+    if command -v microdnf >/dev/null 2>&1; then microdnf -y install readline-devel ncurses-devel >/dev/null 2>&1 || true; fi
+fi
 {preinstall_legacy_build_bits}"$PIP" install pip-tools
 if pip-compile --generate-hashes requirements.in --output-file requirements.lock{compile_flags}; then
     "$PIP" install{install_flags} --require-hashes -r requirements.lock
@@ -18987,9 +18998,16 @@ requirements:
             &[
                 "seaborn>=0.11.*".to_string(),
                 "apptainer>=1.3.2".to_string(),
+                "bracken>=2.6.1".to_string(),
+                "bwa-mem2".to_string(),
+                "espresso>=1.3.2".to_string(),
                 "graphviz>=2.40".to_string(),
                 "git".to_string(),
+                "mash>=2.3".to_string(),
+                "miniasm".to_string(),
+                "rpy2>=3.5".to_string(),
                 "snakemake-minimal<8.0.0,>=5.5.2".to_string(),
+                "stringtie".to_string(),
                 "tabix".to_string(),
                 "/work/.build-work/btllib/BUILDROOT/phoreus-btllib/lib/btllib/python".to_string(),
                 "openblas".to_string(),
@@ -19007,14 +19025,21 @@ requirements:
         assert!(block.contains("if not line or line.startswith('#'):\n        continue"));
         assert!(block.contains("if line.startswith(('/', './', '../')):\n        continue"));
         assert!(block.contains("'apptainer'"));
+        assert!(block.contains("'bracken'"));
+        assert!(block.contains("'bwa-mem2'"));
+        assert!(block.contains("'espresso'"));
         assert!(block.contains("'graphviz'"));
         assert!(block.contains("'git'"));
+        assert!(block.contains("'mash'"));
+        assert!(block.contains("'miniasm'"));
         assert!(block.contains("'snakemake-minimal'"));
+        assert!(block.contains("'stringtie'"));
         assert!(block.contains("'tabix'"));
         assert!(block.contains("'openblas'"));
         assert!(block.contains("'pytorch-cpu'"));
         assert!(block.contains("'torchvision'"));
         assert!(block.contains("name.startswith('nvidia-')"));
+        assert!(block.contains("dnf -y install readline-devel ncurses-devel"));
         assert!(block.contains(
             "pip-compile --generate-hashes requirements.in --output-file requirements.lock --pip-args \"--no-build-isolation\""
         ));
