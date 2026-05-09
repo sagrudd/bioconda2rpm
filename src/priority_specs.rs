@@ -60,6 +60,7 @@ pub(crate) struct ParsedMeta {
     pub(crate) summary: String,
     pub(crate) source_patches: Vec<String>,
     pub(crate) build_script: Option<String>,
+    pub(crate) output_build_script: Option<String>,
     pub(crate) noarch_python: bool,
     pub(crate) build_dep_specs_raw: Vec<String>,
     pub(crate) host_dep_specs_raw: Vec<String>,
@@ -91,6 +92,8 @@ struct CondaRenderMetadata {
     summary: String,
     source_patches: Vec<String>,
     build_script: Option<String>,
+    #[serde(default)]
+    output_build_script: Option<String>,
     noarch_python: bool,
     build_dep_specs_raw: Vec<String>,
     host_dep_specs_raw: Vec<String>,
@@ -3221,6 +3224,7 @@ fn visit_build_plan_node(
 fn is_buildable_recipe(resolved: &ResolvedRecipe, parsed: &ParsedMeta) -> bool {
     (resolved.build_sh_path.is_some()
         || parsed.build_script.is_some()
+        || parsed.output_build_script.is_some()
         || synthesize_fallback_build_sh(parsed).is_some())
         && (!parsed.source_url.trim().is_empty() || is_runtime_only_metapackage(parsed))
 }
@@ -3629,6 +3633,7 @@ fn parse_meta_for_resolved_conda(
         summary: adapter.summary,
         source_patches: adapter.source_patches,
         build_script: adapter.build_script,
+        output_build_script: adapter.output_build_script,
         noarch_python: adapter.noarch_python,
         build_dep_specs_raw: build_dep_specs_raw.clone(),
         host_dep_specs_raw: host_dep_specs_raw.clone(),
@@ -4212,6 +4217,8 @@ fn process_tool(
         }
     } else if let Some(script) = parsed.build_script.as_deref() {
         synthesize_build_sh_from_meta_script(script)
+    } else if let Some(script) = parsed.output_build_script.as_deref() {
+        synthesize_build_sh_from_recipe_script(script, &resolved.variant_dir)
     } else if let Some(generated) = synthesize_fallback_build_sh(&parsed) {
         generated
     } else {
@@ -5421,6 +5428,8 @@ pub(crate) fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
     let build_script = build
         .and_then(|m| m.get(Value::String("script".to_string())))
         .and_then(extract_build_script);
+    let output_build_script =
+        extract_matching_output_build_script(root.get("outputs"), &package_name);
     let build_number = build
         .and_then(|m| m.get(Value::String("number".to_string())))
         .and_then(value_to_string)
@@ -5471,6 +5480,7 @@ pub(crate) fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
         summary,
         source_patches,
         build_script,
+        output_build_script,
         noarch_python,
         build_dep_specs_raw,
         host_dep_specs_raw,
@@ -6685,9 +6695,42 @@ fn extract_build_script(node: &Value) -> Option<String> {
     }
 }
 
+fn extract_matching_output_build_script(
+    outputs: Option<&Value>,
+    package_name: &str,
+) -> Option<String> {
+    let outputs = outputs?.as_sequence()?;
+    let normalized_package = normalize_name(package_name);
+    outputs.iter().find_map(|output| {
+        let output = output.as_mapping()?;
+        let name = output
+            .get(Value::String("name".to_string()))
+            .and_then(value_to_string)?;
+        if normalize_name(&name) != normalized_package {
+            return None;
+        }
+        output
+            .get(Value::String("script".to_string()))
+            .and_then(extract_build_script)
+    })
+}
+
 fn synthesize_build_sh_from_meta_script(script: &str) -> String {
     let canonical = canonicalize_meta_build_script(script);
     format!("#!/usr/bin/env bash\nset -euxo pipefail\n{canonical}\n")
+}
+
+fn synthesize_build_sh_from_recipe_script(script: &str, recipe_dir: &Path) -> String {
+    let trimmed = script.trim();
+    if !trimmed.contains('\n') {
+        let candidate = recipe_dir.join(trimmed);
+        if candidate.is_file()
+            && let Ok(contents) = fs::read_to_string(candidate)
+        {
+            return contents;
+        }
+    }
+    synthesize_build_sh_from_meta_script(script)
 }
 
 fn canonicalize_meta_build_script(script: &str) -> String {
@@ -17868,6 +17911,25 @@ requirements:
     }
 
     #[test]
+    fn parse_meta_extracts_matching_output_script() {
+        let rendered = r#"
+package:
+  name: gatk4
+  version: 4.6.2.0
+source:
+  url: https://example.invalid/gatk-4.6.2.0.zip
+outputs:
+  - name: gatk4
+    script: build_main.sh
+  - name: gatk4-spark
+    script: build_spark.sh
+"#;
+        let parsed = parse_rendered_meta(rendered).expect("parse rendered meta");
+        assert_eq!(parsed.build_script, None);
+        assert_eq!(parsed.output_build_script.as_deref(), Some("build_main.sh"));
+    }
+
+    #[test]
     fn split_inline_patch_selector_parses_selector_suffix() {
         let (name, selector) = split_inline_patch_selector("makefile.patch [osx]");
         assert_eq!(name, "makefile.patch");
@@ -18039,6 +18101,7 @@ requirements:
             summary: "salmon".to_string(),
             source_patches: Vec::new(),
             build_script: Some("cmake -S . -B build\n".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec![
@@ -18094,6 +18157,7 @@ requirements:
             summary: "mash".to_string(),
             source_patches: Vec::new(),
             build_script: Some("bash build.sh\n".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["make".to_string()],
             host_dep_specs_raw: vec!["zlib".to_string()],
@@ -18135,6 +18199,7 @@ requirements:
             summary: "strobealign".to_string(),
             source_patches: Vec::new(),
             build_script: Some("cmake -B build\nmake -C build\n".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -18175,6 +18240,7 @@ requirements:
             summary: "perl wrapper for t_coffee".to_string(),
             source_patches: Vec::new(),
             build_script: Some("perl Makefile.PL\nmake\n".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -18218,6 +18284,7 @@ requirements:
             summary: "prokka".to_string(),
             source_patches: Vec::new(),
             build_script: Some("perl ./bin/prokka --version\n".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -18278,6 +18345,7 @@ requirements:
             summary: "blast".to_string(),
             source_patches: vec!["boost_106400.patch".to_string()],
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -18476,6 +18544,7 @@ requirements:
             summary: "fastqc".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -18517,6 +18586,7 @@ requirements:
             summary: "nextflow".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -18718,6 +18788,7 @@ source:
             summary: "cap3".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -18994,6 +19065,7 @@ requirements:
             summary: "cnvkit".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            output_build_script: None,
             noarch_python: true,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec![
@@ -19025,6 +19097,7 @@ requirements:
             summary: "amalgkit".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            output_build_script: None,
             noarch_python: true,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["python >=3.8".to_string(), "ete4".to_string()],
@@ -19220,6 +19293,7 @@ requirements:
             summary: "restfulr".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["r-base".to_string()],
             host_dep_specs_raw: vec!["r-rcurl".to_string(), "r-yaml".to_string()],
@@ -19276,6 +19350,7 @@ requirements:
             summary: "Rhtslib".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["r-base".to_string()],
             host_dep_specs_raw: vec!["bioconductor-zlibbioc".to_string()],
@@ -19426,6 +19501,7 @@ requirements:
             summary: "k8".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -19466,6 +19542,7 @@ requirements:
             summary: "k8".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -19497,6 +19574,7 @@ requirements:
             build_script: Some(
                 "make -j${CPU_COUNT}\ninstall -m 0755 stringtie $PREFIX/bin".to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["automake".to_string()],
             host_dep_specs_raw: vec!["htslib".to_string()],
@@ -19525,6 +19603,7 @@ requirements:
             summary: "python-demo".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            output_build_script: None,
             noarch_python: true,
             build_dep_specs_raw: vec!["automake".to_string(), "make".to_string()],
             host_dep_specs_raw: vec!["python >=3.11".to_string(), "jinja2 >=3.0.0".to_string()],
@@ -19553,6 +19632,7 @@ requirements:
             summary: "fusion-report".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            output_build_script: None,
             noarch_python: true,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["python >=3.12".to_string(), "pip".to_string()],
@@ -19596,6 +19676,7 @@ requirements:
             summary: "scanpy-cli".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            output_build_script: None,
             noarch_python: true,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["python >=3.12".to_string(), "pip".to_string()],
@@ -19624,6 +19705,7 @@ requirements:
             summary: "strelka".to_string(),
             source_patches: Vec::new(),
             build_script: Some("configureStrelkaGermlineWorkflow.py -h".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -19650,6 +19732,7 @@ requirements:
             summary: "afterqc".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON setup.py install".to_string()),
+            output_build_script: None,
             noarch_python: true,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["python >=2.7,<3.0a0".to_string()],
@@ -19678,6 +19761,7 @@ requirements:
             summary: "strelka".to_string(),
             source_patches: Vec::new(),
             build_script: Some("cp -a bin lib libexec share $PREFIX/".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -19725,6 +19809,7 @@ requirements:
             summary: "flair".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            output_build_script: None,
             noarch_python: true,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["python >=3.12,<3.13".to_string(), "pip".to_string()],
@@ -19768,6 +19853,7 @@ requirements:
             summary: "ragtag".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install .".to_string()),
+            output_build_script: None,
             noarch_python: true,
             build_dep_specs_raw: vec!["pip".to_string(), "python >3".to_string()],
             host_dep_specs_raw: vec!["python >3".to_string(), "numpy".to_string()],
@@ -19818,6 +19904,7 @@ requirements:
             summary: "btllib".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install $PREFIX/lib/btllib/python".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["cmake".to_string(), "ninja".to_string()],
             host_dep_specs_raw: vec![
@@ -19860,6 +19947,7 @@ requirements:
             build_script: Some(
                 "$PYTHON -m pip install . --no-deps --no-build-isolation".to_string(),
             ),
+            output_build_script: None,
             noarch_python: true,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec![
@@ -19911,6 +19999,7 @@ requirements:
             summary: "quast".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec![
@@ -19995,6 +20084,7 @@ requirements:
             summary: "virsorter".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["python".to_string(), "pip".to_string()],
@@ -20032,6 +20122,7 @@ requirements:
             summary: "vpt".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["python".to_string(), "pip".to_string()],
@@ -20082,6 +20173,7 @@ requirements:
             build_script: Some(
                 "$PYTHON -m pip install . --no-deps --ignore-installed -vv".to_string(),
             ),
+            output_build_script: None,
             noarch_python: true,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec![
@@ -20153,6 +20245,7 @@ requirements:
             summary: "minimap2".to_string(),
             source_patches: Vec::new(),
             build_script: Some("make -j${CPU_COUNT} minimap2 sdust".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -20203,6 +20296,7 @@ requirements:
             build_script: Some(
                 "PREFIX=\"${PREFIX}\" ./spades_compile.sh -rj\"${CPU_COUNT}\"".to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -20247,6 +20341,7 @@ requirements:
             build_script: Some(
                 "make INCLUDES=\"-I$PREFIX/include\" CXXFLAGS=\"${CXXFLAGS} -O3\"".to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -20288,6 +20383,7 @@ requirements:
             summary: "clair3".to_string(),
             source_patches: Vec::new(),
             build_script: Some("make CC=${GCC} CXX=${GXX} PREFIX=${PREFIX}".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -20334,6 +20430,7 @@ requirements:
             summary: "ucsc-fatotwobit".to_string(),
             source_patches: Vec::new(),
             build_script: Some("cd kent/src/lib && make".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -20376,6 +20473,7 @@ requirements:
             summary: "hmmer".to_string(),
             source_patches: Vec::new(),
             build_script: Some("./configure --enable-mpi".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -20416,6 +20514,7 @@ requirements:
             summary: "abyss".to_string(),
             source_patches: Vec::new(),
             build_script: Some("./configure --with-sparsehash=$PREFIX".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["sparsehash".to_string()],
             host_dep_specs_raw: vec!["sparsehash".to_string()],
@@ -20462,6 +20561,7 @@ requirements:
             build_script: Some(
                 "make prefix=\"${PREFIX}\" -j\"${CPU_COUNT}\"\nmake install".to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["make".to_string()],
             host_dep_specs_raw: vec![
@@ -20510,6 +20610,7 @@ requirements:
             summary: "delly".to_string(),
             source_patches: Vec::new(),
             build_script: Some("make -j${CPU_COUNT}".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -20550,6 +20651,7 @@ requirements:
             summary: "plink".to_string(),
             source_patches: Vec::new(),
             build_script: Some("make".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -20597,6 +20699,7 @@ requirements:
             build_script: Some(
                 "perl Makefile.PL\nmake\nmake test_dynamic\nmake install".to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -20642,6 +20745,7 @@ requirements:
             summary: "perl-alien-libxml2".to_string(),
             source_patches: Vec::new(),
             build_script: Some("perl Makefile.PL\nmake\nmake install".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -20683,6 +20787,7 @@ requirements:
             summary: "perl-xml-libxml".to_string(),
             source_patches: Vec::new(),
             build_script: Some("perl Makefile.PL\nmake\nmake install".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -20739,6 +20844,7 @@ requirements:
             summary: "perl-bio-samtools".to_string(),
             source_patches: Vec::new(),
             build_script: Some("perl Makefile.PL\nmake\nmake install".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["samtools =0.1.19".to_string()],
             host_dep_specs_raw: vec!["samtools =0.1.19".to_string()],
@@ -20787,6 +20893,7 @@ requirements:
             summary: "perl-canary-stability".to_string(),
             source_patches: Vec::new(),
             build_script: Some("perl Makefile.PL\nmake\nmake install".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -20836,6 +20943,7 @@ requirements:
             summary: "perl-xml-libxml".to_string(),
             source_patches: Vec::new(),
             build_script: Some("perl Makefile.PL\nmake\nmake install".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec![
@@ -20881,6 +20989,7 @@ requirements:
             summary: "sra-tools".to_string(),
             source_patches: Vec::new(),
             build_script: Some("cmake -S sra-tools -B build_sratools".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -20933,6 +21042,7 @@ requirements:
             summary: "".to_string(),
             source_patches: Vec::new(),
             build_script: Some("perl Makefile.PL\nmake\nmake install".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -20971,6 +21081,7 @@ requirements:
             summary: "kallisto".to_string(),
             source_patches: Vec::new(),
             build_script: Some("cmake -S . -B build -DUSE_HDF5=ON -DUSE_BAM=ON".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -21017,6 +21128,7 @@ requirements:
             summary: "biobambam".to_string(),
             source_patches: Vec::new(),
             build_script: Some("./configure --with-libmaus2".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["libmaus2 >=2.0.813".to_string(), "xerces-c".to_string()],
@@ -21066,6 +21178,7 @@ requirements:
             summary: "bandage-ng".to_string(),
             source_patches: Vec::new(),
             build_script: Some("cmake -S . -B build".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["cmake".to_string()],
             host_dep_specs_raw: vec!["qt6-main".to_string(), "xorg-libx11".to_string()],
@@ -21118,6 +21231,7 @@ requirements:
             summary: "clustalo".to_string(),
             source_patches: Vec::new(),
             build_script: Some("./configure && make".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["argtable2".to_string()],
             host_dep_specs_raw: vec!["argtable2".to_string()],
@@ -21163,6 +21277,7 @@ requirements:
             build_script: Some(
                 "mkdir -p \"${PREFIX}/bin\"\ncp -v famsa \"${PREFIX}/bin/\"".to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -21205,6 +21320,7 @@ requirements:
             summary: "minced".to_string(),
             source_patches: Vec::new(),
             build_script: Some("javac -g CRISPR.java\nmake".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["openjdk".to_string()],
@@ -21245,6 +21361,7 @@ requirements:
             summary: "minced".to_string(),
             source_patches: Vec::new(),
             build_script: Some("make".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["openjdk".to_string()],
@@ -21285,6 +21402,7 @@ requirements:
             summary: "scanpy-scripts".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            output_build_script: None,
             noarch_python: true,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec![
@@ -21333,6 +21451,7 @@ requirements:
             summary: "variantbreak".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec![
@@ -21383,6 +21502,7 @@ requirements:
             summary: "poretools".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON setup.py install".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["python".to_string()],
             host_dep_specs_raw: vec!["python".to_string()],
@@ -21424,6 +21544,7 @@ requirements:
             summary: "pysnptools".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON setup.py install".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["python".to_string()],
             host_dep_specs_raw: vec!["python".to_string()],
@@ -21463,6 +21584,7 @@ requirements:
             summary: "pasta".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["python".to_string()],
             host_dep_specs_raw: vec!["python".to_string(), "mafft".to_string()],
@@ -21506,6 +21628,7 @@ requirements:
             build_script: Some(
                 "$PYTHON -m pip install . --no-deps --no-build-isolation".to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["python".to_string()],
             host_dep_specs_raw: vec!["python".to_string()],
@@ -21546,6 +21669,7 @@ requirements:
             summary: "trinity".to_string(),
             source_patches: Vec::new(),
             build_script: Some("make -j${CPU_COUNT}".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["cmake".to_string(), "pkg-config".to_string()],
             host_dep_specs_raw: vec!["r-base".to_string(), "perl".to_string()],
@@ -21589,6 +21713,7 @@ requirements:
             summary: "fastqc".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -21631,6 +21756,7 @@ requirements:
             summary: "bpipe".to_string(),
             source_patches: Vec::new(),
             build_script: Some("echo install".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -21675,6 +21801,7 @@ requirements:
             summary: "nextflow".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -21725,6 +21852,7 @@ requirements:
             summary: "trinity".to_string(),
             source_patches: Vec::new(),
             build_script: Some("make -j${CPU_COUNT}".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["cmake".to_string(), "pkg-config".to_string()],
             host_dep_specs_raw: vec!["r-base".to_string(), "perl".to_string()],
@@ -21771,6 +21899,7 @@ requirements:
                 "gettimeofday_proto.patch".to_string(),
             ],
             build_script: Some("bash build.sh".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -21855,6 +21984,7 @@ requirements:
             build_script: Some(
                 "mkdir build\ncd build\ncmake ..\nmake -j${CPU_COUNT}\n".to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["cmake".to_string()],
             host_dep_specs_raw: vec!["boost".to_string()],
@@ -21914,6 +22044,7 @@ requirements:
             summary: "probconsrna".to_string(),
             source_patches: vec!["file.patch".to_string()],
             build_script: Some("make clean\nmake probcons\n".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["make".to_string()],
             host_dep_specs_raw: Vec::new(),
@@ -21959,6 +22090,7 @@ requirements:
                 "mkdir -p $PREFIX/bin\ncp probcons $PREFIX/bin\ncp compare $PREFIX/bin\n"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["make".to_string()],
             host_dep_specs_raw: Vec::new(),
@@ -22003,6 +22135,7 @@ requirements:
             summary: "python-edlib".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -22043,6 +22176,7 @@ requirements:
                 "cmake -S . -B build -G Ninja\nninja -C build -j \"${CPU_COUNT}\" install\n"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["cmake".to_string(), "ninja".to_string()],
             host_dep_specs_raw: Vec::new(),
@@ -22089,6 +22223,7 @@ requirements:
                 "cmake -S . -B build\ncmake --build build --target install -j \"${CPU_COUNT}\" -v\n"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["cmake".to_string()],
             host_dep_specs_raw: Vec::new(),
@@ -22135,6 +22270,7 @@ requirements:
             build_script: Some(
                 "go get .\nmake build\ninstall -v -m 0755 vcfanno* \"${PREFIX}/bin\"\n".to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["go".to_string(), "make".to_string()],
             host_dep_specs_raw: Vec::new(),
@@ -22182,6 +22318,7 @@ requirements:
                 "install -v -m 0755 bwa-mem2 bwa-mem2-2.3 bwa-mem2.avx bwa-mem2.avx2 bwa-mem2.avx512bw bwa-mem2.sse41 bwa-mem2.sse42 $PREFIX/bin\n"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["make".to_string()],
             host_dep_specs_raw: Vec::new(),
@@ -22231,6 +22368,7 @@ requirements:
                 "install -m 755 bin/accn-at-a-time bin/edirect bin/efetch $PREFIX/bin\n"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -22284,6 +22422,7 @@ requirements:
             build_script: Some(
                 "cp ntLink* ${PREFIX}/bin/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM\n".to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -22327,6 +22466,7 @@ requirements:
             build_script: Some(
                 "chmod a+x svync*\nmkdir -p $PREFIX/bin\ncp svync* $PREFIX/bin/svync\n".to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -22370,6 +22510,7 @@ requirements:
             summary: "vcflib".to_string(),
             source_patches: Vec::new(),
             build_script: Some("cmake -S . -B build -DZIG=ON".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["cmake".to_string()],
             host_dep_specs_raw: vec!["htslib".to_string(), "tabixpp".to_string()],
@@ -22413,6 +22554,7 @@ requirements:
             summary: "sambamba".to_string(),
             source_patches: Vec::new(),
             build_script: Some("make -j1 check CC=gcc".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["ldc".to_string()],
             host_dep_specs_raw: vec!["zlib".to_string()],
@@ -22454,6 +22596,7 @@ requirements:
             summary: "pplacer".to_string(),
             source_patches: Vec::new(),
             build_script: Some("opam init --disable-sandboxing -y".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["ocaml".to_string(), "opam".to_string()],
             host_dep_specs_raw: Vec::new(),
@@ -22510,6 +22653,7 @@ requirements:
             summary: "goldrush".to_string(),
             source_patches: Vec::new(),
             build_script: Some("meson --prefix ${PREFIX} build".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["meson".to_string()],
             host_dep_specs_raw: vec!["sdsl-lite".to_string()],
@@ -22569,6 +22713,7 @@ requirements:
             summary: "k8".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -22608,6 +22753,7 @@ requirements:
             build_script: Some(
                 "$PYTHON -m pip install . --no-deps --no-build-isolation".to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["c-compiler".to_string()],
             host_dep_specs_raw: vec![
@@ -22667,6 +22813,7 @@ requirements:
                 "$PYTHON -m pip install ${PREFIX}/lib/btllib/python --no-deps --no-build-isolation"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["meson".to_string(), "ninja".to_string()],
             host_dep_specs_raw: vec!["python".to_string(), "pip".to_string()],
@@ -22747,6 +22894,7 @@ requirements:
             summary: "gatk".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["python".to_string()],
@@ -22792,6 +22940,7 @@ requirements:
             summary: "sdust".to_string(),
             source_patches: Vec::new(),
             build_script: Some("cargo build --release".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["rust".to_string(), "cargo".to_string()],
             host_dep_specs_raw: Vec::new(),
@@ -22834,6 +22983,7 @@ requirements:
             summary: "mosdepth".to_string(),
             source_patches: Vec::new(),
             build_script: Some("nimble build".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["nim".to_string()],
             host_dep_specs_raw: Vec::new(),
@@ -22879,6 +23029,7 @@ requirements:
             summary: "Integrative Genomics Viewer".to_string(),
             source_patches: Vec::new(),
             build_script: Some("./gradlew createDist".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["openjdk <22".to_string(), "glib".to_string()],
@@ -22926,6 +23077,7 @@ requirements:
             summary: "Canu".to_string(),
             source_patches: Vec::new(),
             build_script: Some("make -j${CPU_COUNT}".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["boost-cpp".to_string()],
@@ -22969,6 +23121,7 @@ requirements:
             summary: "Perl package".to_string(),
             source_patches: Vec::new(),
             build_script: Some("perl Makefile.PL".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["perl".to_string()],
             host_dep_specs_raw: vec!["perl".to_string()],
@@ -23015,6 +23168,7 @@ requirements:
             summary: "Perl package".to_string(),
             source_patches: Vec::new(),
             build_script: Some("perl Makefile.PL".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["make".to_string()],
             host_dep_specs_raw: vec![
@@ -23071,6 +23225,7 @@ requirements:
             summary: "Perl package".to_string(),
             source_patches: Vec::new(),
             build_script: Some("perl Makefile.PL".to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["make".to_string()],
             host_dep_specs_raw: vec![
@@ -23148,6 +23303,7 @@ requirements:
             summary: "meta package".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -23175,6 +23331,7 @@ requirements:
             summary: "meta package".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -23207,6 +23364,7 @@ requirements:
             summary: "dependency environment".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: true,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["python".to_string(), "pip".to_string()],
@@ -23237,6 +23395,7 @@ requirements:
             summary: "meta package".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -23279,6 +23438,7 @@ requirements:
             summary: "barrnap".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -23327,6 +23487,7 @@ requirements:
             summary: "patched recipe".to_string(),
             source_patches: vec!["fix.patch".to_string()],
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -23510,6 +23671,7 @@ fi
             summary: "vbz".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -24481,6 +24643,7 @@ build:
             summary: "tir-learner".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -24518,6 +24681,7 @@ EOF
             summary: "pecat".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -24574,6 +24738,7 @@ sed -i 's/<TAB>/\t/g' ${KSW2_DIR}/Makefile
             summary: "r-shinyngs".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -24643,6 +24808,7 @@ ${R} CMD INSTALL --build shinyngs ${R_ARGS}
             summary: "modle".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -24681,6 +24847,7 @@ cmake "${CMAKE_PLATFORM_FLAGS[@]}" -B build/ -S .
             summary: "gromacs mddb".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -24721,6 +24888,7 @@ cmake .. "${cmake_args[@]}"
             summary: "discovir".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -25154,6 +25322,7 @@ $R CMD INSTALL --build .
                 "#!/bin/bash\nmv DESCRIPTION DESCRIPTION.old\ngrep -v '^Priority: ' DESCRIPTION.old > DESCRIPTION\nmkdir -p ~/.R\necho -e \"CC=$CC\nFC=$FC\nCXX=$CXX\nCXX98=$CXX\nCXX11=$CXX\nCXX14=$CXX\" > ~/.R/Makevars\n$R CMD INSTALL --build .\n"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["r-base".to_string()],
@@ -25294,6 +25463,7 @@ $R CMD INSTALL --build .
             summary: "example tool".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -25341,6 +25511,7 @@ $R CMD INSTALL --build .
             build_script: Some(
                 "cmake -S . -B build\ncmake --install build --prefix \"$PREFIX\"\n".to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -25390,6 +25561,7 @@ $R CMD INSTALL --build .
             build_script: Some(
                 "(cd kent/src/lib && make)\n(cd kent/src/blat && make)\n".to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -25446,6 +25618,7 @@ $R CMD INSTALL --build .
             build_script: Some(
                 "./configure --with-sparsehash=$PREFIX\nmake\nmake install\n".to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["sparsehash".to_string()],
             host_dep_specs_raw: vec!["sparsehash".to_string()],
@@ -25507,6 +25680,7 @@ $R CMD INSTALL --build .
                 "cmake -S . -B build -DCMAKE_INSTALL_PREFIX=\"${PREFIX}\"\ncmake --build build --target install\n"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec![
@@ -25572,6 +25746,7 @@ $R CMD INSTALL --build .
                 "make -j\"${CPU_COUNT}\" install\n\"${PYTHON}\" -m pip install --no-deps . -vvv\n"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -25620,6 +25795,7 @@ $R CMD INSTALL --build .
             summary: "perl-template-toolkit".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -25704,6 +25880,7 @@ chmod +x $PREFIX/bin/QuantWiz_IQ
             summary: "pure python tool".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            output_build_script: None,
             noarch_python: true,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: vec!["python".to_string(), "pip".to_string()],
@@ -25740,6 +25917,7 @@ chmod +x $PREFIX/bin/QuantWiz_IQ
             summary: "native python tool".to_string(),
             source_patches: Vec::new(),
             build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            output_build_script: None,
             noarch_python: true,
             build_dep_specs_raw: vec!["c-compiler".to_string()],
             host_dep_specs_raw: vec!["python".to_string(), "pip".to_string()],
@@ -25783,6 +25961,7 @@ chmod +x $PREFIX/bin/QuantWiz_IQ
                 "$PYTHON -m pip install . -vvv --no-deps --no-build-isolation --no-cache-dir"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: true,
             build_dep_specs_raw: vec![
                 "python <3.13".to_string(),
@@ -25893,6 +26072,7 @@ cp "$RESULT_PATH/lib/"* "$LIB_INSTALL_DIR"
             summary: "blast".to_string(),
             source_patches: Vec::new(),
             build_script: Some(blast_build_script.to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["make".to_string(), "c-compiler".to_string()],
             host_dep_specs_raw: vec![
@@ -25992,6 +26172,7 @@ ln -s "${outdir}/libexec/krakenuniq" "$PREFIX/bin/krakenuniq"
             summary: "krakenuniq".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["make".to_string(), "cxx-compiler".to_string()],
             host_dep_specs_raw: vec!["perl".to_string(), "zlib".to_string(), "bzip2".to_string()],
@@ -26055,6 +26236,7 @@ install -v -m 755 build/trf "${PREFIX}/bin"
             summary: "trf".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["c-compiler".to_string()],
             host_dep_specs_raw: Vec::new(),
@@ -26115,6 +26297,7 @@ ${CXX} -O3 -o "${PREFIX}/bin/helper" "${SRC_DIR}/helper.cpp"
             summary: "gromacs mpi".to_string(),
             source_patches: Vec::new(),
             build_script: Some(build_script.to_string()),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["make".to_string(), "gcc-c++".to_string()],
             host_dep_specs_raw: Vec::new(),
@@ -26163,6 +26346,7 @@ ${CXX} -O3 -o "${PREFIX}/bin/helper" "${SRC_DIR}/helper.cpp"
                 "fastqc=$PREFIX/opt/$PKG_NAME-$PKG_VERSION\nmkdir -p $PREFIX/bin\nln -s $fastqc/fastqc $PREFIX/bin/fastqc\n"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -26214,6 +26398,7 @@ ${CXX} -O3 -o "${PREFIX}/bin/helper" "${SRC_DIR}/helper.cpp"
                 "mkdir -p $PREFIX/bin\nsed \"s|^NXF_DIST=.*|NXF_DIST=$PREFIX/share/$PKG_NAME/dist|\" nextflow > $PREFIX/bin/nextflow\n"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -26268,6 +26453,7 @@ ${CXX} -O3 -o "${PREFIX}/bin/helper" "${SRC_DIR}/helper.cpp"
                 "PACKAGE_HOME=$PREFIX/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM\nDEST_FILE=$PACKAGE_HOME/jannovar\necho \"PACKAGE_HOME=$PACKAGE_HOME\" >> $DEST_FILE\nln -s $DEST_FILE $PREFIX/bin\n"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -26317,6 +26503,7 @@ ${CXX} -O3 -o "${PREFIX}/bin/helper" "${SRC_DIR}/helper.cpp"
                 "./configure --prefix=$PREFIX --with-gsl-prefix=$PREFIX\nmake\nmake install\n"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["make".to_string(), "c-compiler".to_string()],
             host_dep_specs_raw: vec!["gsl".to_string()],
@@ -26361,6 +26548,7 @@ ${CXX} -O3 -o "${PREFIX}/bin/helper" "${SRC_DIR}/helper.cpp"
                 "./configure --prefix=\"${PREFIX}\" --enable-python-binding=\"${SP_DIR}/dna_jellyfish\"\nmake -j\"${CPU_COUNT}\"\nmake install\n"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec![
                 "cxx-compiler".to_string(),
@@ -26412,6 +26600,7 @@ ${CXX} -O3 -o "${PREFIX}/bin/helper" "${SRC_DIR}/helper.cpp"
             summary: "emboss".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -26447,6 +26636,7 @@ ${CXX} -O3 -o "${PREFIX}/bin/helper" "${SRC_DIR}/helper.cpp"
             summary: "malt".to_string(),
             source_patches: Vec::new(),
             build_script: None,
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -26490,6 +26680,7 @@ ${CXX} -O3 -o "${PREFIX}/bin/helper" "${SRC_DIR}/helper.cpp"
                 "DESTDIR=$PREFIX/share/$PKG_NAME-$PKG_VERSION-$PKG_BUILDNUM\nln -s $DESTDIR/DAS_Tool $PREFIX/bin/\n"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: Vec::new(),
             host_dep_specs_raw: Vec::new(),
@@ -26526,6 +26717,7 @@ ${CXX} -O3 -o "${PREFIX}/bin/helper" "${SRC_DIR}/helper.cpp"
                 "cmake -S . -B build -DCMAKE_INSTALL_PREFIX=\"${PREFIX}\" -DCMAKE_INSTALL_RPATH=\"${PREFIX}/lib\"\ncmake --build build --clean-first --target install -j \"${CPU_COUNT}\"\n"
                     .to_string(),
             ),
+            output_build_script: None,
             noarch_python: false,
             build_dep_specs_raw: vec!["cmake".to_string(), "cxx-compiler".to_string()],
             host_dep_specs_raw: vec!["zlib".to_string()],

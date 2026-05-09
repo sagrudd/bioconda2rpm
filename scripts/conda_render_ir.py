@@ -66,6 +66,20 @@ def build_script(value: Any) -> str | None:
     return text or None
 
 
+def output_build_script(outputs: Any, package_name: str) -> str | None:
+    if not isinstance(outputs, list):
+        return None
+    normalized_package = package_name.replace("_", "-").lower()
+    for output in outputs:
+        if not isinstance(output, dict):
+            continue
+        name = str(output.get("name") or "").replace("_", "-").lower()
+        if name != normalized_package:
+            continue
+        return build_script(output.get("script"))
+    return None
+
+
 def default_payload(recipe_dir: pathlib.Path, skip: bool) -> dict[str, Any]:
     return {
         "build_skip": skip,
@@ -80,6 +94,7 @@ def default_payload(recipe_dir: pathlib.Path, skip: bool) -> dict[str, Any]:
         "summary": f"Generated package for {recipe_dir.name}",
         "source_patches": [],
         "build_script": None,
+        "output_build_script": None,
         "noarch_python": False,
         "build_dep_specs_raw": [],
         "host_dep_specs_raw": [],
@@ -144,6 +159,9 @@ def main() -> int:
     )
 
     payload["build_script"] = build_script(meta.get_value("build/script", default=None))
+    payload["output_build_script"] = output_build_script(
+        meta.get_value("outputs", default=[]), payload["package_name"]
+    )
 
     noarch = meta.get_value("build/noarch", default=False)
     payload["noarch_python"] = str(noarch).strip().lower() == "python"
