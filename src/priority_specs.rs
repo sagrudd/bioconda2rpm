@@ -9146,6 +9146,7 @@ mkdir -p %{bioconda_source_subdir}\n"
     }
     if perl_recipe {
         build_requires.insert("perl".to_string());
+        build_requires.insert("perl-App-cpanminus".to_string());
     }
     if scope.buildroot_text_scrub_required {
         build_requires.insert("chrpath".to_string());
@@ -9806,6 +9807,7 @@ mkdir -p %{bioconda_source_subdir}\n"
         // Use system Perl toolchain for build-time resolution and reserve
         // Phoreus Perl as runtime requirement in generated payload specs.
         build_requires.insert("perl".to_string());
+        build_requires.insert("perl-App-cpanminus".to_string());
     }
     // HEURISTIC-TEMP(issue=HEUR-0003): monocle3 geospatial native stack mapping.
     if software_slug == "r-monocle3" {
@@ -10666,6 +10668,17 @@ EOF\n\
     export EXTENDED_TESTING=0\n\
     export AUTOMATED_TESTING=1\n\
     export HARNESS_OPTIONS=\"${{HARNESS_OPTIONS:-j1}}\"\n\
+    if ! command -v cpanm >/dev/null 2>&1; then\n\
+      if command -v dnf >/dev/null 2>&1; then dnf -y install perl-App-cpanminus >/dev/null 2>&1 || true; fi\n\
+      if command -v microdnf >/dev/null 2>&1; then microdnf -y install perl-App-cpanminus >/dev/null 2>&1 || true; fi\n\
+    fi\n\
+    while IFS= read -r -d '' top_link; do\n\
+      top_target=$(readlink \"$top_link\" || true)\n\
+      [[ -n \"$top_target\" ]] || continue\n\
+      if [[ \"$top_target\" == \".\" || \"$top_target\" == \"./\" ]]; then\n\
+        rm -f \"$top_link\"\n\
+      fi\n\
+    done < <(find . -mindepth 1 -maxdepth 1 -type l -print0)\n\
     if [[ -f Makefile.PL ]] && grep -Eq 'inc::Module::Install|Module::Install' Makefile.PL; then\n\
       if ! perl -Minc::Module::Install -e1 >/dev/null 2>&1; then\n\
         if command -v dnf >/dev/null 2>&1; then\n\
@@ -20528,7 +20541,11 @@ requirements:
         );
 
         assert!(spec.contains("if [[ \"%{tool}\" == perl-* ]]; then"));
+        assert!(spec.contains("BuildRequires:  perl-App-cpanminus"));
         assert!(spec.contains("export RELEASE_TESTING=0"));
+        assert!(spec.contains("dnf -y install perl-App-cpanminus"));
+        assert!(spec.contains("find . -mindepth 1 -maxdepth 1 -type l -print0"));
+        assert!(spec.contains("rm -f \"$top_link\""));
         assert!(spec.contains("perl -0pi -e"));
         assert!(spec.contains("sed -i 's|\\${PREFIX}/bin/perl|perl|g' ./build.sh || true"));
     }
