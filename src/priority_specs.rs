@@ -6610,6 +6610,7 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "scala"
             | "seqkit"
             | "snakemake-minimal"
+            | "stringtie"
             | "zlib"
             | "zlib-devel"
             | "bzip2-devel"
@@ -19755,6 +19756,7 @@ requirements:
                 "pcre".to_string(),
                 "prank".to_string(),
                 "raxml".to_string(),
+                "stringtie".to_string(),
             ],
             run_dep_specs_raw: Vec::new(),
             build_deps: BTreeSet::new(),
@@ -19777,6 +19779,7 @@ requirements:
         assert!(!reqs.iter().any(|r| r == "pcre"));
         assert!(!reqs.iter().any(|r| r == "prank"));
         assert!(!reqs.iter().any(|r| r == "raxml"));
+        assert!(!reqs.iter().any(|r| r == "stringtie"));
     }
 
     #[test]
