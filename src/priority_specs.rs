@@ -6267,6 +6267,13 @@ fn add_native_build_requires_for_python_requirements(
                 build_requires.insert("xz-devel".to_string());
                 build_requires.insert("zlib-devel".to_string());
             }
+            "rpy2" | "rpy2-rinterface" => {
+                // rpy2 builds its R interface extension against R's readline
+                // configuration; EL containers need the system headers present.
+                build_requires.insert("gcc".to_string());
+                build_requires.insert("ncurses-devel".to_string());
+                build_requires.insert("readline-devel".to_string());
+            }
             _ => {}
         }
     }
@@ -18786,6 +18793,19 @@ source:
         assert_eq!(conda_dep_to_pip_requirement("openblas"), None);
         assert_eq!(conda_dep_to_pip_requirement("python >=3.8"), None);
         assert_eq!(conda_dep_to_pip_requirement("c-compiler"), None);
+    }
+
+    #[test]
+    fn rpy2_python_requirement_adds_native_r_interface_headers() {
+        let mut build_requires = BTreeSet::new();
+        add_native_build_requires_for_python_requirements(
+            &mut build_requires,
+            &["rpy2>=3.5".to_string()],
+        );
+
+        assert!(build_requires.contains("gcc"));
+        assert!(build_requires.contains("ncurses-devel"));
+        assert!(build_requires.contains("readline-devel"));
     }
 
     #[test]
