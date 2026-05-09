@@ -6572,6 +6572,7 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "pplacer"
             | "prank"
             | "purge-dups"
+            | "pyasp"
             | "quast"
             | "racon"
             | "ragtag"
@@ -12955,7 +12956,7 @@ drop = {{
     'minimap2', 'miniprot', 'mscorefonts', 'muscle', 'mummer',
     'nb-conda-kernels', 'ncbi-datasets-cli', 'openblas', 'libopenblas',
     'libblas', 'libcblas', 'mkl', 'mkl-devel', 'pbccs', 'pcre', 'phylip',
-    'pilon', 'pplacer', 'prank', 'prodigal', 'purge-dups', 'pytaxonkit',
+    'pilon', 'pplacer', 'prank', 'prodigal', 'purge-dups', 'pyasp', 'pytaxonkit',
     'quast', 'racon', 'ragtag', 'ratatosk', 'raxml', 'salmon', 'scala',
     'sepp', 'seqkit', 'seqtk', 'snakemake-minimal', 'spades', 'sra-tools',
     'star', 'stringtie', 'tabix', 'taxonkit', 'tgsgapcloser', 'trimmomatic',
@@ -20240,6 +20241,41 @@ requirements:
         assert!(!reqs.iter().any(|r| r == "git"));
         assert!(!reqs.iter().any(|r| r == "mamba"));
         assert!(!reqs.iter().any(|r| r.starts_with("snakemake-minimal")));
+    }
+
+    #[test]
+    fn python_requirements_keep_bioconda_python_modules_out_of_pip_lock() {
+        let parsed = ParsedMeta {
+            package_name: "meneco".to_string(),
+            version: "1.5.2".to_string(),
+            build_number: "1".to_string(),
+            source_url: "https://example.invalid/meneco-1.5.2.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/meneco".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "meneco".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON setup.py install".to_string()),
+            output_build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec![
+                "python".to_string(),
+                "setuptools".to_string(),
+                "pyasp >=1.4.3".to_string(),
+            ],
+            run_dep_specs_raw: vec!["python".to_string(), "pyasp >=1.4.3".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let reqs = build_python_requirements(&parsed);
+        assert!(!reqs.iter().any(|r| r.starts_with("pyasp")));
+        assert!(should_keep_rpm_dependency_for_python("pyasp"));
+
+        let block = render_python_venv_setup_block(true, &["pyasp>=1.4.3".to_string()]);
+        assert!(block.contains("'pyasp'"));
     }
 
     #[test]
