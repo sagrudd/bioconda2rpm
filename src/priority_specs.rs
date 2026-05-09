@@ -9067,6 +9067,29 @@ fi
 "###
 }
 
+fn render_perl_recursive_source_link_cleanup_block(perl_recipe: bool) -> &'static str {
+    if !perl_recipe {
+        return "";
+    }
+
+    r###"# Single-root tarball compatibility may add a top-level symlink back to '.'.
+# Perl build tooling such as File::Find treats that as a recursive loop.
+while IFS= read -r -d '' top_link; do
+  top_target=$(readlink "$top_link" || true)
+  [[ -n "$top_target" ]] || continue
+  if [[ "$top_target" == "." || "$top_target" == "./" ]]; then
+    rm -f "$top_link"
+    continue
+  fi
+  if command -v realpath >/dev/null 2>&1; then
+    if [[ "$(realpath -m "$top_link" 2>/dev/null || true)" == "$(pwd)" ]]; then
+      rm -f "$top_link"
+    fi
+  fi
+done < <(find . -mindepth 1 -maxdepth 1 -type l -print0)
+"###
+}
+
 fn render_gsl_prefix_shim_block(parsed: &ParsedMeta) -> &'static str {
     if !recipe_dep_mentions(parsed, "gsl") {
         return "";
@@ -9163,6 +9186,8 @@ fn render_payload_spec_minimal(
         needs_nlohmann_json,
         needs_capnproto,
     );
+    let perl_recursive_source_link_cleanup_block =
+        render_perl_recursive_source_link_cleanup_block(perl_recipe);
 
     let source_kind = source_archive_kind(&parsed.source_url);
     let git_source = parse_git_source_descriptor(&parsed.source_url);
@@ -9594,6 +9619,7 @@ export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
 {blast_compat_block}\
 {core_c_dep_bootstrap}\
 {python_venv_setup}\
+{perl_recursive_source_link_cleanup_block}\
 {install_commands}\
 {spacerplacer_mafft_cleanup_block}\
 {elf_arch_guard_block}\
@@ -9648,6 +9674,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         build_commands = build_commands,
         install_commands = install_commands,
         python_venv_setup = python_venv_setup,
+        perl_recursive_source_link_cleanup_block = perl_recursive_source_link_cleanup_block,
         spacerplacer_mafft_cleanup_block = spacerplacer_mafft_cleanup_block,
         elf_arch_guard_block = elf_arch_guard_block,
         symlink_normalization_block = symlink_normalization_block,
@@ -26120,6 +26147,8 @@ $R CMD INSTALL --build .
         ));
         assert!(spec.contains("Source1:        bioconda-perl-template-toolkit-build.sh"));
         assert!(spec.contains("cp %{SOURCE1} buildsrc/build.sh"));
+        assert!(spec.contains("File::Find treats that as a recursive loop"));
+        assert!(spec.contains("done < <(find . -mindepth 1 -maxdepth 1 -type l -print0)"));
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
         assert!(!spec.contains("bioconda2rpm minimal mode: no explicit build commands extracted"));
     }
