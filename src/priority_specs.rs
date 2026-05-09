@@ -16217,7 +16217,12 @@ for repo in \\\n\
   done\n\
 done\n\
 pm_install() {{\n\
-  \"$pm\" -y --setopt='*.skip_if_unavailable=true' --disablerepo=dropworm \"${{pm_repo_args[@]}}\" install \"$@\"\n\
+  local pm_cmd=(\"$pm\" -y --setopt='*.skip_if_unavailable=true' --disablerepo=dropworm \"${{pm_repo_args[@]}}\" install \"$@\")\n\
+  if command -v timeout >/dev/null 2>&1; then\n\
+    timeout --kill-after=30s \"${{BIOCONDA2RPM_PM_INSTALL_TIMEOUT:-300s}}\" \"${{pm_cmd[@]}}\"\n\
+  else\n\
+    \"${{pm_cmd[@]}}\"\n\
+  fi\n\
 }}\n\
 \n\
 declare -A local_candidates\n\
@@ -23485,6 +23490,14 @@ error: build stopped\n";
         let source = include_str!("priority_specs.rs");
         assert!(source.contains("if [[ \\\"$provider\\\" == phoreus-* ]]; then\\n\\"));
         assert!(source.contains("install_local_with_hydration \\\"$dep\\\""));
+    }
+
+    #[test]
+    fn container_dependency_preflight_bounds_package_manager_installs() {
+        let source = include_str!("priority_specs.rs");
+        assert!(source.contains("BIOCONDA2RPM_PM_INSTALL_TIMEOUT:-300s"));
+        assert!(source.contains("timeout --kill-after=30s"));
+        assert!(source.contains("local pm_cmd=(\\\"$pm\\\" -y"));
     }
 
     #[test]
