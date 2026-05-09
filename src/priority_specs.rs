@@ -15924,7 +15924,8 @@ else\n\
     exit 6\n\
   fi\n\
   for candidate in \"${{source_candidates[@]}}\"; do\n\
-    escaped_candidate=$(printf '%s' \"$candidate\" | sed 's/[\\/&]/\\\\&/g')\n\
+    direct_url=\"${{candidate%%\\#*}}\"\n\
+    escaped_candidate=$(printf '%s' \"$direct_url\" | sed 's/[\\/&]/\\\\&/g')\n\
     sed -i \"s/^Source0:[[:space:]].*$/Source0:        $escaped_candidate/\" '{spec}'\n\
     candidate_file=$(source_url_filename \"$candidate\")\n\
     if ! is_remote_source \"$candidate\"; then\n\
@@ -15944,7 +15945,6 @@ else\n\
     fi\n\
     echo \"Downloading: $candidate\"\n\
     for attempt in 1 2 3; do\n\
-      direct_url=\"${{candidate%%\\#*}}\"\n\
       spectool_cmd=(spectool -g -R --define \"_topdir $build_root\" --define \"_sourcedir $build_sourcedir\" '{spec}')\n\
       if command -v timeout >/dev/null 2>&1; then\n\
         spectool_cmd=(timeout --kill-after=30s 300s \"${{spectool_cmd[@]}}\")\n\
@@ -24492,8 +24492,9 @@ cmake \
         assert!(SOURCE.contains("filepath|filename|file|path"));
         assert!(SOURCE.contains("download|source"));
         assert!(SOURCE.contains(r#"candidate_file=$(source_url_filename \"$candidate\")"#));
-        assert!(SOURCE.contains("if ! is_remote_source \\\"$candidate\\\"; then"));
         assert!(SOURCE.contains("direct_url=\\\"${{candidate%%\\\\#*}}\\\""));
+        assert!(SOURCE.contains("escaped_candidate=$(printf '%s' \\\"$direct_url\\\""));
+        assert!(SOURCE.contains("if ! is_remote_source \\\"$candidate\\\"; then"));
         assert!(SOURCE.contains("Attempting direct source fetch: $direct_url"));
         assert!(SOURCE.contains("manual_fetch_url=\\\"${{manual_url%%\\\\#*}}\\\""));
         assert!(SOURCE.contains("binspreader-recombseq.tar.gz"));
