@@ -11102,10 +11102,11 @@ EOF\n\
       mkdir -p \"$PREFIX/include/lpsolve\" \"$PREFIX/include\"\n\
       ln -snf \"$lp_header\" \"$PREFIX/include/lpsolve/lp_lib.h\"\n\
       ln -snf \"$lp_header\" \"$PREFIX/include/lp_lib.h\"\n\
-      export CPPFLAGS=\"-I$PREFIX/include -I$PREFIX/include/lpsolve ${{CPPFLAGS:-}}\"\n\
+      lp_include_dir=$(dirname \"$lp_header\")\n\
+      export CPPFLAGS=\"-I$lp_include_dir -I$PREFIX/include -I$PREFIX/include/lpsolve ${{CPPFLAGS:-}}\"\n\
     else\n\
       export COMPGENEPRED=false\n\
-      sed -i 's/COMPGENPRED=true/COMPGENEPRED=false/g; s/COMPGENPRED=false/COMPGENEPRED=false/g' ./build.sh || true\n\
+      sed -i 's/COMPGENPRED=true/COMPGENEPRED=false/g; s/COMPGENPRED=false/COMPGENEPRED=false/g; s/COMPGENEPRED=true/COMPGENEPRED=false/g' ./build.sh || true\n\
       echo \"bioconda2rpm: lp_lib.h unavailable; disabling COMPGENPRED for augustus\" >&2\n\
     fi\n\
     fi\n\
@@ -23392,6 +23393,14 @@ error: build stopped\n";
         let source = include_str!("priority_specs.rs");
         assert!(source.contains("if pm_install \\\"$req\\\" >>\\\"$dep_log\\\" 2>&1; then\\n\\"));
         assert!(source.contains("candidate=\\\"${{candidate%%.so*}}\\\""));
+    }
+
+    #[test]
+    fn augustus_fallback_disables_compgenepred_when_lpsolve_headers_are_missing() {
+        let source = include_str!("priority_specs.rs");
+        assert!(source.contains("lp_lib.h unavailable; disabling COMPGENPRED for augustus"));
+        assert!(source.contains("s/COMPGENEPRED=true/COMPGENEPRED=false/g"));
+        assert!(source.contains("export COMPGENEPRED=false"));
     }
 
     #[test]
