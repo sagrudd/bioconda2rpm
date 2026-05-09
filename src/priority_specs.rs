@@ -6509,10 +6509,13 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "tabixpp"
             | "bwa"
             | "blast"
+            | "cd-hit"
             | "clustalw"
+            | "espresso"
             | "fasttree"
             | "glimmerhmm"
             | "hdf5"
+            | "iqtree"
             | "mafft"
             | "muscle"
             | "openmpi"
@@ -19709,10 +19712,13 @@ requirements:
             host_dep_specs_raw: vec![
                 "python".to_string(),
                 "pip".to_string(),
+                "cd-hit".to_string(),
                 "clustalw".to_string(),
+                "espresso >=1.3.2".to_string(),
                 "fasttree".to_string(),
                 "glimmerhmm".to_string(),
                 "hdf5".to_string(),
+                "iqtree".to_string(),
                 "mafft".to_string(),
                 "muscle".to_string(),
                 "numpy".to_string(),
@@ -19729,10 +19735,13 @@ requirements:
 
         let reqs = build_python_requirements(&parsed);
         assert!(reqs.iter().any(|r| r == "numpy"));
+        assert!(!reqs.iter().any(|r| r == "cd-hit"));
         assert!(!reqs.iter().any(|r| r == "clustalw"));
+        assert!(!reqs.iter().any(|r| r.starts_with("espresso")));
         assert!(!reqs.iter().any(|r| r == "fasttree"));
         assert!(!reqs.iter().any(|r| r == "glimmerhmm"));
         assert!(!reqs.iter().any(|r| r == "hdf5"));
+        assert!(!reqs.iter().any(|r| r == "iqtree"));
         assert!(!reqs.iter().any(|r| r == "mafft"));
         assert!(!reqs.iter().any(|r| r == "muscle"));
         assert!(!reqs.iter().any(|r| r == "openmpi"));
