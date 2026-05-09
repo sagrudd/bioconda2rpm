@@ -5941,6 +5941,12 @@ fn build_python_requirements_for_runtime(
         out.insert("cython<3".to_string());
         out.insert("numpy<2".to_string());
     }
+    // Some legacy pyproject sdists import Cython from setup.py while pip is
+    // still generating metadata. Ensure it exists before pip-compile inspects
+    // transitive metadata under --no-build-isolation.
+    if out.iter().any(|req| req.starts_with("ete4")) {
+        out.insert("cython".to_string());
+    }
     out.into_iter().collect()
 }
 
@@ -12803,12 +12809,17 @@ fn render_python_venv_setup_block(python_recipe: bool, python_requirements: &[St
     let legacy_pomegranate_mode = python_requirements
         .iter()
         .any(|req| req.starts_with("pomegranate"));
+    let cython_metadata_bootstrap = python_requirements
+        .iter()
+        .any(|req| req == "cython" || req.starts_with("ete4"));
     let requirements_install = if python_requirements.is_empty() {
         String::new()
     } else {
         let requirements_body = python_requirements.join("\n");
         let preinstall_legacy_build_bits = if legacy_pomegranate_mode {
             "\"$PIP\" install \"cython<3\" \"numpy<2\" \"scipy<2\"\n"
+        } else if cython_metadata_bootstrap {
+            "\"$PIP\" install \"cython\"\n"
         } else {
             ""
         };
@@ -18994,6 +19005,42 @@ requirements:
         assert!(reqs.iter().any(|r| r.starts_with("pomegranate")));
         assert!(reqs.contains(&"cython<3".to_string()));
         assert!(reqs.contains(&"numpy<2".to_string()));
+    }
+
+    #[test]
+    fn python_requirements_add_cython_for_ete4_metadata_bootstrap() {
+        let parsed = ParsedMeta {
+            package_name: "amalgkit".to_string(),
+            version: "0.14.0".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/amalgkit-0.14.0.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/amalgkit".to_string(),
+            license: "GPL-3.0-only".to_string(),
+            summary: "amalgkit".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            noarch_python: true,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["python >=3.8".to_string(), "ete4".to_string()],
+            run_dep_specs_raw: vec!["python >=3.8".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let reqs = build_python_requirements(&parsed);
+        assert!(reqs.contains(&"ete4".to_string()));
+        assert!(reqs.contains(&"cython".to_string()));
+    }
+
+    #[test]
+    fn python_venv_install_preinstalls_cython_for_metadata_bootstrap() {
+        let block =
+            render_python_venv_setup_block(true, &["cython".to_string(), "ete4".to_string()]);
+        assert!(block.contains("\"$PIP\" install \"cython\"\n"));
+        assert!(block.contains("pip-compile --generate-hashes"));
+        assert!(block.contains("--pip-args \"--no-build-isolation\""));
     }
 
     #[test]
