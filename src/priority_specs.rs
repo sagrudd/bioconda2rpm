@@ -6385,7 +6385,7 @@ fn normalize_pip_version_clause(clause: &str) -> String {
     let trimmed = clause.trim();
     for op in [">=", "<=", ">", "<", "~="] {
         if let Some(version) = trimmed.strip_prefix(op) {
-            let version = version.trim();
+            let version = strip_conda_build_string_from_version(version.trim());
             if let Some(base) = version.strip_suffix(".*") {
                 let base = base.trim_end_matches('.');
                 if !base.is_empty() {
@@ -6396,12 +6396,22 @@ fn normalize_pip_version_clause(clause: &str) -> String {
         }
     }
     if let Some(version) = trimmed.strip_prefix("==") {
-        return format!("=={}", version.trim());
+        return format!(
+            "=={}",
+            strip_conda_build_string_from_version(version.trim())
+        );
     }
     if let Some(version) = trimmed.strip_prefix("!=") {
-        return format!("!={}", version.trim());
+        return format!(
+            "!={}",
+            strip_conda_build_string_from_version(version.trim())
+        );
     }
     trimmed.to_string()
+}
+
+fn strip_conda_build_string_from_version(version: &str) -> &str {
+    version.split('=').next().unwrap_or(version).trim()
 }
 
 fn normalized_dependency_name_from_spec(raw: &str) -> Option<String> {
@@ -18790,6 +18800,14 @@ source:
         assert_eq!(
             conda_dep_to_pip_requirement("scanpy=1.9.3"),
             Some("scanpy==1.9.3".to_string())
+        );
+        assert_eq!(
+            conda_dep_to_pip_requirement("wbuild>=1.8=pyhdfd78af_2"),
+            Some("wbuild>=1.8".to_string())
+        );
+        assert_eq!(
+            conda_dep_to_pip_requirement("example ==1.2.3=py311_0"),
+            Some("example==1.2.3".to_string())
         );
         assert_eq!(conda_dep_to_pip_requirement("bedtools"), None);
         assert_eq!(conda_dep_to_pip_requirement("bedops >=2.4.39"), None);
