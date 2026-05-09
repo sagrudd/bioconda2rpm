@@ -11005,15 +11005,13 @@ EOF\n\
     export LDFLAGS=\"-L/usr/lib64 -L/usr/lib ${{LDFLAGS:-}}\"\n\
     fi\n\
 \n\
-    # poretools still ships Python 2 style setup.py print statements.\n\
-    if [[ \"%{{tool}}\" == \"poretools\" ]]; then\n\
-    if [[ -f setup.py ]]; then\n\
+    # Some legacy Python recipes still ship Python 2 style setup.py print statements.\n\
+    if [[ -f setup.py ]] && grep -Eq '^[[:space:]]*print[[:space:]]+[^#(]' setup.py; then\n\
       sed -i -E 's/^([[:space:]]*)print[[:space:]]+([^#].*)$/\\1print(\\2)/' setup.py || true\n\
       if command -v 2to3 >/dev/null 2>&1; then\n\
         2to3 -w -n setup.py >/dev/null 2>&1 || true\n\
       fi\n\
-    fi\n\
-    \"$PIP\" install --no-cache-dir \"setuptools<81\" || true\n\
+      if [[ -n \"${{PIP:-}}\" ]]; then \"$PIP\" install --no-cache-dir \"setuptools<81\" || true; fi\n\
     fi\n\
 \n\
     # PASTA setup metadata expects CONDA_PREFIX to resolve bundled tool paths.\n\
@@ -21407,10 +21405,49 @@ requirements:
             false,
         );
 
-        assert!(spec.contains("if [[ \"%{tool}\" == \"poretools\" ]]; then"));
+        assert!(spec.contains("grep -Eq '^[[:space:]]*print[[:space:]]+[^#(]' setup.py"));
         assert!(spec.contains("sed -i -E 's/^([[:space:]]*)print[[:space:]]+([^#].*)$/\\1print(\\2)/' setup.py || true"));
         assert!(spec.contains("2to3 -w -n setup.py >/dev/null 2>&1 || true"));
         assert!(spec.contains("\"$PIP\" install --no-cache-dir \"setuptools<81\" || true"));
+    }
+
+    #[test]
+    fn legacy_python_setup_print_normalization_is_not_package_specific() {
+        let parsed = ParsedMeta {
+            package_name: "pysnptools".to_string(),
+            version: "0.3.13".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/pysnptools.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/pysnptools".to_string(),
+            license: "Apache-2.0".to_string(),
+            summary: "pysnptools".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON setup.py install".to_string()),
+            noarch_python: false,
+            build_dep_specs_raw: vec!["python".to_string()],
+            host_dep_specs_raw: vec!["python".to_string()],
+            run_dep_specs_raw: vec!["python".to_string()],
+            build_deps: BTreeSet::from(["python".to_string()]),
+            host_deps: BTreeSet::from(["python".to_string()]),
+            run_deps: BTreeSet::from(["python".to_string()]),
+        };
+
+        let spec = render_payload_spec(
+            "pysnptools",
+            &parsed,
+            "bioconda-pysnptools-build.sh",
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("grep -Eq '^[[:space:]]*print[[:space:]]+[^#(]' setup.py"));
+        assert!(!spec.contains("if [[ \"%{tool}\" == \"poretools\" ]]; then"));
     }
 
     #[test]
