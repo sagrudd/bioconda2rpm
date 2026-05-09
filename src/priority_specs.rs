@@ -14085,7 +14085,7 @@ fn map_build_dependency(dep: &str) -> String {
         "liblzma" => "xz-devel".to_string(),
         "liblzma-devel" => "xz-devel".to_string(),
         "lapack" | "liblapack" => "lapack-devel".to_string(),
-        "lp-solve" | "lpsolve" => "lpsolve".to_string(),
+        "lp-solve" | "lpsolve" => "lpsolve lpsolve-devel".to_string(),
         "libboost" | "libboost-devel" => "boost-devel".to_string(),
         "libhwloc" | "hwloc" => "hwloc-devel".to_string(),
         "libhwy" => "highway-devel".to_string(),
@@ -17713,7 +17713,10 @@ mod tests {
         assert_eq!(map_runtime_dependency("jsoncpp"), "jsoncpp".to_string());
         assert_eq!(map_runtime_dependency("glib"), "glib2".to_string());
         assert_eq!(map_runtime_dependency("liblapack"), "lapack".to_string());
-        assert_eq!(map_build_dependency("lp-solve"), "lpsolve".to_string());
+        assert_eq!(
+            map_build_dependency("lp-solve"),
+            "lpsolve lpsolve-devel".to_string()
+        );
         assert_eq!(map_runtime_dependency("lp-solve"), "lpsolve".to_string());
         assert_eq!(map_runtime_dependency("liblzma-devel"), "xz".to_string());
         assert_eq!(map_runtime_dependency("zstd-static"), "zstd".to_string());
@@ -23608,6 +23611,15 @@ error: build stopped\n";
         assert!(source.contains("lp_lib.h unavailable; disabling COMPGENPRED for augustus"));
         assert!(source.contains("s/COMPGENEPRED=true/COMPGENEPRED=false/g"));
         assert!(source.contains("export COMPGENEPRED=false"));
+    }
+
+    #[test]
+    fn lpsolve_build_dependency_includes_development_headers() {
+        assert_eq!(
+            map_build_dependency("lpsolve"),
+            "lpsolve lpsolve-devel".to_string()
+        );
+        assert_eq!(map_runtime_dependency("lpsolve"), "lpsolve".to_string());
     }
 
     #[test]
