@@ -8813,7 +8813,18 @@ if [[ -x \"$PHOREUS_R_PREFIX/bin/Rscript\" ]]; then\n\
   export PATH=\"$PHOREUS_R_PREFIX/bin:$PATH\"\n\
 fi\n\
 export R=\"${{R:-R}}\"\n\
-export RSCRIPT=\"${{RSCRIPT:-Rscript}}\"\n",
+export RSCRIPT=\"${{RSCRIPT:-Rscript}}\"\n\
+export R_HOME=\"$PHOREUS_R_PREFIX/lib64/R\"\n\
+export R_LIBS_USER=\"$PREFIX/R/library\"\n\
+mkdir -p \"$R_LIBS_USER\"\n\
+r_lib_paths=(\"$R_LIBS_USER\")\n\
+while IFS= read -r -d '' rlib; do\n\
+  if [[ -n \"$rlib\" && \"$rlib\" != \"$R_LIBS_USER\" ]]; then\n\
+    r_lib_paths+=(\"$rlib\")\n\
+  fi\n\
+done < <(find /usr/local/phoreus -maxdepth 6 -type d -path '*/R/library' -print0 2>/dev/null || true)\n\
+export R_LIBS=\"$(IFS=:; echo \"${{r_lib_paths[*]}}\")\"\n\
+export R_LIBS_SITE=\"$R_LIBS\"\n",
             phoreus_r_version = PHOREUS_R_VERSION
         ));
     }
@@ -24916,6 +24927,37 @@ $R CMD INSTALL --build .
         assert!(block.contains("export LD_LIBRARY_PATH=\"$PHOREUS_PYTHON_PREFIX/lib"));
         assert!(block.contains("export CARGO_HOME=\"$PHOREUS_RUST_PREFIX\""));
         assert!(block.contains("export RUSTUP_HOME=\"$PHOREUS_RUST_PREFIX/.rustup\""));
+    }
+
+    #[test]
+    fn minimal_runtime_env_creates_r_library_scope() {
+        let scope = MinimalBuildScope {
+            python_runtime_required: false,
+            r_runtime_required: true,
+            rust_runtime_required: false,
+            nim_runtime_required: false,
+            perl_runtime_required: false,
+            compiler_env_required: false,
+            conda_pkg_vars_required: false,
+            arch_env_required: false,
+            parallel_env_required: false,
+            symlink_normalization_required: false,
+            buildroot_text_scrub_required: false,
+            sparsehash_configure_fallback_required: false,
+            recipe_build_sh_required: false,
+            blast_compat_required: false,
+        };
+        let block = render_minimal_runtime_env_block(
+            PHOREUS_PYTHON_RUNTIME_311,
+            "phylogenize",
+            "2.0.1",
+            "0",
+            &scope,
+        );
+
+        assert!(block.contains("export R_LIBS_USER=\"$PREFIX/R/library\""));
+        assert!(block.contains("mkdir -p \"$R_LIBS_USER\""));
+        assert!(block.contains("export R_LIBS_SITE=\"$R_LIBS\""));
     }
 
     #[test]
