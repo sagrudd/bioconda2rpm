@@ -12679,6 +12679,7 @@ fn synthesize_fallback_build_sh(parsed: &ParsedMeta) -> Option<String> {
         || package == "r-base"
         || package.starts_with("r-")
         || package.starts_with("bioconductor-")
+        || recipe_requires_r_runtime(parsed)
     {
         return Some(
             "#!/usr/bin/env bash\n\
@@ -12702,10 +12703,13 @@ fn is_runtime_only_metapackage(parsed: &ParsedMeta) -> bool {
     let package = normalize_name(&parsed.package_name);
     let dependency_only_env_package =
         package.ends_with("-env") || package.ends_with("-environment");
+    let no_source_noarch_python_dependency_package =
+        parsed.noarch_python && parsed.source_url.trim().is_empty();
     parsed.source_patches.is_empty()
         && parsed.build_script.is_none()
         && !parsed.run_dep_specs_raw.is_empty()
         && (dependency_only_env_package
+            || no_source_noarch_python_dependency_package
             || (parsed.build_dep_specs_raw.is_empty() && parsed.host_dep_specs_raw.is_empty()))
 }
 
@@ -23595,6 +23599,74 @@ requirements:
         assert!(is_runtime_only_metapackage(&parsed));
         let generated = synthesize_fallback_build_sh(&parsed).expect("env fallback");
         assert!(generated.contains("metapackage fallback"));
+    }
+
+    #[test]
+    fn fallback_build_script_supports_no_source_noarch_python_dependency_packages() {
+        let mut host_deps = BTreeSet::new();
+        host_deps.insert("python".to_string());
+        host_deps.insert("setuptools".to_string());
+        let mut run_deps = BTreeSet::new();
+        run_deps.insert("biopython".to_string());
+        run_deps.insert("pdb-tools".to_string());
+        let parsed = ParsedMeta {
+            package_name: "haddock_biobb".to_string(),
+            version: "2025.11".to_string(),
+            build_number: "0".to_string(),
+            source_url: String::new(),
+            source_folder: String::new(),
+            homepage: "https://github.com/haddocking/haddock3".to_string(),
+            license: "Apache-2.0".to_string(),
+            summary: "dependency package".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            output_build_script: None,
+            noarch_python: true,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["python".to_string(), "setuptools".to_string()],
+            run_dep_specs_raw: vec!["biopython".to_string(), "pdb-tools".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps,
+            run_deps,
+        };
+
+        assert!(is_runtime_only_metapackage(&parsed));
+        let generated = synthesize_fallback_build_sh(&parsed).expect("noarch python fallback");
+        assert!(generated.contains("metapackage fallback"));
+    }
+
+    #[test]
+    fn fallback_build_script_supports_non_prefixed_r_recipes() {
+        let mut host_deps = BTreeSet::new();
+        host_deps.insert("r-base".to_string());
+        host_deps.insert("r-rcpparmadillo".to_string());
+        let mut run_deps = BTreeSet::new();
+        run_deps.insert("r-base".to_string());
+        run_deps.insert("r-phytools".to_string());
+        let parsed = ParsedMeta {
+            package_name: "rerconverge".to_string(),
+            version: "0.3.0".to_string(),
+            build_number: "3".to_string(),
+            source_url: "https://github.com/nclark-lab/RERconverge/archive/refs/tags/v0.3.0.tar.gz"
+                .to_string(),
+            source_folder: String::new(),
+            homepage: "https://github.com/nclark-lab/RERconverge".to_string(),
+            license: "GPL-3".to_string(),
+            summary: "R package".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            output_build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["r-base".to_string(), "r-rcpparmadillo".to_string()],
+            run_dep_specs_raw: vec!["r-base".to_string(), "r-phytools".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps,
+            run_deps,
+        };
+
+        let generated = synthesize_fallback_build_sh(&parsed).expect("R fallback");
+        assert!(generated.contains("$R\" CMD INSTALL --build ."));
     }
 
     #[test]
