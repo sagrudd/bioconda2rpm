@@ -6527,12 +6527,16 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
 
     if matches!(
         normalized,
-        "bedtools"
+        "abyss"
+            | "bamtools"
+            | "bedtools"
             | "beast2"
             | "bedops"
+            | "bifrost"
             | "samtools"
             | "bcftools"
             | "bracken"
+            | "busco"
             | "htslib"
             | "tabix"
             | "tabixpp"
@@ -6542,12 +6546,18 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "cd-hit"
             | "clustalw"
             | "espresso"
+            | "filtlong"
             | "fasttree"
+            | "flye"
+            | "gfatools"
             | "glimmerhmm"
             | "hdf5"
+            | "hifiasm"
             | "iqtree"
+            | "kmc"
             | "kmtricks"
             | "mafft"
+            | "masurca"
             | "mash"
             | "mccortex"
             | "mscorefonts"
@@ -6555,10 +6565,17 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "muscle"
             | "openmpi"
             | "openblas"
+            | "pbccs"
             | "pcre"
             | "phylip"
+            | "pilon"
             | "pplacer"
             | "prank"
+            | "purge-dups"
+            | "quast"
+            | "racon"
+            | "ragtag"
+            | "ratatosk"
             | "raxml"
             | "metaeuk"
             | "hmmer"
@@ -6568,9 +6585,11 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "miniprot"
             | "sepp"
             | "spades"
+            | "sra-tools"
             | "fastqc"
             | "trimmomatic"
             | "star"
+            | "tgsgapcloser"
             | "gmap"
             | "salmon"
             | "kallisto"
@@ -6632,6 +6651,7 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "maxbin2"
             | "mmseqs2"
             | "nb-conda-kernels"
+            | "ncbi-datasets-cli"
             | "openssl"
             | "openssl-devel"
             | "apptainer"
@@ -12890,20 +12910,22 @@ python - <<'PYREQSAN'
 from pathlib import Path
 import re
 drop = {{
-    'apptainer', 'augustus', 'bbmap', 'beast2', 'bedops', 'boost-cpp', 'bowtie',
-    'bowtie2', 'bracken', 'bwa', 'bwa-mem2', 'cd-hit', 'clustalw', 'conda',
-    'diamond', 'entrez-direct', 'espresso', 'fastqc', 'fasttree', 'geos', 'git',
-    'git-lfs', 'glimmerhmm', 'gmap', 'graph-tool-base', 'graphviz', 'hdf5',
-    'hmmer', 'htslib', 'intarna', 'iqtree', 'kallisto', 'kmtricks',
-    'lamassemble', 'mafft', 'mamba', 'mash', 'maxbin2', 'mccortex', 'meme',
-    'metaeuk', 'micromamba', 'miniasm',
-    'minimap2', 'miniprot', 'mscorefonts', 'muscle', 'mummer', 'nb-conda-kernels',
-    'openblas', 'libopenblas', 'libblas', 'libcblas', 'mkl', 'mkl-devel', 'pcre',
-    'phylip', 'pplacer', 'prank', 'prodigal', 'pytaxonkit', 'raxml', 'salmon',
-    'scala', 'sepp', 'seqkit', 'seqtk', 'snakemake-minimal', 'spades', 'star',
-    'stringtie', 'tabix',
-    'taxonkit', 'trimmomatic', 'ucsc-bedgraphtobigwig', 'ucsc-bigwigaverageoverbed',
-    'vpt-core',
+    'abyss', 'apptainer', 'augustus', 'bamtools', 'bbmap', 'beast2', 'bedops',
+    'bifrost', 'boost-cpp', 'bowtie', 'bowtie2', 'bracken', 'busco', 'bwa',
+    'bwa-mem2', 'cd-hit', 'clustalw', 'conda', 'diamond', 'entrez-direct',
+    'espresso', 'fastqc', 'fasttree', 'filtlong', 'flye', 'geos', 'gfatools',
+    'git', 'git-lfs', 'glimmerhmm', 'gmap', 'graph-tool-base', 'graphviz',
+    'hdf5', 'hifiasm', 'hmmer', 'htslib', 'intarna', 'iqtree', 'kallisto',
+    'kmc', 'kmtricks', 'lamassemble', 'mafft', 'mamba', 'masurca', 'mash',
+    'maxbin2', 'mccortex', 'meme', 'metaeuk', 'micromamba', 'miniasm',
+    'minimap2', 'miniprot', 'mscorefonts', 'muscle', 'mummer',
+    'nb-conda-kernels', 'ncbi-datasets-cli', 'openblas', 'libopenblas',
+    'libblas', 'libcblas', 'mkl', 'mkl-devel', 'pbccs', 'pcre', 'phylip',
+    'pilon', 'pplacer', 'prank', 'prodigal', 'purge-dups', 'pytaxonkit',
+    'quast', 'racon', 'ragtag', 'ratatosk', 'raxml', 'salmon', 'scala',
+    'sepp', 'seqkit', 'seqtk', 'snakemake-minimal', 'spades', 'sra-tools',
+    'star', 'stringtie', 'tabix', 'taxonkit', 'tgsgapcloser', 'trimmomatic',
+    'ucsc-bedgraphtobigwig', 'ucsc-bigwigaverageoverbed', 'vpt-core',
     'pytorch', 'pytorch-cpu', 'pytorch-gpu', 'torch', 'torchaudio', 'torchtext',
     'torchvision', 'tensorflow', 'tensorflow-base', 'tensorflow-estimator',
     'jax', 'jaxlib', 'triton',
@@ -19160,21 +19182,34 @@ requirements:
             true,
             &[
                 "seaborn>=0.11.*".to_string(),
+                "abyss>=2.0.2".to_string(),
                 "apptainer>=1.3.2".to_string(),
+                "bamtools".to_string(),
                 "bracken>=2.6.1".to_string(),
                 "bwa-mem2".to_string(),
+                "busco".to_string(),
                 "espresso>=1.3.2".to_string(),
+                "hifiasm".to_string(),
                 "graphviz>=2.40".to_string(),
                 "git".to_string(),
+                "gfatools".to_string(),
+                "kmc".to_string(),
                 "kmtricks".to_string(),
+                "masurca".to_string(),
                 "mash>=2.3".to_string(),
                 "mccortex==1.0".to_string(),
+                "ncbi-datasets-cli".to_string(),
                 "miniasm".to_string(),
+                "pilon".to_string(),
                 "phylip".to_string(),
                 "pplacer>=1.1.alpha17".to_string(),
+                "purge_dups".to_string(),
+                "quast".to_string(),
                 "rpy2>=3.5".to_string(),
+                "ragtag".to_string(),
                 "seqtk>=1.4".to_string(),
                 "snakemake-minimal<8.0.0,>=5.5.2".to_string(),
+                "sra-tools".to_string(),
                 "stringtie".to_string(),
                 "tabix".to_string(),
                 "/work/.build-work/btllib/BUILDROOT/phoreus-btllib/lib/btllib/python".to_string(),
@@ -19192,20 +19227,33 @@ requirements:
         );
         assert!(block.contains("if not line or line.startswith('#'):\n        continue"));
         assert!(block.contains("if line.startswith(('/', './', '../')):\n        continue"));
+        assert!(block.contains("'abyss'"));
         assert!(block.contains("'apptainer'"));
+        assert!(block.contains("'bamtools'"));
         assert!(block.contains("'bracken'"));
+        assert!(block.contains("'busco'"));
         assert!(block.contains("'bwa-mem2'"));
         assert!(block.contains("'espresso'"));
+        assert!(block.contains("'gfatools'"));
         assert!(block.contains("'graphviz'"));
         assert!(block.contains("'git'"));
+        assert!(block.contains("'hifiasm'"));
+        assert!(block.contains("'kmc'"));
         assert!(block.contains("'kmtricks'"));
+        assert!(block.contains("'masurca'"));
         assert!(block.contains("'mash'"));
         assert!(block.contains("'mccortex'"));
+        assert!(block.contains("'ncbi-datasets-cli'"));
         assert!(block.contains("'miniasm'"));
         assert!(block.contains("'phylip'"));
+        assert!(block.contains("'pilon'"));
         assert!(block.contains("'pplacer'"));
+        assert!(block.contains("'purge-dups'"));
+        assert!(block.contains("'quast'"));
+        assert!(block.contains("'ragtag'"));
         assert!(block.contains("'seqtk'"));
         assert!(block.contains("'snakemake-minimal'"));
+        assert!(block.contains("'sra-tools'"));
         assert!(block.contains("'stringtie'"));
         assert!(block.contains("'tabix'"));
         assert!(block.contains("'openblas'"));
@@ -20018,34 +20066,53 @@ requirements:
             host_dep_specs_raw: vec![
                 "python".to_string(),
                 "pip".to_string(),
+                "abyss >=2.0.2".to_string(),
+                "bamtools".to_string(),
                 "beast2 >=2.6.0".to_string(),
                 "bracken >=2.6.1".to_string(),
+                "busco".to_string(),
                 "bwa-mem2".to_string(),
                 "cd-hit".to_string(),
                 "clustalw".to_string(),
                 "espresso >=1.3.2".to_string(),
                 "fasttree".to_string(),
+                "filtlong".to_string(),
+                "flye".to_string(),
+                "gfatools".to_string(),
                 "glimmerhmm".to_string(),
                 "hdf5".to_string(),
+                "hifiasm".to_string(),
                 "iqtree".to_string(),
+                "kmc".to_string(),
                 "kmtricks".to_string(),
                 "mafft".to_string(),
+                "masurca".to_string(),
                 "mash >=2.3".to_string(),
                 "mccortex ==1.0".to_string(),
                 "mscorefonts".to_string(),
                 "miniasm".to_string(),
                 "muscle".to_string(),
+                "ncbi-datasets-cli".to_string(),
                 "numpy".to_string(),
                 "python-edlib >=1.2.1".to_string(),
                 "openmpi".to_string(),
+                "pbccs".to_string(),
                 "pcre".to_string(),
                 "phylip".to_string(),
+                "pilon".to_string(),
                 "pplacer >=1.1.alpha17".to_string(),
                 "prank".to_string(),
+                "purge_dups".to_string(),
+                "quast".to_string(),
+                "racon".to_string(),
+                "ragtag".to_string(),
+                "ratatosk".to_string(),
                 "raxml".to_string(),
                 "seqtk >=1.4".to_string(),
                 "spades".to_string(),
+                "sra-tools".to_string(),
                 "stringtie".to_string(),
+                "tgsgapcloser".to_string(),
             ],
             run_dep_specs_raw: Vec::new(),
             build_deps: BTreeSet::new(),
@@ -20056,32 +20123,51 @@ requirements:
         let reqs = build_python_requirements(&parsed);
         assert!(reqs.iter().any(|r| r == "numpy"));
         assert!(reqs.iter().any(|r| r == "edlib>=1.2.1"));
+        assert!(!reqs.iter().any(|r| r.starts_with("abyss")));
+        assert!(!reqs.iter().any(|r| r == "bamtools"));
         assert!(!reqs.iter().any(|r| r.starts_with("beast2")));
         assert!(!reqs.iter().any(|r| r.starts_with("bracken")));
+        assert!(!reqs.iter().any(|r| r == "busco"));
         assert!(!reqs.iter().any(|r| r == "bwa-mem2"));
         assert!(!reqs.iter().any(|r| r == "cd-hit"));
         assert!(!reqs.iter().any(|r| r == "clustalw"));
         assert!(!reqs.iter().any(|r| r.starts_with("espresso")));
         assert!(!reqs.iter().any(|r| r == "fasttree"));
+        assert!(!reqs.iter().any(|r| r == "filtlong"));
+        assert!(!reqs.iter().any(|r| r == "flye"));
+        assert!(!reqs.iter().any(|r| r == "gfatools"));
         assert!(!reqs.iter().any(|r| r == "glimmerhmm"));
         assert!(!reqs.iter().any(|r| r == "hdf5"));
+        assert!(!reqs.iter().any(|r| r == "hifiasm"));
         assert!(!reqs.iter().any(|r| r == "iqtree"));
+        assert!(!reqs.iter().any(|r| r == "kmc"));
         assert!(!reqs.iter().any(|r| r == "kmtricks"));
         assert!(!reqs.iter().any(|r| r == "mafft"));
+        assert!(!reqs.iter().any(|r| r == "masurca"));
         assert!(!reqs.iter().any(|r| r.starts_with("mash")));
         assert!(!reqs.iter().any(|r| r.starts_with("mccortex")));
         assert!(!reqs.iter().any(|r| r == "mscorefonts"));
         assert!(!reqs.iter().any(|r| r == "miniasm"));
         assert!(!reqs.iter().any(|r| r == "muscle"));
+        assert!(!reqs.iter().any(|r| r == "ncbi-datasets-cli"));
         assert!(!reqs.iter().any(|r| r == "openmpi"));
+        assert!(!reqs.iter().any(|r| r == "pbccs"));
         assert!(!reqs.iter().any(|r| r == "pcre"));
         assert!(!reqs.iter().any(|r| r == "phylip"));
+        assert!(!reqs.iter().any(|r| r == "pilon"));
         assert!(!reqs.iter().any(|r| r.starts_with("pplacer")));
         assert!(!reqs.iter().any(|r| r == "prank"));
+        assert!(!reqs.iter().any(|r| r == "purge-dups"));
+        assert!(!reqs.iter().any(|r| r == "quast"));
+        assert!(!reqs.iter().any(|r| r == "racon"));
+        assert!(!reqs.iter().any(|r| r == "ragtag"));
+        assert!(!reqs.iter().any(|r| r == "ratatosk"));
         assert!(!reqs.iter().any(|r| r == "raxml"));
         assert!(!reqs.iter().any(|r| r.starts_with("seqtk")));
         assert!(!reqs.iter().any(|r| r == "spades"));
+        assert!(!reqs.iter().any(|r| r == "sra-tools"));
         assert!(!reqs.iter().any(|r| r == "stringtie"));
+        assert!(!reqs.iter().any(|r| r == "tgsgapcloser"));
     }
 
     #[test]
