@@ -6530,14 +6530,18 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "glimmerhmm"
             | "hdf5"
             | "iqtree"
+            | "kmtricks"
             | "mafft"
             | "mash"
+            | "mccortex"
             | "mscorefonts"
             | "miniasm"
             | "muscle"
             | "openmpi"
             | "openblas"
             | "pcre"
+            | "phylip"
+            | "pplacer"
             | "prank"
             | "raxml"
             | "metaeuk"
@@ -6616,6 +6620,7 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "openssl-devel"
             | "apptainer"
             | "scala"
+            | "seqtk"
             | "seqkit"
             | "snakemake-minimal"
             | "stringtie"
@@ -12821,12 +12826,14 @@ drop = {{
     'bowtie2', 'bracken', 'bwa', 'bwa-mem2', 'cd-hit', 'clustalw', 'conda',
     'diamond', 'entrez-direct', 'espresso', 'fastqc', 'fasttree', 'geos', 'git',
     'git-lfs', 'glimmerhmm', 'gmap', 'graph-tool-base', 'graphviz', 'hdf5',
-    'hmmer', 'htslib', 'intarna', 'iqtree', 'kallisto', 'lamassemble', 'mafft',
-    'mamba', 'mash', 'maxbin2', 'meme', 'metaeuk', 'micromamba', 'miniasm',
+    'hmmer', 'htslib', 'intarna', 'iqtree', 'kallisto', 'kmtricks',
+    'lamassemble', 'mafft', 'mamba', 'mash', 'maxbin2', 'mccortex', 'meme',
+    'metaeuk', 'micromamba', 'miniasm',
     'minimap2', 'miniprot', 'mscorefonts', 'muscle', 'mummer', 'nb-conda-kernels',
     'openblas', 'libopenblas', 'libblas', 'libcblas', 'mkl', 'mkl-devel', 'pcre',
-    'prank', 'prodigal', 'pytaxonkit', 'raxml', 'salmon', 'scala', 'sepp',
-    'seqkit', 'snakemake-minimal', 'spades', 'star', 'stringtie', 'tabix',
+    'phylip', 'pplacer', 'prank', 'prodigal', 'pytaxonkit', 'raxml', 'salmon',
+    'scala', 'sepp', 'seqkit', 'seqtk', 'snakemake-minimal', 'spades', 'star',
+    'stringtie', 'tabix',
     'taxonkit', 'trimmomatic', 'ucsc-bedgraphtobigwig', 'ucsc-bigwigaverageoverbed',
     'vpt-core',
     'pytorch', 'pytorch-cpu', 'pytorch-gpu', 'torch', 'torchaudio', 'torchtext',
@@ -19021,9 +19028,14 @@ requirements:
                 "espresso>=1.3.2".to_string(),
                 "graphviz>=2.40".to_string(),
                 "git".to_string(),
+                "kmtricks".to_string(),
                 "mash>=2.3".to_string(),
+                "mccortex==1.0".to_string(),
                 "miniasm".to_string(),
+                "phylip".to_string(),
+                "pplacer>=1.1.alpha17".to_string(),
                 "rpy2>=3.5".to_string(),
+                "seqtk>=1.4".to_string(),
                 "snakemake-minimal<8.0.0,>=5.5.2".to_string(),
                 "stringtie".to_string(),
                 "tabix".to_string(),
@@ -19048,8 +19060,13 @@ requirements:
         assert!(block.contains("'espresso'"));
         assert!(block.contains("'graphviz'"));
         assert!(block.contains("'git'"));
+        assert!(block.contains("'kmtricks'"));
         assert!(block.contains("'mash'"));
+        assert!(block.contains("'mccortex'"));
         assert!(block.contains("'miniasm'"));
+        assert!(block.contains("'phylip'"));
+        assert!(block.contains("'pplacer'"));
+        assert!(block.contains("'seqtk'"));
         assert!(block.contains("'snakemake-minimal'"));
         assert!(block.contains("'stringtie'"));
         assert!(block.contains("'tabix'"));
@@ -19857,8 +19874,10 @@ requirements:
                 "glimmerhmm".to_string(),
                 "hdf5".to_string(),
                 "iqtree".to_string(),
+                "kmtricks".to_string(),
                 "mafft".to_string(),
                 "mash >=2.3".to_string(),
+                "mccortex ==1.0".to_string(),
                 "mscorefonts".to_string(),
                 "miniasm".to_string(),
                 "muscle".to_string(),
@@ -19866,8 +19885,11 @@ requirements:
                 "python-edlib >=1.2.1".to_string(),
                 "openmpi".to_string(),
                 "pcre".to_string(),
+                "phylip".to_string(),
+                "pplacer >=1.1.alpha17".to_string(),
                 "prank".to_string(),
                 "raxml".to_string(),
+                "seqtk >=1.4".to_string(),
                 "spades".to_string(),
                 "stringtie".to_string(),
             ],
@@ -19890,15 +19912,20 @@ requirements:
         assert!(!reqs.iter().any(|r| r == "glimmerhmm"));
         assert!(!reqs.iter().any(|r| r == "hdf5"));
         assert!(!reqs.iter().any(|r| r == "iqtree"));
+        assert!(!reqs.iter().any(|r| r == "kmtricks"));
         assert!(!reqs.iter().any(|r| r == "mafft"));
         assert!(!reqs.iter().any(|r| r.starts_with("mash")));
+        assert!(!reqs.iter().any(|r| r.starts_with("mccortex")));
         assert!(!reqs.iter().any(|r| r == "mscorefonts"));
         assert!(!reqs.iter().any(|r| r == "miniasm"));
         assert!(!reqs.iter().any(|r| r == "muscle"));
         assert!(!reqs.iter().any(|r| r == "openmpi"));
         assert!(!reqs.iter().any(|r| r == "pcre"));
+        assert!(!reqs.iter().any(|r| r == "phylip"));
+        assert!(!reqs.iter().any(|r| r.starts_with("pplacer")));
         assert!(!reqs.iter().any(|r| r == "prank"));
         assert!(!reqs.iter().any(|r| r == "raxml"));
+        assert!(!reqs.iter().any(|r| r.starts_with("seqtk")));
         assert!(!reqs.iter().any(|r| r == "spades"));
         assert!(!reqs.iter().any(|r| r == "stringtie"));
     }
