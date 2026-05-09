@@ -15122,6 +15122,7 @@ fn map_perl_core_dependency(dep: &str) -> Option<String> {
         "perl-encode" => "perl-Encode",
         "perl-data-dumper" => "perl-Data-Dumper",
         "perl-xml-parser" => "perl-XML-Parser",
+        "perl-app-cpanminus" => "perl-App-cpanminus",
         _ => return None,
     };
     Some(mapped.to_string())
@@ -15170,8 +15171,10 @@ fn canonicalize_perl_module_segment(segment: &str) -> String {
         "checkbin" => "CheckBin".to_string(),
         "cpan" => "CPAN".to_string(),
         "dbd" => "DBD".to_string(),
+        "dbix" => "DBIx".to_string(),
         "dbi" => "DBI".to_string(),
         "extutils" => "ExtUtils".to_string(),
+        "hpc" => "HPC".to_string(),
         "http" => "HTTP".to_string(),
         "idn" => "IDN".to_string(),
         "io" => "IO".to_string(),
@@ -15179,16 +15182,21 @@ fn canonicalize_perl_module_segment(segment: &str) -> String {
         "json" => "JSON".to_string(),
         "lwp" => "LWP".to_string(),
         "mime" => "MIME".to_string(),
+        "moosex" => "MooseX".to_string(),
         "moreutils" => "MoreUtils".to_string(),
         "namespacesupport" => "NamespaceSupport".to_string(),
         "ssl" => "SSL".to_string(),
         "sax" => "SAX".to_string(),
         "ssleay" => "SSLeay".to_string(),
+        "asciitable" => "ASCIITable".to_string(),
+        "ansitable" => "ANSITable".to_string(),
+        "datetime" => "DateTime".to_string(),
         "uri" => "URI".to_string(),
         "utf8" => "UTF8".to_string(),
         "www" => "WWW".to_string(),
         "xml" => "XML".to_string(),
         "xs" => "XS".to_string(),
+        "yaml" => "YAML".to_string(),
         other => {
             let mut chars = other.chars();
             if let Some(first) = chars.next() {
@@ -15224,44 +15232,7 @@ fn perl_module_name_from_conda(dep: &str) -> Option<String> {
     let parts = module
         .split('-')
         .filter(|p| !p.is_empty())
-        .map(|part| match part {
-            "api" => "API".to_string(),
-            "ca" => "CA".to_string(),
-            "cgi" => "CGI".to_string(),
-            "checkbin" => "CheckBin".to_string(),
-            "cpan" => "CPAN".to_string(),
-            "dbi" => "DBI".to_string(),
-            "dbd" => "DBD".to_string(),
-            "extutils" => "ExtUtils".to_string(),
-            "http" => "HTTP".to_string(),
-            "io" => "IO".to_string(),
-            "ipc" => "IPC".to_string(),
-            "json" => "JSON".to_string(),
-            "lwp" => "LWP".to_string(),
-            "mime" => "MIME".to_string(),
-            "namespacesupport" => "NamespaceSupport".to_string(),
-            "sax" => "SAX".to_string(),
-            "ssl" => "SSL".to_string(),
-            "ssleay" => "SSLeay".to_string(),
-            "uri" => "URI".to_string(),
-            "utf8" => "UTF8".to_string(),
-            "www" => "WWW".to_string(),
-            "xml" => "XML".to_string(),
-            "xs" => "XS".to_string(),
-            "yaml" => "YAML".to_string(),
-            other => {
-                let mut chars = other.chars();
-                match chars.next() {
-                    Some(first) => {
-                        let mut out = String::new();
-                        out.push(first.to_ascii_uppercase());
-                        out.push_str(chars.as_str());
-                        out
-                    }
-                    None => String::new(),
-                }
-            }
-        })
+        .map(canonicalize_perl_module_segment)
         .filter(|p| !p.is_empty())
         .collect::<Vec<_>>();
 
@@ -17893,6 +17864,34 @@ mod tests {
         assert_eq!(
             map_build_dependency("perl(mozilla::ca)"),
             "perl(Mozilla::CA)".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl-app-cpanminus"),
+            "perl-App-cpanminus".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl-hpc-runner-command"),
+            "perl(HPC::Runner::Command)".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl-text-asciitable"),
+            "perl(Text::ASCIITable)".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl-text-ansitable"),
+            "perl(Text::ANSITable)".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl-datetime"),
+            "perl(DateTime)".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl-dbix-class"),
+            "perl(DBIx::Class)".to_string()
+        );
+        assert_eq!(
+            map_build_dependency("perl-moosex-app-role-log4perl"),
+            "perl(MooseX::App::Role::Log4perl)".to_string()
         );
         assert_eq!(
             map_build_dependency("perl-devel-checkbin"),
