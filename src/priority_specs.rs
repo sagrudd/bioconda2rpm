@@ -13404,6 +13404,12 @@ fn render_python_venv_setup_block(
     let cython_metadata_bootstrap = python_requirements
         .iter()
         .any(|req| req == "cython" || req.starts_with("ete4"));
+    let versioneer_metadata_bootstrap = python_requirements.iter().any(|req| {
+        req == "fisher"
+            || req.starts_with("fisher<")
+            || req.starts_with("fisher>")
+            || req.starts_with("fisher=")
+    });
     let package_name = normalize_name(package_name);
     let package_specific_prelude = if package_name == "pysam" {
         "if [ -d htslib/htslib ]; then\n\
@@ -13421,15 +13427,18 @@ fi\n"
         String::new()
     } else {
         let requirements_body = python_requirements.join("\n");
-        let preinstall_legacy_build_bits = if legacy_pomegranate_mode {
-            "\"$PIP\" install \"cython<3\" \"numpy<2\" \"scipy<2\"\n"
+        let mut preinstall_legacy_build_bits = String::new();
+        if legacy_pomegranate_mode {
+            preinstall_legacy_build_bits
+                .push_str("\"$PIP\" install \"cython<3\" \"numpy<2\" \"scipy<2\"\n");
         } else if legacy_pysam_mode {
-            "\"$PIP\" install \"cython<3\" \"numpy<2\"\n"
+            preinstall_legacy_build_bits.push_str("\"$PIP\" install \"cython<3\" \"numpy<2\"\n");
         } else if cython_metadata_bootstrap {
-            "\"$PIP\" install \"cython<3\" \"numpy<2\"\n"
-        } else {
-            ""
-        };
+            preinstall_legacy_build_bits.push_str("\"$PIP\" install \"cython<3\" \"numpy<2\"\n");
+        }
+        if versioneer_metadata_bootstrap {
+            preinstall_legacy_build_bits.push_str("\"$PIP\" install \"versioneer<0.20\"\n");
+        }
         let compile_flags = " --pip-args \"--no-build-isolation\"";
         let install_flags = " --no-build-isolation";
         format!(
@@ -19983,6 +19992,12 @@ requirements:
             pybigwig_block
                 .contains("grep -Eiq '^(pysam|htslib|pybigwig)([<>=!~ ;]|$)' requirements.in")
         );
+    }
+
+    #[test]
+    fn python_venv_install_bootstraps_versioneer_for_fisher_sdists() {
+        let block = render_python_venv_setup_block("example", true, &["fisher".to_string()]);
+        assert!(block.contains("\"$PIP\" install \"versioneer<0.20\""));
     }
 
     #[test]
