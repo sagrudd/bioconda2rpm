@@ -245,6 +245,9 @@ const PHOREUS_PYTHON_PACKAGE: &str = "phoreus-python-3.11";
 const PHOREUS_PYTHON_VERSION_27: &str = "2.7";
 const PHOREUS_PYTHON_FULL_VERSION_27: &str = "2.7.18";
 const PHOREUS_PYTHON_PACKAGE_27: &str = "phoreus-python-2.7";
+const PHOREUS_PYTHON_VERSION_36: &str = "3.6";
+const PHOREUS_PYTHON_FULL_VERSION_36: &str = "3.6.15";
+const PHOREUS_PYTHON_PACKAGE_36: &str = "phoreus-python-3.6";
 const PHOREUS_PYTHON_VERSION_37: &str = "3.7";
 const PHOREUS_PYTHON_FULL_VERSION_37: &str = "3.7.17";
 const PHOREUS_PYTHON_PACKAGE_37: &str = "phoreus-python-3.7";
@@ -276,6 +279,13 @@ const PHOREUS_PYTHON_RUNTIME_27: PhoreusPythonRuntime = PhoreusPythonRuntime {
     minor_str: PHOREUS_PYTHON_VERSION_27,
     full_version: PHOREUS_PYTHON_FULL_VERSION_27,
     package: PHOREUS_PYTHON_PACKAGE_27,
+};
+const PHOREUS_PYTHON_RUNTIME_36: PhoreusPythonRuntime = PhoreusPythonRuntime {
+    major: 3,
+    minor: 6,
+    minor_str: PHOREUS_PYTHON_VERSION_36,
+    full_version: PHOREUS_PYTHON_FULL_VERSION_36,
+    package: PHOREUS_PYTHON_PACKAGE_36,
 };
 const PHOREUS_PYTHON_RUNTIME_37: PhoreusPythonRuntime = PhoreusPythonRuntime {
     major: 3,
@@ -319,8 +329,9 @@ const PHOREUS_PYTHON_RUNTIME_313: PhoreusPythonRuntime = PhoreusPythonRuntime {
     full_version: PHOREUS_PYTHON_FULL_VERSION_313,
     package: PHOREUS_PYTHON_PACKAGE_313,
 };
-const PHOREUS_PYTHON_RUNTIMES: [PhoreusPythonRuntime; 8] = [
+const PHOREUS_PYTHON_RUNTIMES: [PhoreusPythonRuntime; 9] = [
     PHOREUS_PYTHON_RUNTIME_27,
+    PHOREUS_PYTHON_RUNTIME_36,
     PHOREUS_PYTHON_RUNTIME_37,
     PHOREUS_PYTHON_RUNTIME_38,
     PHOREUS_PYTHON_RUNTIME_39,
@@ -3742,6 +3753,7 @@ fn normalize_dep_specs_to_set(raw_specs: &[String]) -> BTreeSet<String> {
 fn conda_py_for_runtime(runtime: PhoreusPythonRuntime) -> &'static str {
     match (runtime.major, runtime.minor) {
         (2, 7) => "27",
+        (3, 6) => "36",
         (3, 7) => "37",
         (3, 8) => "38",
         (3, 9) => "39",
@@ -5418,26 +5430,31 @@ fn infer_selector_python_runtime(
 
     let default_ctx = SelectorContext::for_rpm_build(target_arch);
     let skip_lines = recipe_build_skip_lines(meta_text);
-    for runtime in PHOREUS_PYTHON_RUNTIMES {
-        if runtime.package == PHOREUS_PYTHON_RUNTIME_311.package {
-            continue;
-        }
-        let runtime_ctx = SelectorContext::for_rpm_build_with_python(
-            target_arch,
-            runtime.major as i64,
-            runtime.minor as i64,
-        );
-        if skip_lines.iter().any(|line| {
-            let Some((_, selector)) = split_selector(line) else {
-                return false;
-            };
-            evaluate_selector(selector, &default_ctx) && !evaluate_selector(selector, &runtime_ctx)
-        }) {
-            return Some(runtime);
-        }
-    }
-
-    None
+    let candidates = PHOREUS_PYTHON_RUNTIMES
+        .iter()
+        .copied()
+        .filter(|runtime| runtime.package != PHOREUS_PYTHON_RUNTIME_311.package)
+        .filter(|runtime| {
+            let runtime_ctx = SelectorContext::for_rpm_build_with_python(
+                target_arch,
+                runtime.major as i64,
+                runtime.minor as i64,
+            );
+            skip_lines.iter().any(|line| {
+                let Some((_, selector)) = split_selector(line) else {
+                    return false;
+                };
+                evaluate_selector(selector, &default_ctx)
+                    && !evaluate_selector(selector, &runtime_ctx)
+            })
+        })
+        .collect::<Vec<_>>();
+    candidates
+        .iter()
+        .copied()
+        .filter(|runtime| runtime.major == 3)
+        .min_by_key(|runtime| runtime.minor)
+        .or_else(|| candidates.into_iter().next())
 }
 
 fn infer_python_runtime_from_meta_dependencies(meta_text: &str) -> Option<PhoreusPythonRuntime> {
@@ -6339,6 +6356,7 @@ fn phoreus_python_runtime_from_dep(dep: &str) -> Option<PhoreusPythonRuntime> {
     match normalize_dependency_token(dep).as_str() {
         PHOREUS_PYTHON_PACKAGE_27 => Some(PHOREUS_PYTHON_RUNTIME_27),
         "python2.7" | "python-2.7" => Some(PHOREUS_PYTHON_RUNTIME_27),
+        PHOREUS_PYTHON_PACKAGE_36 => Some(PHOREUS_PYTHON_RUNTIME_36),
         PHOREUS_PYTHON_PACKAGE_37 => Some(PHOREUS_PYTHON_RUNTIME_37),
         PHOREUS_PYTHON_PACKAGE_38 => Some(PHOREUS_PYTHON_RUNTIME_38),
         PHOREUS_PYTHON_PACKAGE_39 => Some(PHOREUS_PYTHON_RUNTIME_39),
@@ -14978,6 +14996,11 @@ fn is_phoreus_python_toolchain_dependency(dep: &str) -> bool {
             | "setuptools"
             | "wheel"
             | PHOREUS_PYTHON_PACKAGE_27
+            | PHOREUS_PYTHON_PACKAGE_36
+            | PHOREUS_PYTHON_PACKAGE_37
+            | PHOREUS_PYTHON_PACKAGE_38
+            | PHOREUS_PYTHON_PACKAGE_39
+            | PHOREUS_PYTHON_PACKAGE_310
             | PHOREUS_PYTHON_PACKAGE
             | PHOREUS_PYTHON_PACKAGE_312
             | PHOREUS_PYTHON_PACKAGE_313
@@ -19324,6 +19347,7 @@ build:
         let py37_only = "build:\n  skip: True  # [py!=37]\nrequirements:\n  run:\n    - python\n";
         let py39_only = "build:\n  skip: True  # [osx or py<39 or py>39]\nrequirements:\n  run:\n    - python\n";
         let py37_or_py38_only = "build:\n  skip: True  # [py > 38 or py < 37 or osx]\nrequirements:\n  host:\n    - python\n  run:\n    - python\n";
+        let py36_max = "build:\n  skip: True  # [py>=37]\nrequirements:\n  run:\n    - python\n";
         let py312_plus =
             "build:\n  skip: True  # [py<312]\nrequirements:\n  run:\n    - python >=3\n";
 
@@ -19344,6 +19368,12 @@ build:
                 .expect("py37 runtime")
                 .package,
             PHOREUS_PYTHON_PACKAGE_37
+        );
+        assert_eq!(
+            infer_selector_python_runtime(py36_max, "x86_64")
+                .expect("py36 runtime")
+                .package,
+            PHOREUS_PYTHON_PACKAGE_36
         );
         assert_eq!(
             infer_selector_python_runtime(py312_plus, "x86_64")
@@ -20309,6 +20339,7 @@ requirements:
     #[test]
     fn phoreus_legacy_python3_bootstrap_specs_are_rendered_with_expected_names() {
         for (runtime, name, version) in [
+            (PHOREUS_PYTHON_RUNTIME_36, "phoreus-python-3.6", "3.6.15"),
             (PHOREUS_PYTHON_RUNTIME_37, "phoreus-python-3.7", "3.7.17"),
             (PHOREUS_PYTHON_RUNTIME_38, "phoreus-python-3.8", "3.8.20"),
             (PHOREUS_PYTHON_RUNTIME_39, "phoreus-python-3.9", "3.9.23"),
