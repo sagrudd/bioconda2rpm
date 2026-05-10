@@ -13483,6 +13483,8 @@ for raw in raw_lines:
         line += ',<3' if re.search(r'[>=!~]', line) else '<3'
     if sys.version_info[0] < 3 and name == 'pyyaml' and '<' not in line and '==' not in line:
         line += ',<5.4' if re.search(r'[>=!~]', line) else '<5.4'
+    if sys.version_info[0] < 3 and name == 'mpi4py' and '<' not in line and '==' not in line:
+        line += ',<3.1' if re.search(r'[>=!~]', line) else '<3.1'
     lines.append(line)
 with open('requirements.in', 'w') as handle:
     handle.write('\n'.join(lines) + ('\n' if lines else ''))
@@ -20053,6 +20055,8 @@ requirements:
         assert!(block.contains("grep -Eiq '^(mpi4py)([<>=!~ ;]|$)' requirements.in"));
         assert!(block.contains("dnf -y install openmpi-devel"));
         assert!(block.contains("export MPICC=/usr/lib64/openmpi/bin/mpicc"));
+        assert!(block.contains("name == 'mpi4py'"));
+        assert!(block.contains("line += ',<3.1'"));
     }
 
     #[test]
