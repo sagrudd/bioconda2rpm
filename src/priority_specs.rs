@@ -13301,6 +13301,10 @@ if grep -Eiq '^(mpi4py)([<>=!~ ;]|$)' requirements.in; then
         export MPICC="$(command -v mpicc)"
     fi
 fi
+setuptools_req="$(grep -Ei '^(setuptools)([<>=!~ ;]|$)' requirements.in | head -n 1 || true)"
+if [ -n "$setuptools_req" ]; then
+    "$PIP" install "$setuptools_req"
+fi
 {preinstall_legacy_build_bits}"$PIP" install pip-tools
 if pip-compile --generate-hashes requirements.in --output-file requirements.lock{compile_flags}; then
     "$PIP" install{install_flags} --require-hashes -r requirements.lock
@@ -19697,6 +19701,20 @@ requirements:
         assert!(block.contains("grep -Eiq '^(mpi4py)([<>=!~ ;]|$)' requirements.in"));
         assert!(block.contains("dnf -y install openmpi-devel"));
         assert!(block.contains("export MPICC=/usr/lib64/openmpi/bin/mpicc"));
+    }
+
+    #[test]
+    fn python_venv_install_preinstalls_setuptools_caps() {
+        let block = render_python_venv_setup_block(
+            true,
+            &["cython<3".to_string(), "setuptools<58".to_string()],
+        );
+        assert!(
+            block.contains(
+                "setuptools_req=\"$(grep -Ei '^(setuptools)([<>=!~ ;]|$)' requirements.in"
+            )
+        );
+        assert!(block.contains("\"$PIP\" install \"$setuptools_req\""));
     }
 
     #[test]
