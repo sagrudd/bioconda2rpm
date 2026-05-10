@@ -13399,7 +13399,7 @@ fi\n"
 {requirements_body}
 REQEOF
 python - <<'PYREQSAN'
-import re
+import re, sys
 drop = {{
     'abyss', 'apptainer', 'augustus', 'bamtools', 'bbmap', 'beast2', 'bedops',
     'bifrost', 'boost-cpp', 'bowtie', 'bowtie2', 'bracken', 'busco', 'bwa',
@@ -13435,6 +13435,8 @@ for raw in raw_lines:
     if name in drop or name.startswith('nvidia-'):
         continue
     line = re.sub(r'(?P<op>>=|<=|>|<|~=)(?P<ver>[0-9][0-9A-Za-z_.!+-]*)\.\*', r'\g<op>\g<ver>', line)
+    if sys.version_info[0] < 3 and name == 'biopython' and '<' not in line and '==' not in line:
+        line += ',<1.77' if re.search(r'[>=!~]', line) else '<1.77'
     lines.append(line)
 with open('requirements.in', 'w') as handle:
     handle.write('\n'.join(lines) + ('\n' if lines else ''))
@@ -19945,6 +19947,15 @@ requirements:
         assert!(block.contains("dnf -y install mariadb-connector-c-devel"));
         assert!(block.contains("/usr/include/mysql/my_config.h"));
         assert!(block.contains("#include <mariadb_version.h>"));
+    }
+
+    #[test]
+    fn python_venv_sanitizes_legacy_py2_biopython_bounds() {
+        let block =
+            render_python_venv_setup_block("example", true, &["biopython>=1.70".to_string()]);
+        assert!(block.contains("import re, sys"));
+        assert!(block.contains("name == 'biopython'"));
+        assert!(block.contains("line += ',<1.77'"));
     }
 
     #[test]
