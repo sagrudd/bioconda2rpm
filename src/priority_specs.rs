@@ -6166,6 +6166,29 @@ fn build_python_requirements_for_runtime(
             out.insert(normalized_req);
         }
     }
+    for raw in parsed
+        .build_dep_specs_raw
+        .iter()
+        .chain(parsed.host_dep_specs_raw.iter())
+        .chain(parsed.run_dep_specs_raw.iter())
+    {
+        let Some(dep) = parse_dependency_spec(raw) else {
+            continue;
+        };
+        if dep.name == "setuptools" && !dep.constraints.is_empty() {
+            let constraints = dep
+                .constraints
+                .iter()
+                .map(format_conda_version_requirement)
+                .collect::<Vec<_>>()
+                .join(",");
+            out.insert(format!("setuptools{constraints}"));
+        }
+    }
+    if normalize_name(&parsed.package_name) == "pysam" {
+        out.remove("cython");
+        out.insert("cython<3".to_string());
+    }
     // Legacy pomegranate releases (used by Bioconda CNVKit) are not compatible
     // with Cython 3 / NumPy 2; force compatible caps in the locked venv set.
     if out.iter().any(|req| req.starts_with("pomegranate")) {
@@ -19593,6 +19616,39 @@ requirements:
         let reqs = build_python_requirements(&parsed);
         assert!(reqs.contains(&"ete4".to_string()));
         assert!(reqs.contains(&"cython".to_string()));
+    }
+
+    #[test]
+    fn python_requirements_preserve_legacy_setuptools_cap_for_pysam() {
+        let parsed = ParsedMeta {
+            package_name: "pysam".to_string(),
+            version: "0.15.2".to_string(),
+            build_number: "12".to_string(),
+            source_url: "https://example.invalid/pysam-0.15.2.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/pysam".to_string(),
+            license: "MIT".to_string(),
+            summary: "pysam".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("$PYTHON -m pip install . --no-deps".to_string()),
+            output_build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec![
+                "python >=3.7,<3.8".to_string(),
+                "cython".to_string(),
+                "setuptools <58".to_string(),
+            ],
+            run_dep_specs_raw: vec!["python >=3.7,<3.8".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+
+        let reqs = build_python_requirements_for_runtime(&parsed, 3, 7);
+        assert!(reqs.contains(&"setuptools<58".to_string()));
+        assert!(reqs.contains(&"cython<3".to_string()));
+        assert!(!reqs.contains(&"cython".to_string()));
     }
 
     #[test]
