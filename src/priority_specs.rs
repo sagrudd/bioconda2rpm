@@ -10722,6 +10722,8 @@ fi\n\
 # Legacy pysam source archives vendor HTSlib as htslib/htslib/*.h, while\n\
 # generated extension sources include headers as htslib/*.h.\n\
 if [[ \"%{{tool}}\" == \"pysam\" && -d \"htslib/htslib\" ]]; then\n\
+  mkdir -p \"$PREFIX/include\"\n\
+  ln -snf \"$(pwd)/htslib/htslib\" \"$PREFIX/include/htslib\" || true\n\
   export CFLAGS=\"-I$(pwd)/htslib ${{CFLAGS:-}}\"\n\
   export CPPFLAGS=\"-I$(pwd)/htslib ${{CPPFLAGS:-}}\"\n\
 fi\n\
@@ -23623,6 +23625,7 @@ requirements:
         assert!(spec.contains("sys.version_info >= (3, 11)"));
         assert!(spec.contains("cpython\\/longintrepr.h"));
         assert!(spec.contains("htslib/htslib"));
+        assert!(spec.contains("\"$PREFIX/include/htslib\""));
         assert!(spec.contains("$(pwd)/htslib"));
         assert!(spec.contains("-name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx'"));
     }
