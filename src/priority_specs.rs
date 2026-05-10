@@ -13521,7 +13521,10 @@ if [ -n "$setuptools_req" ]; then
 fi
 {preinstall_legacy_build_bits}"$PIP" install pip-tools
 if pip-compile --generate-hashes requirements.in --output-file requirements.lock{compile_flags}; then
-    "$PIP" install{install_flags} --require-hashes -r requirements.lock
+    if ! "$PIP" install{install_flags} --require-hashes -r requirements.lock; then
+        echo "bioconda2rpm: hash-locked pip install failed; falling back to direct no-build-isolation install for legacy sdists" >&2
+        "$PIP" install{install_flags} -r requirements.in
+    fi
 else
     echo "bioconda2rpm: pip-compile failed; falling back to direct no-build-isolation install for legacy sdists" >&2
     "$PIP" install{install_flags} -r requirements.in
@@ -19971,6 +19974,12 @@ requirements:
         let block = render_python_venv_setup_block("example", true, &["cigar".to_string()]);
         assert!(block.contains("if pip-compile --generate-hashes requirements.in"));
         assert!(block.contains("pip-compile failed; falling back to direct no-build-isolation"));
+        assert!(block.contains("if ! \"$PIP\" install"));
+        assert!(
+            block.contains(
+                "hash-locked pip install failed; falling back to direct no-build-isolation"
+            )
+        );
         assert!(
             block.contains(
                 "\"$PIP\" install --no-build-isolation --no-use-pep517 -r requirements.in"
