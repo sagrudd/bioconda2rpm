@@ -5555,6 +5555,16 @@ fn evaluate_selector_term(term: &str, ctx: &SelectorContext) -> bool {
 }
 
 fn evaluate_python_selector(term: &str, ctx: &SelectorContext) -> Option<bool> {
+    let compact;
+    let term = if term.chars().any(char::is_whitespace) {
+        compact = term
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect::<String>();
+        compact.as_str()
+    } else {
+        term
+    };
     if !term.starts_with("py") {
         return None;
     }
@@ -19078,6 +19088,7 @@ build:
     fn selector_context_infers_supported_python_minor_versions() {
         let py37_only = "build:\n  skip: True  # [py!=37]\nrequirements:\n  run:\n    - python\n";
         let py39_only = "build:\n  skip: True  # [osx or py<39 or py>39]\nrequirements:\n  run:\n    - python\n";
+        let py37_or_py38_only = "build:\n  skip: True  # [py > 38 or py < 37 or osx]\nrequirements:\n  host:\n    - python\n  run:\n    - python\n";
         let py312_plus =
             "build:\n  skip: True  # [py<312]\nrequirements:\n  run:\n    - python >=3\n";
 
@@ -19092,6 +19103,12 @@ build:
                 .expect("py39 runtime")
                 .package,
             PHOREUS_PYTHON_PACKAGE_39
+        );
+        assert_eq!(
+            infer_selector_python_runtime(py37_or_py38_only, "x86_64")
+                .expect("py37 runtime")
+                .package,
+            PHOREUS_PYTHON_PACKAGE_37
         );
         assert_eq!(
             infer_selector_python_runtime(py312_plus, "x86_64")
