@@ -6808,6 +6808,7 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "bwa-mem2"
             | "blast"
             | "cd-hit"
+            | "clangdev"
             | "clustalw"
             | "espresso"
             | "filtlong"
@@ -6924,6 +6925,7 @@ fn is_python_ecosystem_dependency_name(normalized: &str) -> bool {
             | "seqtk"
             | "seqkit"
             | "snakemake-minimal"
+            | "sqlite"
             | "stringtie"
             | "zlib"
             | "zlib-devel"
@@ -19648,6 +19650,8 @@ source:
         assert_eq!(conda_dep_to_pip_requirement("nltk_data"), None);
         assert_eq!(conda_dep_to_pip_requirement("openbabel"), None);
         assert_eq!(conda_dep_to_pip_requirement("rdkit"), None);
+        assert_eq!(conda_dep_to_pip_requirement("clangdev"), None);
+        assert_eq!(conda_dep_to_pip_requirement("sqlite"), None);
         assert_eq!(
             conda_dep_to_pip_requirement("pytables >=3.5.*"),
             Some("tables>=3.5".to_string())
