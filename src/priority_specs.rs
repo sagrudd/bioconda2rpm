@@ -13481,6 +13481,8 @@ for raw in raw_lines:
         line += ',<0.9' if re.search(r'[>=!~]', line) else '<0.9'
     if sys.version_info[0] < 3 and name == 'cython' and '<' not in line and '==' not in line:
         line += ',<3' if re.search(r'[>=!~]', line) else '<3'
+    if sys.version_info[0] < 3 and name == 'pyyaml' and '<' not in line and '==' not in line:
+        line += ',<5.4' if re.search(r'[>=!~]', line) else '<5.4'
     lines.append(line)
 with open('requirements.in', 'w') as handle:
     handle.write('\n'.join(lines) + ('\n' if lines else ''))
@@ -20014,6 +20016,13 @@ requirements:
         let block = render_python_venv_setup_block("example", true, &["cython".to_string()]);
         assert!(block.contains("name == 'cython'"));
         assert!(block.contains("line += ',<3'"));
+    }
+
+    #[test]
+    fn python_venv_install_constrains_pyyaml_for_python2_sdists() {
+        let block = render_python_venv_setup_block("example", true, &["pyyaml".to_string()]);
+        assert!(block.contains("name == 'pyyaml'"));
+        assert!(block.contains("line += ',<5.4'"));
     }
 
     #[test]
