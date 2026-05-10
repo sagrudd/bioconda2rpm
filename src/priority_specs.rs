@@ -13554,7 +13554,7 @@ then\n\
 else\n\
   if ! \"$PYTHON\" -m venv \"$PREFIX/venv\"; then\n\
     \"$PIP\" install 'virtualenv==20.15.1'\n\
-    \"$PYTHON\" -m virtualenv --pip 20.3.4 --setuptools 59.6.0 --wheel 0.37.1 \"$PREFIX/venv\"\n\
+    \"$PYTHON\" -m virtualenv --no-download --pip bundle --setuptools bundle --wheel bundle \"$PREFIX/venv\"\n\
   fi\n\
 fi\n\
 export VIRTUAL_ENV=\"$PREFIX/venv\"\n\
@@ -20221,7 +20221,7 @@ requirements:
         );
         assert!(
             block.contains(
-                "\"$PYTHON\" -m virtualenv --pip 20.3.4 --setuptools 59.6.0 --wheel 0.37.1"
+                "\"$PYTHON\" -m virtualenv --no-download --pip bundle --setuptools bundle --wheel bundle"
             )
         );
         assert!(block.contains("\"$PIP\" install 'virtualenv==20.15.1'"));
