@@ -9135,9 +9135,10 @@ fn render_payload_spec_minimal(
         }
     };
     let source_relsubdir = ".".to_string();
+    let runtime_only_metapackage = is_runtime_only_metapackage(parsed);
     let python_recipe = is_python_recipe(parsed) || python_script_hint;
     let python_runtime = select_phoreus_python_runtime(parsed, python_recipe);
-    let python_requirements = if python_recipe {
+    let python_requirements = if python_recipe && !runtime_only_metapackage {
         build_python_requirements_for_runtime(parsed, python_runtime.major, python_runtime.minor)
     } else {
         Vec::new()
@@ -9168,7 +9169,6 @@ fn render_payload_spec_minimal(
     let rust_runtime_required = scope.rust_runtime_required;
     let nim_runtime_required = scope.nim_runtime_required;
     let perl_recipe = normalize_name(&parsed.package_name).starts_with("perl-");
-    let runtime_only_metapackage = is_runtime_only_metapackage(parsed);
     let needs_libdeflate = recipe_dep_mentions(parsed, "libdeflate")
         || recipe_dep_mentions(parsed, "libdeflate-devel");
     let needs_cereal = recipe_dep_mentions(parsed, "cereal");
@@ -9420,7 +9420,8 @@ chmod 0755 buildsrc/build.sh\n"
         &parsed.build_number,
         &scope,
     );
-    let python_venv_setup = render_python_venv_setup_block(python_recipe, &python_requirements);
+    let python_venv_setup =
+        render_python_venv_setup_block(scope.python_runtime_required, &python_requirements);
     let gsl_prefix_shim_block = render_gsl_prefix_shim_block(parsed);
     let build_commands = if scope.recipe_build_sh_required {
         "echo \"bioconda2rpm minimal mode: recipe build.sh retained for install phase\"\n"
@@ -9554,7 +9555,7 @@ fi\n";
     } else {
         String::new()
     };
-    let python_binary_post_macros = if python_recipe {
+    let python_binary_post_macros = if scope.python_runtime_required {
         "%global __strip /bin/true\n%global __objdump /bin/true\n"
     } else {
         ""
@@ -23704,6 +23705,7 @@ requirements:
         assert!(spec.contains("BuildRequires:  bash"));
         assert!(!spec.contains("BuildRequires:  phoreus-python"));
         assert!(!spec.contains("BuildRequires:  chrpath"));
+        assert!(!spec.contains("python -m venv"));
     }
 
     #[test]
