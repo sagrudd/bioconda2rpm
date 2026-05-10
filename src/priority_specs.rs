@@ -4798,8 +4798,18 @@ fn process_tool(
     }
 
     let mut package_build_config = build_config.clone();
-    if package_build_config.refresh_files || manual_source_staged {
+    if package_build_config.refresh_files || manual_source_staged || staged_build_sh_name.is_some()
+    {
         package_build_config.source_srpm_path = None;
+        if staged_build_sh_name.is_some()
+            && !package_build_config.refresh_files
+            && !manual_source_staged
+        {
+            log_progress(format!(
+                "phase=srpm-reuse status=disabled package={} version={} reason=staged-build-script-source",
+                software_slug, parsed.version
+            ));
+        }
     } else {
         package_build_config.source_srpm_path =
             list::authoritative_srpm_for(&build_config.topdir, &software_slug, &parsed.version);
