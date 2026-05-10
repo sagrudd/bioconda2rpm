@@ -13185,7 +13185,7 @@ fn render_python_venv_setup_block(python_recipe: bool, python_requirements: &[St
         let preinstall_legacy_build_bits = if legacy_pomegranate_mode {
             "\"$PIP\" install \"cython<3\" \"numpy<2\" \"scipy<2\"\n"
         } else if cython_metadata_bootstrap {
-            "\"$PIP\" install \"cython\"\n"
+            "\"$PIP\" install \"cython\" \"numpy<2\"\n"
         } else {
             ""
         };
@@ -19552,7 +19552,7 @@ requirements:
     fn python_venv_install_preinstalls_cython_for_metadata_bootstrap() {
         let block =
             render_python_venv_setup_block(true, &["cython".to_string(), "ete4".to_string()]);
-        assert!(block.contains("\"$PIP\" install \"cython\"\n"));
+        assert!(block.contains("\"$PIP\" install \"cython\" \"numpy<2\"\n"));
         assert!(block.contains("pip-compile --generate-hashes"));
         assert!(block.contains("--pip-args \"--no-build-isolation\""));
     }
