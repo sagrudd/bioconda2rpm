@@ -9198,6 +9198,22 @@ export CXXFLAGS=\"${CXXFLAGS:-}\"\n\
 export CPPFLAGS=\"${CPPFLAGS:-}\"\n\
 export LDFLAGS=\"${LDFLAGS:-}\"\n",
         );
+        out.push_str(
+            "# Expose include/lib/pkg-config roots from installed Phoreus dependencies.\n\
+if [[ -d /usr/local/phoreus ]]; then\n\
+  while IFS= read -r -d '' dep_include; do\n\
+    case \":${CPATH:-}:\" in *\":$dep_include:\"*) ;; *) export CPATH=\"${CPATH:+$CPATH:}$dep_include\" ;; esac\n\
+  done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 5 -type d -name include -print0 2>/dev/null)\n\
+  while IFS= read -r -d '' dep_lib; do\n\
+    case \":${LIBRARY_PATH:-}:\" in *\":$dep_lib:\"*) ;; *) export LIBRARY_PATH=\"$dep_lib${LIBRARY_PATH:+:$LIBRARY_PATH}\" ;; esac\n\
+    case \":${LD_LIBRARY_PATH:-}:\" in *\":$dep_lib:\"*) ;; *) export LD_LIBRARY_PATH=\"$dep_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\" ;; esac\n\
+    case \" ${LDFLAGS:-} \" in *\" -L$dep_lib \"*) ;; *) export LDFLAGS=\"-L$dep_lib ${LDFLAGS:-}\" ;; esac\n\
+  done < <(find /usr/local/phoreus -mindepth 3 -maxdepth 5 -type d \\( -name lib -o -name lib64 \\) -print0 2>/dev/null)\n\
+  while IFS= read -r -d '' dep_pc; do\n\
+    case \":${PKG_CONFIG_PATH:-}:\" in *\":$dep_pc:\"*) ;; *) export PKG_CONFIG_PATH=\"$dep_pc${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}\" ;; esac\n\
+  done < <(find /usr/local/phoreus -maxdepth 6 -type d -name pkgconfig -print0 2>/dev/null)\n\
+fi\n",
+        );
     }
 
     if scope.conda_pkg_vars_required {
@@ -26631,6 +26647,10 @@ $R CMD INSTALL --build .
             "%global bioconda2rpm_build_scope compiler-env,parallel-env,sparsehash-configure-fallback"
         ));
         assert!(spec.contains("BuildRequires:  sparsehash-devel"));
+        assert!(
+            spec.contains("find /usr/local/phoreus -mindepth 3 -maxdepth 5 -type d -name include")
+        );
+        assert!(spec.contains("export LIBRARY_PATH=\"$dep_lib${LIBRARY_PATH:+:$LIBRARY_PATH}\""));
         assert!(spec.contains("export BIOCONDA2RPM_SPARSEHASH_CONFIGURE_FLAG"));
         assert!(spec.contains("./configure ${BIOCONDA2RPM_SPARSEHASH_CONFIGURE_FLAG} || true"));
         assert!(!spec.contains("PHOREUS_PYTHON_PREFIX"));
