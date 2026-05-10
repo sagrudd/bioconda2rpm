@@ -6609,10 +6609,14 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
         "python-lmdb" => "lmdb".to_string(),
         "python-wget" => "wget".to_string(),
         "matplotlib-base" => "matplotlib".to_string(),
+        "mysql-python" => "mysqlclient<2".to_string(),
         "seaborn-base" => "seaborn".to_string(),
         "pytables" => "tables".to_string(),
         other => other.to_string(),
     };
+    if normalized == "mysql-python" {
+        return Some(pip_name);
+    }
 
     let inline_spec = first_token[name_token.len()..].trim();
     let remainder_after_first = cleaned[first_token.len()..].trim();
@@ -19690,6 +19694,10 @@ source:
         assert_eq!(conda_dep_to_pip_requirement("nltk_data"), None);
         assert_eq!(conda_dep_to_pip_requirement("openbabel"), None);
         assert_eq!(conda_dep_to_pip_requirement("pyqt 4.*"), None);
+        assert_eq!(
+            conda_dep_to_pip_requirement("mysql-python"),
+            Some("mysqlclient<2".to_string())
+        );
         assert_eq!(conda_dep_to_pip_requirement("rdkit"), None);
         assert_eq!(conda_dep_to_pip_requirement("clangdev"), None);
         assert_eq!(conda_dep_to_pip_requirement("sqlite"), None);
