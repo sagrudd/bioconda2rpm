@@ -14666,6 +14666,7 @@ fn map_build_dependency(dep: &str) -> String {
         "lapack" | "liblapack" => "lapack-devel".to_string(),
         "lp-solve" | "lpsolve" => "lpsolve lpsolve-devel".to_string(),
         "libboost" | "libboost-devel" => "boost-devel".to_string(),
+        "libprotobuf" | "protobuf" => "protobuf-devel protobuf-compiler".to_string(),
         "libhwloc" | "hwloc" => "hwloc-devel".to_string(),
         "libhwy" => "highway-devel".to_string(),
         "libiconv" => "glibc-devel".to_string(),
@@ -14771,6 +14772,7 @@ fn map_runtime_dependency(dep: &str) -> String {
         "k8" => "nodejs".to_string(),
         "boost-cpp" => "boost".to_string(),
         "libboost" | "libboost-devel" => "boost".to_string(),
+        "libprotobuf" | "protobuf" => "protobuf".to_string(),
         "gxx" | "cxx-compiler" | "compilers" => "gcc-c++".to_string(),
         "c-compiler" => "gcc".to_string(),
         "openmp" | "llvm-openmp" => "libgomp".to_string(),
@@ -18091,6 +18093,10 @@ mod tests {
         assert_eq!(map_build_dependency("capnproto"), "capnproto".to_string());
         assert_eq!(map_build_dependency("cffi"), "python3-cffi".to_string());
         assert_eq!(
+            map_build_dependency("libprotobuf"),
+            "protobuf-devel protobuf-compiler".to_string()
+        );
+        assert_eq!(
             map_build_dependency("jemalloc"),
             "jemalloc-devel".to_string()
         );
@@ -18114,6 +18120,10 @@ mod tests {
         assert_eq!(map_runtime_dependency("argtable2"), "argtable".to_string());
         assert_eq!(map_runtime_dependency("capnproto"), "capnproto".to_string());
         assert_eq!(map_runtime_dependency("cffi"), "python3-cffi".to_string());
+        assert_eq!(
+            map_runtime_dependency("libprotobuf"),
+            "protobuf".to_string()
+        );
         assert_eq!(
             map_runtime_dependency("pybind11"),
             "pybind11-devel".to_string()
