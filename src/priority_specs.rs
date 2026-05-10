@@ -5449,12 +5449,32 @@ fn infer_selector_python_runtime(
             })
         })
         .collect::<Vec<_>>();
+    if meta_text_has_python2_compatibility_markers(meta_text)
+        && candidates
+            .iter()
+            .any(|runtime| runtime.package == PHOREUS_PYTHON_RUNTIME_27.package)
+    {
+        return Some(PHOREUS_PYTHON_RUNTIME_27);
+    }
     candidates
         .iter()
         .copied()
         .filter(|runtime| runtime.major == 3)
         .min_by_key(|runtime| runtime.minor)
         .or_else(|| candidates.into_iter().next())
+}
+
+fn meta_text_has_python2_compatibility_markers(meta_text: &str) -> bool {
+    meta_text.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("functools32") || lower.contains("subprocess32") {
+            return true;
+        }
+        let Some((_, selector)) = split_selector(line) else {
+            return false;
+        };
+        selector.contains("py<30") || selector.contains("py < 30") || selector.contains("py2k")
+    })
 }
 
 fn infer_python_runtime_from_meta_dependencies(meta_text: &str) -> Option<PhoreusPythonRuntime> {
@@ -19351,6 +19371,7 @@ build:
         let py39_only = "build:\n  skip: True  # [osx or py<39 or py>39]\nrequirements:\n  run:\n    - python\n";
         let py37_or_py38_only = "build:\n  skip: True  # [py > 38 or py < 37 or osx]\nrequirements:\n  host:\n    - python\n  run:\n    - python\n";
         let py36_max = "build:\n  skip: True  # [py>=37]\nrequirements:\n  run:\n    - python\n";
+        let py36_max_with_py2_compat = "build:\n  skip: True  # [py>=37]\nrequirements:\n  run:\n    - python\n    - functools32  # [py<30]\n";
         let py312_plus =
             "build:\n  skip: True  # [py<312]\nrequirements:\n  run:\n    - python >=3\n";
 
@@ -19377,6 +19398,12 @@ build:
                 .expect("py36 runtime")
                 .package,
             PHOREUS_PYTHON_PACKAGE_36
+        );
+        assert_eq!(
+            infer_selector_python_runtime(py36_max_with_py2_compat, "x86_64")
+                .expect("py27 runtime")
+                .package,
+            PHOREUS_PYTHON_PACKAGE_27
         );
         assert_eq!(
             infer_selector_python_runtime(py312_plus, "x86_64")
