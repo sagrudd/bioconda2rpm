@@ -9430,9 +9430,11 @@ fn render_seer_compat_block(software_slug: &str) -> &'static str {
 # seer 1.1.4 uses std::numeric_limits in significant_kmer.cpp without
 # including <limits>. Older compiler/libstdc++ combinations tolerated this via
 # incidental transitive includes; GCC 11 does not.
-if [[ -f significant_kmer.cpp ]] && ! grep -q '^#include <limits>' significant_kmer.cpp; then
-  sed -i '1i #include <limits>' significant_kmer.cpp
-fi
+while IFS= read -r -d '' seer_kmer_source; do
+  if ! grep -q '^#include <limits>' "$seer_kmer_source"; then
+    sed -i '1i #include <limits>' "$seer_kmer_source"
+  fi
+done < <(find . -type f -name significant_kmer.cpp -print0)
 "###
 }
 
@@ -20687,7 +20689,8 @@ requirements:
         );
 
         assert!(spec.contains("seer-gcc11-limits-header"));
-        assert!(spec.contains("sed -i '1i #include <limits>' significant_kmer.cpp"));
+        assert!(spec.contains("find . -type f -name significant_kmer.cpp -print0"));
+        assert!(spec.contains("sed -i '1i #include <limits>' \"$seer_kmer_source\""));
     }
 
     #[test]
