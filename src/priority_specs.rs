@@ -13408,7 +13408,8 @@ drop = {{
     'minimap2', 'miniprot', 'mscorefonts', 'muscle', 'mummer', 'nltk-data',
     'nb-conda-kernels', 'ncbi-datasets-cli', 'openbabel', 'openblas', 'libopenblas',
     'libblas', 'libcblas', 'mkl', 'mkl-devel', 'pbccs', 'pcre', 'phylip',
-    'pilon', 'pplacer', 'prank', 'prodigal', 'purge-dups', 'pyasp', 'pytaxonkit',
+    'pilon', 'pplacer', 'prank', 'prodigal', 'purge-dups', 'pyasp', 'pyqt', 'pyqt4',
+    'pytaxonkit',
     'quast', 'racon', 'ragtag', 'ratatosk', 'raxml', 'rdkit', 'salmon', 'scala',
     'sepp', 'seqkit', 'seqtk', 'snakemake-minimal', 'spades', 'sra-tools',
     'star', 'stringtie', 'tabix', 'taxonkit', 'tgsgapcloser', 'trimmomatic',
@@ -13454,6 +13455,10 @@ if grep -Eiq '^(mpi4py)([<>=!~ ;]|$)' requirements.in; then
     elif command -v mpicc >/dev/null 2>&1; then
         export MPICC="$(command -v mpicc)"
     fi
+fi
+if grep -Eiq '^(mysql-python|mysqlclient)([<>=!~ ;]|$)' requirements.in; then
+    if command -v dnf >/dev/null 2>&1; then dnf -y install mariadb-connector-c-devel >/dev/null 2>&1 || true; fi
+    if command -v microdnf >/dev/null 2>&1; then microdnf -y install mariadb-connector-c-devel >/dev/null 2>&1 || true; fi
 fi
 setuptools_req="$(grep -Ei '^(setuptools)([<>=!~ ;]|$)' requirements.in | head -n 1 || true)"
 if [ -n "$setuptools_req" ]; then
@@ -14979,6 +14984,8 @@ fn is_conda_only_dependency(dep: &str) -> bool {
             | "nltk-data"
             | "openbabel"
             | "openmp-mutex"
+            | "pyqt"
+            | "pyqt4"
             | "rdkit"
     )
 }
@@ -17969,6 +17976,8 @@ mod tests {
         assert!(is_conda_only_dependency("go-licenses"));
         assert!(is_conda_only_dependency("_openmp_mutex"));
         assert!(is_conda_only_dependency("openbabel"));
+        assert!(is_conda_only_dependency("pyqt"));
+        assert!(is_conda_only_dependency("pyqt4"));
         assert!(is_conda_only_dependency("rdkit"));
         assert_eq!(normalize_dependency_token("_openmp_mutex"), "openmp-mutex");
     }
@@ -19677,6 +19686,7 @@ source:
         assert_eq!(conda_dep_to_pip_requirement("nvidia-cublas >=13"), None);
         assert_eq!(conda_dep_to_pip_requirement("nltk_data"), None);
         assert_eq!(conda_dep_to_pip_requirement("openbabel"), None);
+        assert_eq!(conda_dep_to_pip_requirement("pyqt 4.*"), None);
         assert_eq!(conda_dep_to_pip_requirement("rdkit"), None);
         assert_eq!(conda_dep_to_pip_requirement("clangdev"), None);
         assert_eq!(conda_dep_to_pip_requirement("sqlite"), None);
@@ -19916,6 +19926,15 @@ requirements:
     }
 
     #[test]
+    fn python_venv_install_bootstraps_mysql_python_sdists() {
+        let block = render_python_venv_setup_block("example", true, &["mysql-python".to_string()]);
+        assert!(
+            block.contains("grep -Eiq '^(mysql-python|mysqlclient)([<>=!~ ;]|$)' requirements.in")
+        );
+        assert!(block.contains("dnf -y install mariadb-connector-c-devel"));
+    }
+
+    #[test]
     fn python_venv_install_preinstalls_setuptools_caps() {
         let block = render_python_venv_setup_block(
             "example",
@@ -19959,6 +19978,7 @@ requirements:
                 "phylip".to_string(),
                 "pplacer>=1.1.alpha17".to_string(),
                 "purge_dups".to_string(),
+                "pyqt 4.*".to_string(),
                 "quast".to_string(),
                 "rpy2>=3.5".to_string(),
                 "ragtag".to_string(),
@@ -20006,6 +20026,8 @@ requirements:
         assert!(block.contains("'pilon'"));
         assert!(block.contains("'pplacer'"));
         assert!(block.contains("'purge-dups'"));
+        assert!(block.contains("'pyqt'"));
+        assert!(block.contains("'pyqt4'"));
         assert!(block.contains("'quast'"));
         assert!(block.contains("'ragtag'"));
         assert!(block.contains("'seqtk'"));
