@@ -8740,6 +8740,11 @@ fn package_requires_original_build_script(
         // BinSPreader's recipe uses stateful shell variables and upstream's
         // surviving SPAdes tag archive nests the CMake source under assembler/.
         "binspreader" => true,
+        // HEURISTIC-TEMP(issue=bioconda2rpm#btllib-meson-python-wrapper-install):
+        // btllib builds C++ libraries with Meson, runs ninja install, then pip
+        // installs Python wrappers from the Meson-installed prefix. Splitting the
+        // recipe loses that state and points pip at a path that does not exist.
+        "btllib" => true,
         _ => false,
     }
 }
@@ -20636,6 +20641,38 @@ requirements:
 
         let reqs = build_python_requirements(&parsed);
         assert!(reqs.is_empty());
+    }
+
+    #[test]
+    fn btllib_uses_original_stateful_meson_python_build_script() {
+        let parsed = ParsedMeta {
+            package_name: "btllib".to_string(),
+            version: "1.7.7".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/btllib-1.7.7.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://example.invalid/btllib".to_string(),
+            license: "GPL-3.0-or-later".to_string(),
+            summary: "btllib".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some(
+                "meson setup --prefix \"${PREFIX}\" build/\ncd build\nninja install -v\n${PYTHON} -m pip install \"${PREFIX}/lib/btllib/python\" --no-deps"
+                    .to_string(),
+            ),
+            output_build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: Vec::new(),
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::new(),
+        };
+        let plan = interpret_build_script_minimal(parsed.build_script.as_deref().unwrap());
+
+        assert!(package_requires_original_build_script(
+            "btllib", &parsed, &plan
+        ));
     }
 
     #[test]
