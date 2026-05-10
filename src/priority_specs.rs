@@ -9421,6 +9421,21 @@ find %{buildroot}%{phoreus_prefix} -type f -path '*/scripts/analysis/maxcluster/
     }
 }
 
+fn render_seer_compat_block(software_slug: &str) -> &'static str {
+    if software_slug != "seer" {
+        return "";
+    }
+
+    r###"# HEURISTIC-TEMP(issue=bioconda2rpm#seer-gcc11-limits-header):
+# seer 1.1.4 uses std::numeric_limits in significant_kmer.cpp without
+# including <limits>. Older compiler/libstdc++ combinations tolerated this via
+# incidental transitive includes; GCC 11 does not.
+if [[ -f significant_kmer.cpp ]] && ! grep -q '^#include <limits>' significant_kmer.cpp; then
+  sed -i '1i #include <limits>' significant_kmer.cpp
+fi
+"###
+}
+
 fn render_perl_recursive_source_link_cleanup_block(perl_recipe: bool) -> &'static str {
     if !perl_recipe {
         return "";
@@ -9900,6 +9915,7 @@ fi\n";
     let blast_compat_block = render_minimal_blast_compat_block(&scope);
     let spacerplacer_mafft_cleanup_block = render_spacerplacer_mafft_cleanup_block(software_slug);
     let foreign_elf_cleanup_block = render_foreign_elf_cleanup_block(software_slug);
+    let seer_compat_block = render_seer_compat_block(software_slug);
     let build_scope = scope.label_string();
     let perl_module_provides = if perl_recipe {
         perl_module_name_from_conda(&parsed.package_name)
@@ -9979,6 +9995,7 @@ export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
 {core_c_dep_bootstrap}\
 {python_venv_setup}\
 {perl_recursive_source_link_cleanup_block}\
+{seer_compat_block}\
 {install_commands}\
 {spacerplacer_mafft_cleanup_block}\
 {foreign_elf_cleanup_block}\
@@ -10035,6 +10052,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         install_commands = install_commands,
         python_venv_setup = python_venv_setup,
         perl_recursive_source_link_cleanup_block = perl_recursive_source_link_cleanup_block,
+        seer_compat_block = seer_compat_block,
         spacerplacer_mafft_cleanup_block = spacerplacer_mafft_cleanup_block,
         foreign_elf_cleanup_block = foreign_elf_cleanup_block,
         elf_arch_guard_block = elf_arch_guard_block,
@@ -20624,6 +20642,52 @@ requirements:
             spec.find("scripts/analysis/maxcluster/maxcluster")
                 < spec.find("foreign ELF architecture mismatch")
         );
+    }
+
+    #[test]
+    fn minimal_payload_spec_patches_seer_limits_header() {
+        let parsed = ParsedMeta {
+            package_name: "seer".to_string(),
+            version: "1.1.4".to_string(),
+            build_number: "1".to_string(),
+            source_url: "https://example.invalid/seer.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://github.com/johnlees/seer".to_string(),
+            license: "GPL-2.0".to_string(),
+            summary: "seer".to_string(),
+            source_patches: Vec::new(),
+            build_script: Some("bash build.sh".to_string()),
+            output_build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: vec!["python <3".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::from(["python".to_string()]),
+        };
+        let plan = InterpretedBuildPlan {
+            build_commands: Vec::new(),
+            install_commands: vec!["bash build.sh".to_string()],
+            prefix_install_vars: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec_minimal(
+            "seer",
+            &parsed,
+            &plan,
+            Some("bioconda-seer-build.sh"),
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("seer-gcc11-limits-header"));
+        assert!(spec.contains("sed -i '1i #include <limits>' significant_kmer.cpp"));
     }
 
     #[test]
