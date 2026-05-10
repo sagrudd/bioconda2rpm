@@ -13236,6 +13236,7 @@ fn render_python_venv_setup_block(
     ln -snf \"$(pwd)/htslib/htslib\" \"$PREFIX/include/htslib\" || true\n\
     export CFLAGS=\"-I$(pwd)/htslib ${CFLAGS:-}\"\n\
     export CPPFLAGS=\"-I$(pwd)/htslib ${CPPFLAGS:-}\"\n\
+    export HTSLIB_MODE=separate\n\
 fi\n"
     } else {
         ""
@@ -19726,6 +19727,7 @@ requirements:
         assert!(block.contains("if [ -d htslib/htslib ]; then"));
         assert!(block.contains("ln -snf \"$(pwd)/htslib/htslib\" \"$PREFIX/include/htslib\""));
         assert!(block.contains("export CFLAGS=\"-I$(pwd)/htslib ${CFLAGS:-}\""));
+        assert!(block.contains("export HTSLIB_MODE=separate"));
 
         let generic_block = render_python_venv_setup_block("example", true, &[]);
         assert!(!generic_block.contains("htslib/htslib"));
