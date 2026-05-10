@@ -13476,7 +13476,7 @@ for raw in raw_lines:
     if sys.version_info[0] < 3 and name == 'biopython' and '<' not in line and '==' not in line:
         line += ',<1.77' if re.search(r'[>=!~]', line) else '<1.77'
     if sys.version_info[0] < 3 and name == 'fisher' and '<' not in line and '==' not in line:
-        line += ',<0.1.14' if re.search(r'[>=!~]', line) else '<0.1.14'
+        line += ',<0.1.11' if re.search(r'[>=!~]', line) else '<0.1.11'
     lines.append(line)
 with open('requirements.in', 'w') as handle:
     handle.write('\n'.join(lines) + ('\n' if lines else ''))
@@ -19995,7 +19995,7 @@ requirements:
     fn python_venv_install_constrains_fisher_for_python2_sdists() {
         let block = render_python_venv_setup_block("example", true, &["fisher".to_string()]);
         assert!(block.contains("name == 'fisher'"));
-        assert!(block.contains("line += ',<0.1.14'"));
+        assert!(block.contains("line += ',<0.1.11'"));
     }
 
     #[test]
