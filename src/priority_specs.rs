@@ -9199,7 +9199,10 @@ export CXX=\"${CXX:-g++}\"\n\
 export CFLAGS=\"${CFLAGS:-}\"\n\
 export CXXFLAGS=\"${CXXFLAGS:-}\"\n\
 export CPPFLAGS=\"${CPPFLAGS:-}\"\n\
-export LDFLAGS=\"${LDFLAGS:-}\"\n",
+export LDFLAGS=\"${LDFLAGS:-}\"\n\
+export AR=\"${AR:-ar}\"\n\
+export RANLIB=\"${RANLIB:-ranlib}\"\n\
+export STRIP=\"${STRIP:-strip}\"\n",
         );
         out.push_str(
             "# Expose include/lib/pkg-config roots from installed Phoreus dependencies.\n\
@@ -20608,6 +20611,8 @@ requirements:
 
         assert!(spec.contains("2pg-cartesian-vendored-maxcluster"));
         assert!(spec.contains("scripts/analysis/maxcluster/maxcluster"));
+        assert!(spec.contains("export AR=\"${AR:-ar}\""));
+        assert!(spec.contains("export RANLIB=\"${RANLIB:-ranlib}\""));
         assert!(spec.contains("foreign ELF architecture mismatch"));
         assert!(
             spec.find("scripts/analysis/maxcluster/maxcluster")
