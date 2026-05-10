@@ -13515,12 +13515,12 @@ sys.exit(0 if sys.version_info[0] < 3 else 1)\n\
 PYCHECK\n\
 then\n\
   if ! \"$PYTHON\" -m virtualenv \"$PREFIX/venv\"; then\n\
-    \"$PIP\" install 'virtualenv<20.22'\n\
+    \"$PIP\" install 'virtualenv==20.15.1'\n\
     \"$PYTHON\" -m virtualenv \"$PREFIX/venv\"\n\
   fi\n\
 else\n\
   if ! \"$PYTHON\" -m venv \"$PREFIX/venv\"; then\n\
-    \"$PIP\" install 'virtualenv<20.22'\n\
+    \"$PIP\" install 'virtualenv==20.15.1'\n\
     \"$PYTHON\" -m virtualenv \"$PREFIX/venv\"\n\
   fi\n\
 fi\n\
@@ -20122,7 +20122,7 @@ requirements:
         let block = render_python_venv_setup_block("example", true, &[]);
         assert!(block.contains("sys.version_info[0] < 3"));
         assert!(block.contains("\"$PYTHON\" -m virtualenv \"$PREFIX/venv\""));
-        assert!(block.contains("\"$PIP\" install 'virtualenv<20.22'"));
+        assert!(block.contains("\"$PIP\" install 'virtualenv==20.15.1'"));
         assert!(block.contains("\"$PYTHON\" -m venv \"$PREFIX/venv\""));
         assert!(block.contains("if ! \"$PYTHON\" -m venv \"$PREFIX/venv\"; then"));
     }
