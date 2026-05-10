@@ -13395,10 +13395,10 @@ drop = {{
     'kmc', 'kmtricks', 'lamassemble', 'mafft', 'mamba', 'masurca', 'mash',
     'maxbin2', 'mccortex', 'meme', 'metaeuk', 'micromamba', 'miniasm',
     'minimap2', 'miniprot', 'mscorefonts', 'muscle', 'mummer', 'nltk-data',
-    'nb-conda-kernels', 'ncbi-datasets-cli', 'openblas', 'libopenblas',
+    'nb-conda-kernels', 'ncbi-datasets-cli', 'openbabel', 'openblas', 'libopenblas',
     'libblas', 'libcblas', 'mkl', 'mkl-devel', 'pbccs', 'pcre', 'phylip',
     'pilon', 'pplacer', 'prank', 'prodigal', 'purge-dups', 'pyasp', 'pytaxonkit',
-    'quast', 'racon', 'ragtag', 'ratatosk', 'raxml', 'salmon', 'scala',
+    'quast', 'racon', 'ragtag', 'ratatosk', 'raxml', 'rdkit', 'salmon', 'scala',
     'sepp', 'seqkit', 'seqtk', 'snakemake-minimal', 'spades', 'sra-tools',
     'star', 'stringtie', 'tabix', 'taxonkit', 'tgsgapcloser', 'trimmomatic',
     'ucsc-bedgraphtobigwig', 'ucsc-bigwigaverageoverbed', 'vpt-core',
@@ -14952,7 +14952,12 @@ fn is_conda_only_dependency(dep: &str) -> bool {
     let normalized = normalize_dependency_token(dep);
     matches!(
         normalized.as_str(),
-        "bioconductor-data-packages" | "go-licenses" | "nltk-data" | "openmp-mutex"
+        "bioconductor-data-packages"
+            | "go-licenses"
+            | "nltk-data"
+            | "openbabel"
+            | "openmp-mutex"
+            | "rdkit"
     )
 }
 
@@ -17941,6 +17946,8 @@ mod tests {
     fn conda_only_dependencies_include_go_licenses() {
         assert!(is_conda_only_dependency("go-licenses"));
         assert!(is_conda_only_dependency("_openmp_mutex"));
+        assert!(is_conda_only_dependency("openbabel"));
+        assert!(is_conda_only_dependency("rdkit"));
         assert_eq!(normalize_dependency_token("_openmp_mutex"), "openmp-mutex");
     }
 
@@ -19639,6 +19646,8 @@ source:
         assert_eq!(conda_dep_to_pip_requirement("jaxlib >=0.4"), None);
         assert_eq!(conda_dep_to_pip_requirement("nvidia-cublas >=13"), None);
         assert_eq!(conda_dep_to_pip_requirement("nltk_data"), None);
+        assert_eq!(conda_dep_to_pip_requirement("openbabel"), None);
+        assert_eq!(conda_dep_to_pip_requirement("rdkit"), None);
         assert_eq!(
             conda_dep_to_pip_requirement("pytables >=3.5.*"),
             Some("tables>=3.5".to_string())
@@ -19926,8 +19935,10 @@ requirements:
                 "sra-tools".to_string(),
                 "stringtie".to_string(),
                 "tabix".to_string(),
+                "openbabel".to_string(),
                 "/work/.build-work/btllib/BUILDROOT/phoreus-btllib/lib/btllib/python".to_string(),
                 "openblas".to_string(),
+                "rdkit".to_string(),
                 "pytorch>=2.*".to_string(),
                 "pytorch-cpu>=2.*".to_string(),
                 "torchvision>=0.17".to_string(),
@@ -19970,7 +19981,9 @@ requirements:
         assert!(block.contains("'sra-tools'"));
         assert!(block.contains("'stringtie'"));
         assert!(block.contains("'tabix'"));
+        assert!(block.contains("'openbabel'"));
         assert!(block.contains("'openblas'"));
+        assert!(block.contains("'rdkit'"));
         assert!(block.contains("'nltk-data'"));
         assert!(block.contains("'pytorch-cpu'"));
         assert!(block.contains("'torchvision'"));
