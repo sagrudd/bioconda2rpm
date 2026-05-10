@@ -16377,6 +16377,25 @@ declare -A local_candidate_score\n\
 declare -A local_candidates_norm\n\
 declare -A local_candidates_norm_score\n\
 \n\
+mapfile -t build_requires < <(rpmspec -q --buildrequires --define \"_topdir $build_root\" --define \"_sourcedir $build_sourcedir\" --define \"_smp_build_ncpus ${{BIOCONDA2RPM_CPU_COUNT}}\" '{spec}' | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
+dep_log=\"/tmp/bioconda2rpm-dep-{label}.log\"\n\
+needs_local_candidate_index=0\n\
+for dep in \"${{build_requires[@]:-}}\"; do\n\
+  if [[ -z \"$dep\" ]]; then\n\
+    continue\n\
+  fi\n\
+  if rpm -q --whatprovides \"$dep\" >/dev/null 2>&1; then\n\
+    provider=$(rpm -q --whatprovides \"$dep\" | head -n 1 || true)\n\
+    if [[ \"$provider\" == phoreus-* ]]; then\n\
+      needs_local_candidate_index=1\n\
+      break\n\
+    fi\n\
+    continue\n\
+  fi\n\
+  needs_local_candidate_index=1\n\
+  break\n\
+done\n\
+\n\
 normalize_lookup_key() {{\n\
   local key=\"$1\"\n\
   key=$(printf '%s' \"$key\" | tr '[:upper:]' '[:lower:]')\n\
@@ -16410,28 +16429,30 @@ record_local_candidate() {{\n\
   fi\n\
 }}\n\
 \n\
-for rpm_dir in '{target_rpms_dir}' '{legacy_rpms_dir}'; do\n\
-  if [[ ! -d \"$rpm_dir\" ]]; then\n\
-    continue\n\
-  fi\n\
-  while IFS= read -r -d '' rpmf; do\n\
-    name=$(rpm -qp --qf '%{{NAME}}\\n' \"$rpmf\" 2>/dev/null || true)\n\
-    mapfile -t rpm_provides < <(rpm -qp --provides \"$rpmf\" 2>/dev/null || true)\n\
-    provides_score=${{#rpm_provides[@]}}\n\
-    if [[ -z \"$provides_score\" || \"$provides_score\" == \"0\" ]]; then\n\
-      provides_score=1\n\
+if [[ \"$needs_local_candidate_index\" -eq 1 ]]; then\n\
+  for rpm_dir in '{target_rpms_dir}' '{legacy_rpms_dir}'; do\n\
+    if [[ ! -d \"$rpm_dir\" ]]; then\n\
+      continue\n\
     fi\n\
-    record_local_candidate \"$name\" \"$rpmf\" \"$provides_score\"\n\
-    lower_name=$(printf '%s' \"$name\" | tr '[:upper:]' '[:lower:]')\n\
-    record_local_candidate \"$lower_name\" \"$rpmf\" \"$provides_score\"\n\
-    for provide in \"${{rpm_provides[@]:-}}\"; do\n\
-      key=$(printf '%s' \"$provide\" | awk '{{print $1}}')\n\
-      record_local_candidate \"$key\" \"$rpmf\" \"$provides_score\"\n\
-      lower_key=$(printf '%s' \"$key\" | tr '[:upper:]' '[:lower:]')\n\
-      record_local_candidate \"$lower_key\" \"$rpmf\" \"$provides_score\"\n\
-    done\n\
-  done < <(find \"$rpm_dir\" -type f -name '*.rpm' -print0 2>/dev/null)\n\
-done\n\
+    while IFS= read -r -d '' rpmf; do\n\
+      name=$(rpm -qp --qf '%{{NAME}}\\n' \"$rpmf\" 2>/dev/null || true)\n\
+      mapfile -t rpm_provides < <(rpm -qp --provides \"$rpmf\" 2>/dev/null || true)\n\
+      provides_score=${{#rpm_provides[@]}}\n\
+      if [[ -z \"$provides_score\" || \"$provides_score\" == \"0\" ]]; then\n\
+        provides_score=1\n\
+      fi\n\
+      record_local_candidate \"$name\" \"$rpmf\" \"$provides_score\"\n\
+      lower_name=$(printf '%s' \"$name\" | tr '[:upper:]' '[:lower:]')\n\
+      record_local_candidate \"$lower_name\" \"$rpmf\" \"$provides_score\"\n\
+      for provide in \"${{rpm_provides[@]:-}}\"; do\n\
+        key=$(printf '%s' \"$provide\" | awk '{{print $1}}')\n\
+        record_local_candidate \"$key\" \"$rpmf\" \"$provides_score\"\n\
+        lower_key=$(printf '%s' \"$key\" | tr '[:upper:]' '[:lower:]')\n\
+        record_local_candidate \"$lower_key\" \"$rpmf\" \"$provides_score\"\n\
+      done\n\
+    done < <(find \"$rpm_dir\" -type f -name '*.rpm' -print0 2>/dev/null)\n\
+  done\n\
+fi\n\
 \n\
 lookup_local_candidate() {{\n\
   local req_key=\"$1\"\n\
@@ -16524,8 +16545,6 @@ install_local_with_hydration() {{\n\
   return 0\n\
 }}\n\
 \n\
-mapfile -t build_requires < <(rpmspec -q --buildrequires --define \"_topdir $build_root\" --define \"_sourcedir $build_sourcedir\" --define \"_smp_build_ncpus ${{BIOCONDA2RPM_CPU_COUNT}}\" '{spec}' | awk '{{print $1}}' | sed '/^$/d' | sort -u)\n\
-dep_log=\"/tmp/bioconda2rpm-dep-{label}.log\"\n\
 for dep in \"${{build_requires[@]}}\"; do\n\
   if [[ -z \"$dep\" ]]; then\n\
     continue\n\
