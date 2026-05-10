@@ -5516,9 +5516,10 @@ pub(crate) fn apply_selectors(meta: &str, ctx: &SelectorContext) -> String {
 }
 
 fn split_selector(line: &str) -> Option<(&str, &str)> {
-    let idx = line.find("# [")?;
+    let idx = line.find("#[").or_else(|| line.find("# ["))?;
     let prefix = &line[..idx];
-    let rest = &line[idx + 3..];
+    let rest = &line[(idx + 1)..].trim_start();
+    let rest = rest.strip_prefix('[')?;
     let end = rest.find(']')?;
     let selector = &rest[..end];
     Some((prefix, selector.trim()))
@@ -19031,6 +19032,16 @@ build:
         assert!(meta_text_requests_python2(meta, "x86_64"));
         assert!(!apply_selectors(meta, &py2_ctx).contains("skip: True"));
         assert!(apply_selectors(meta, &py3_ctx).contains("skip: True"));
+    }
+
+    #[test]
+    fn selector_parser_accepts_compact_hash_bracket_form() {
+        let meta = "build:\n  skip: True  #[py2k]\nrequirements:\n  run:\n    - python\n";
+        let py3_ctx = SelectorContext::for_rpm_build_with_python("x86_64", 3, 11);
+        let py2_ctx = SelectorContext::for_rpm_build_with_python("x86_64", 2, 7);
+
+        assert!(apply_selectors(meta, &py2_ctx).contains("skip: True"));
+        assert!(!apply_selectors(meta, &py3_ctx).contains("skip: True"));
     }
 
     #[test]
