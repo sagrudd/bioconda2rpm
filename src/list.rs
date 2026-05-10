@@ -990,9 +990,12 @@ fn is_success_status(status: &str) -> bool {
 
 fn is_container_build_success(entry: &crate::priority_specs::ReportEntry) -> bool {
     entry.status == "generated"
-        && entry
+        && (entry
             .reason
             .contains("generated from bioconda metadata in container")
+            || (entry.reason == "already up-to-date"
+                && !entry.payload_spec_path.is_empty()
+                && !entry.meta_spec_path.is_empty()))
 }
 
 fn compare_catalog_version_labels(a: &str, b: &str) -> std::cmp::Ordering {
@@ -2528,6 +2531,11 @@ mod tests {
         spec_only.reason =
             "spec/srpm/rpm generated from bioconda metadata in container".to_string();
         assert!(is_container_build_success(&spec_only));
+
+        let mut artifact_reuse = report_entry("simlord", "generated", "already up-to-date");
+        artifact_reuse.payload_spec_path = "/tmp/phoreus-simlord.spec".to_string();
+        artifact_reuse.meta_spec_path = "/tmp/phoreus-simlord-default.spec".to_string();
+        assert!(is_container_build_success(&artifact_reuse));
     }
 
     #[test]
