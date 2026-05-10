@@ -13196,7 +13196,6 @@ fn render_python_venv_setup_block(python_recipe: bool, python_requirements: &[St
 {requirements_body}
 REQEOF
 python - <<'PYREQSAN'
-from pathlib import Path
 import re
 drop = {{
     'abyss', 'apptainer', 'augustus', 'bamtools', 'bbmap', 'beast2', 'bedops',
@@ -13219,9 +13218,10 @@ drop = {{
     'torchvision', 'tensorflow', 'tensorflow-base', 'tensorflow-estimator',
     'jax', 'jaxlib', 'triton',
 }}
-path = Path('requirements.in')
 lines = []
-for raw in path.read_text().splitlines():
+with open('requirements.in') as handle:
+    raw_lines = handle.read().splitlines()
+for raw in raw_lines:
     line = raw.strip()
     if not line or line.startswith('#'):
         continue
@@ -13232,7 +13232,8 @@ for raw in path.read_text().splitlines():
         continue
     line = re.sub(r'(?P<op>>=|<=|>|<|~=)(?P<ver>[0-9][0-9A-Za-z_.!+-]*)\.\*', r'\g<op>\g<ver>', line)
     lines.append(line)
-path.write_text('\n'.join(lines) + ('\n' if lines else ''))
+with open('requirements.in', 'w') as handle:
+    handle.write('\n'.join(lines) + ('\n' if lines else ''))
 PYREQSAN
 if grep -Eiq '^(rpy2|rpy2-rinterface)([<>=!~ ;]|$)' requirements.in; then
     if command -v dnf >/dev/null 2>&1; then dnf -y install readline-devel ncurses-devel >/dev/null 2>&1 || true; fi
@@ -19623,9 +19624,8 @@ requirements:
         );
         assert!(block.contains("PYREQSAN"));
         assert!(block.contains("line = re.sub"));
-        assert!(
-            block.contains("for raw in path.read_text().splitlines():\n    line = raw.strip()")
-        );
+        assert!(block.contains("with open('requirements.in') as handle:"));
+        assert!(block.contains("for raw in raw_lines:\n    line = raw.strip()"));
         assert!(block.contains("if not line or line.startswith('#'):\n        continue"));
         assert!(block.contains("if line.startswith(('/', './', '../')):\n        continue"));
         assert!(block.contains("'abyss'"));
