@@ -10719,6 +10719,13 @@ then\n\
   done < <(find . -type f \\( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \\) -print0 2>/dev/null)\n\
 fi\n\
 \n\
+# Legacy pysam source archives vendor HTSlib as htslib/htslib/*.h, while\n\
+# generated extension sources include headers as htslib/*.h.\n\
+if [[ \"%{{tool}}\" == \"pysam\" && -d \"htslib/htslib\" ]]; then\n\
+  export CFLAGS=\"-I$(pwd)/htslib ${{CFLAGS:-}}\"\n\
+  export CPPFLAGS=\"-I$(pwd)/htslib ${{CPPFLAGS:-}}\"\n\
+fi\n\
+\n\
 # Conda recipes often assume host/build dependencies are co-located in one PREFIX.\n\
 # Phoreus keeps dependencies in versioned prefixes, so stage compatibility symlinks.\n\
 if [[ -d /usr/local/phoreus ]]; then\n\
@@ -23615,6 +23622,8 @@ requirements:
         assert!(spec.contains("PYLONGINT"));
         assert!(spec.contains("sys.version_info >= (3, 11)"));
         assert!(spec.contains("cpython\\/longintrepr.h"));
+        assert!(spec.contains("htslib/htslib"));
+        assert!(spec.contains("$(pwd)/htslib"));
         assert!(spec.contains("-name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx'"));
     }
 
