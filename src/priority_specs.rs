@@ -8508,8 +8508,10 @@ fn compute_minimal_build_scope(
         .chain(interpreted_build_plan.install_commands.iter())
         .cloned()
         .collect::<Vec<_>>();
+    let runtime_only_metapackage = is_runtime_only_metapackage(parsed);
     let python_recipe = is_python_recipe(parsed) || python_script_hint;
-    let python_runtime_required = python_recipe || recipe_requires_python_runtime(parsed);
+    let python_runtime_required =
+        !runtime_only_metapackage && (python_recipe || recipe_requires_python_runtime(parsed));
     let r_runtime_required =
         recipe_requires_r_runtime(parsed) || is_r_project_recipe(parsed) || r_script_hint;
     let rust_runtime_required = recipe_requires_rust_runtime(parsed) || rust_script_hint;
@@ -8562,24 +8564,27 @@ fn compute_minimal_build_scope(
     ) || software_slug == "mash";
     let recipe_build_sh_required =
         package_requires_original_build_script(software_slug, parsed, interpreted_build_plan);
-    let buildroot_text_scrub_required = python_recipe
-        || command_mentions_buildroot_text_risk_with_aliases(
-            &interpreted_build_plan.install_commands,
-            &interpreted_build_plan.prefix_install_vars,
-        )
-        || command_runs_prefix_installer_with_aliases(
-            &interpreted_build_plan.install_commands,
-            &interpreted_build_plan.prefix_install_vars,
-        )
-        || (package_requires_make_install_buildroot_scrub(software_slug)
-            && command_runs_make_install_with_prefix_env(&interpreted_build_plan.install_commands))
-        || ((command_configures_install_prefix_from_prefix(
-            &interpreted_build_plan.build_commands,
-        ) || command_configures_install_prefix_from_prefix(
-            &interpreted_build_plan.install_commands,
-        )) && command_installs_configured_prefix(&interpreted_build_plan.install_commands))
-        || native_vendored_prefix_required
-        || core_c_bootstrap_prefix_required;
+    let buildroot_text_scrub_required = !runtime_only_metapackage
+        && (python_recipe
+            || command_mentions_buildroot_text_risk_with_aliases(
+                &interpreted_build_plan.install_commands,
+                &interpreted_build_plan.prefix_install_vars,
+            )
+            || command_runs_prefix_installer_with_aliases(
+                &interpreted_build_plan.install_commands,
+                &interpreted_build_plan.prefix_install_vars,
+            )
+            || (package_requires_make_install_buildroot_scrub(software_slug)
+                && command_runs_make_install_with_prefix_env(
+                    &interpreted_build_plan.install_commands,
+                ))
+            || ((command_configures_install_prefix_from_prefix(
+                &interpreted_build_plan.build_commands,
+            ) || command_configures_install_prefix_from_prefix(
+                &interpreted_build_plan.install_commands,
+            )) && command_installs_configured_prefix(&interpreted_build_plan.install_commands))
+            || native_vendored_prefix_required
+            || core_c_bootstrap_prefix_required);
     let blast_compat_required = package_requires_blast_compat(software_slug);
     let arch_env_required = command_mentions_arch_env(&all_commands)
         || (recipe_build_sh_required
@@ -23679,6 +23684,26 @@ requirements:
         assert!(is_runtime_only_metapackage(&parsed));
         let generated = synthesize_fallback_build_sh(&parsed).expect("noarch python fallback");
         assert!(generated.contains("metapackage fallback"));
+        let plan =
+            interpret_build_script_minimal(parsed.build_script.as_deref().unwrap_or_default());
+        let spec = render_payload_spec_minimal(
+            "haddock-biobb",
+            &parsed,
+            &plan,
+            Some("bioconda-haddock-biobb-build.sh"),
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            true,
+            false,
+            false,
+            false,
+        );
+        assert!(!spec.contains("%global bioconda2rpm_build_scope python-runtime"));
+        assert!(!spec.contains("buildroot-text-scrub"));
+        assert!(spec.contains("BuildRequires:  bash"));
+        assert!(!spec.contains("BuildRequires:  phoreus-python"));
+        assert!(!spec.contains("BuildRequires:  chrpath"));
     }
 
     #[test]
