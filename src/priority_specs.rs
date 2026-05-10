@@ -13516,12 +13516,12 @@ PYCHECK\n\
 then\n\
   if ! \"$PYTHON\" -m virtualenv \"$PREFIX/venv\"; then\n\
     \"$PIP\" install 'virtualenv==20.15.1'\n\
-    \"$PYTHON\" -m virtualenv \"$PREFIX/venv\"\n\
+    \"$PYTHON\" -m virtualenv --pip 20.3.4 --setuptools 44.1.1 --wheel 0.37.1 \"$PREFIX/venv\"\n\
   fi\n\
 else\n\
   if ! \"$PYTHON\" -m venv \"$PREFIX/venv\"; then\n\
     \"$PIP\" install 'virtualenv==20.15.1'\n\
-    \"$PYTHON\" -m virtualenv \"$PREFIX/venv\"\n\
+    \"$PYTHON\" -m virtualenv --pip 20.3.4 --setuptools 59.6.0 --wheel 0.37.1 \"$PREFIX/venv\"\n\
   fi\n\
 fi\n\
 export VIRTUAL_ENV=\"$PREFIX/venv\"\n\
@@ -20121,7 +20121,16 @@ requirements:
     fn python_venv_setup_uses_virtualenv_for_python2_runtime() {
         let block = render_python_venv_setup_block("example", true, &[]);
         assert!(block.contains("sys.version_info[0] < 3"));
-        assert!(block.contains("\"$PYTHON\" -m virtualenv \"$PREFIX/venv\""));
+        assert!(
+            block.contains(
+                "\"$PYTHON\" -m virtualenv --pip 20.3.4 --setuptools 44.1.1 --wheel 0.37.1"
+            )
+        );
+        assert!(
+            block.contains(
+                "\"$PYTHON\" -m virtualenv --pip 20.3.4 --setuptools 59.6.0 --wheel 0.37.1"
+            )
+        );
         assert!(block.contains("\"$PIP\" install 'virtualenv==20.15.1'"));
         assert!(block.contains("\"$PYTHON\" -m venv \"$PREFIX/venv\""));
         assert!(block.contains("if ! \"$PYTHON\" -m venv \"$PREFIX/venv\"; then"));
