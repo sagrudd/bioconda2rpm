@@ -4362,7 +4362,10 @@ fn process_tool(
             staged_build_sh: String::new(),
         };
     };
-    let build_script = harden_build_script_text(&raw_build_script);
+    let build_script = harden_package_build_script_text(
+        &software_slug,
+        &harden_build_script_text(&raw_build_script),
+    );
 
     let python_script_hint = script_text_indicates_python(&build_script);
     let r_script_hint = script_text_indicates_r(&build_script);
@@ -7227,6 +7230,49 @@ fn harden_build_script_text(script: &str) -> String {
     }
 
     let mut out = rewritten_lines.join("\n");
+    if script.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+fn harden_package_build_script_text(package_name: &str, script: &str) -> String {
+    if normalize_name(package_name) != "pysam" {
+        return script.to_string();
+    }
+
+    let mut lines = Vec::new();
+    let mut emitted_htslib_mode = false;
+    for raw_line in script.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.starts_with("export HTSLIB_LIBRARY_DIR")
+            || trimmed.starts_with("export HTSLIB_INCLUDE_DIR")
+        {
+            continue;
+        }
+        if trimmed == r#"export CFLAGS="-I$PREFIX/include -DHAVE_LIBDEFLATE""# {
+            lines.push(
+                r#"export CFLAGS="-I$(pwd)/htslib -I$PREFIX/include -DHAVE_LIBDEFLATE ${CFLAGS:-}""#
+                    .to_string(),
+            );
+            continue;
+        }
+        if trimmed == r#"export CPPFLAGS="-I$PREFIX/include -DHAVE_LIBDEFLATE""# {
+            lines.push(
+                r#"export CPPFLAGS="-I$(pwd)/htslib -I$PREFIX/include -DHAVE_LIBDEFLATE ${CPPFLAGS:-}""#
+                    .to_string(),
+            );
+            continue;
+        }
+        if !emitted_htslib_mode && pip_install_targets_local_source(trimmed) {
+            lines.push("unset HTSLIB_LIBRARY_DIR HTSLIB_INCLUDE_DIR".to_string());
+            lines.push("export HTSLIB_MODE=separate".to_string());
+            emitted_htslib_mode = true;
+        }
+        lines.push(raw_line.to_string());
+    }
+
+    let mut out = lines.join("\n");
     if script.ends_with('\n') {
         out.push('\n');
     }
@@ -24504,6 +24550,28 @@ cp dupsifter ${BIN}
         assert!(hardened.contains(
             "$PYTHON -m pip install . --no-deps --ignore-installed -vv --no-build-isolation"
         ));
+    }
+
+    #[test]
+    fn harden_package_build_script_prefers_bundled_pysam_htslib() {
+        let raw = r#"export CFLAGS="-I$PREFIX/include -DHAVE_LIBDEFLATE"
+export CPPFLAGS="-I$PREFIX/include -DHAVE_LIBDEFLATE"
+export LDFLAGS="-L$PREFIX/lib"
+export HTSLIB_LIBRARY_DIR=$PREFIX/lib
+export HTSLIB_INCLUDE_DIR=$PREFIX/include
+$PYTHON -m pip install . --ignore-installed --no-deps -vv --no-build-isolation
+"#;
+        let hardened = harden_package_build_script_text("pysam", raw);
+        assert!(hardened.contains(
+            r#"export CFLAGS="-I$(pwd)/htslib -I$PREFIX/include -DHAVE_LIBDEFLATE ${CFLAGS:-}""#
+        ));
+        assert!(hardened.contains("unset HTSLIB_LIBRARY_DIR HTSLIB_INCLUDE_DIR"));
+        assert!(hardened.contains("export HTSLIB_MODE=separate"));
+        assert!(!hardened.contains("export HTSLIB_LIBRARY_DIR=$PREFIX/lib"));
+        assert!(!hardened.contains("export HTSLIB_INCLUDE_DIR=$PREFIX/include"));
+
+        let generic = harden_package_build_script_text("example", raw);
+        assert!(generic.contains("export HTSLIB_LIBRARY_DIR=$PREFIX/lib"));
     }
 
     #[test]
