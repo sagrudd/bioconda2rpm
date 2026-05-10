@@ -13404,12 +13404,6 @@ fn render_python_venv_setup_block(
     let cython_metadata_bootstrap = python_requirements
         .iter()
         .any(|req| req == "cython" || req.starts_with("ete4"));
-    let versioneer_metadata_bootstrap = python_requirements.iter().any(|req| {
-        req == "fisher"
-            || req.starts_with("fisher<")
-            || req.starts_with("fisher>")
-            || req.starts_with("fisher=")
-    });
     let package_name = normalize_name(package_name);
     let package_specific_prelude = if package_name == "pysam" {
         "if [ -d htslib/htslib ]; then\n\
@@ -13435,9 +13429,6 @@ fi\n"
             preinstall_legacy_build_bits.push_str("\"$PIP\" install \"cython<3\" \"numpy<2\"\n");
         } else if cython_metadata_bootstrap {
             preinstall_legacy_build_bits.push_str("\"$PIP\" install \"cython<3\" \"numpy<2\"\n");
-        }
-        if versioneer_metadata_bootstrap {
-            preinstall_legacy_build_bits.push_str("\"$PIP\" install \"versioneer<0.20\"\n");
         }
         let compile_flags = " --pip-args \"--no-build-isolation\"";
         let install_flags = " --no-build-isolation";
@@ -13484,6 +13475,8 @@ for raw in raw_lines:
     line = re.sub(r'(?P<op>>=|<=|>|<|~=)(?P<ver>[0-9][0-9A-Za-z_.!+-]*)\.\*', r'\g<op>\g<ver>', line)
     if sys.version_info[0] < 3 and name == 'biopython' and '<' not in line and '==' not in line:
         line += ',<1.77' if re.search(r'[>=!~]', line) else '<1.77'
+    if sys.version_info[0] < 3 and name == 'fisher' and '<' not in line and '==' not in line:
+        line += ',<0.1.14' if re.search(r'[>=!~]', line) else '<0.1.14'
     lines.append(line)
 with open('requirements.in', 'w') as handle:
     handle.write('\n'.join(lines) + ('\n' if lines else ''))
@@ -19995,9 +19988,10 @@ requirements:
     }
 
     #[test]
-    fn python_venv_install_bootstraps_versioneer_for_fisher_sdists() {
+    fn python_venv_install_constrains_fisher_for_python2_sdists() {
         let block = render_python_venv_setup_block("example", true, &["fisher".to_string()]);
-        assert!(block.contains("\"$PIP\" install \"versioneer<0.20\""));
+        assert!(block.contains("name == 'fisher'"));
+        assert!(block.contains("line += ',<0.1.14'"));
     }
 
     #[test]
