@@ -8903,10 +8903,7 @@ fn compute_minimal_build_scope(
                 .build_script
                 .as_deref()
                 .is_some_and(build_script_mentions_arch_env))
-        // HEURISTIC-TEMP(issue=bioconda2rpm#trf-platform-conditional-build-script):
-        // TRF's platform switch lives in an external recipe build.sh, not inline
-        // meta.yaml, so parsed.build_script does not carry the target_platform token.
-        || (recipe_build_sh_required && software_slug == "trf");
+        || recipe_build_sh_required;
 
     MinimalBuildScope {
         python_runtime_required,
@@ -26813,10 +26810,11 @@ $R CMD INSTALL --build .
         );
 
         assert!(spec.contains(
-            "%global bioconda2rpm_build_scope perl-runtime,compiler-env,symlink-normalization,recipe-build-sh"
+            "%global bioconda2rpm_build_scope perl-runtime,compiler-env,arch-env,symlink-normalization,recipe-build-sh"
         ));
         assert!(spec.contains("Source1:        bioconda-perl-template-toolkit-build.sh"));
         assert!(spec.contains("cp %{SOURCE1} buildsrc/build.sh"));
+        assert!(spec.contains("export target_platform=linux-64"));
         assert!(spec.contains("File::Find treats that as a recursive loop"));
         assert!(spec.contains("done < <(find . -mindepth 1 -maxdepth 1 -type l -print0)"));
         assert!(spec.contains("bash -eo pipefail ./build.sh"));
