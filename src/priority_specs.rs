@@ -13426,7 +13426,7 @@ fi\n"
         } else if legacy_pysam_mode {
             "\"$PIP\" install \"cython<3\" \"numpy<2\"\n"
         } else if cython_metadata_bootstrap {
-            "\"$PIP\" install \"cython\" \"numpy<2\"\n"
+            "\"$PIP\" install \"cython<3\" \"numpy<2\"\n"
         } else {
             ""
         };
@@ -19940,7 +19940,7 @@ requirements:
             true,
             &["cython".to_string(), "ete4".to_string()],
         );
-        assert!(block.contains("\"$PIP\" install \"cython\" \"numpy<2\"\n"));
+        assert!(block.contains("\"$PIP\" install \"cython<3\" \"numpy<2\"\n"));
         assert!(block.contains("pip-compile --generate-hashes"));
         assert!(block.contains("--pip-args \"--no-build-isolation\""));
     }
