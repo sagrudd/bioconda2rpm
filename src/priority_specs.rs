@@ -13175,6 +13175,16 @@ fn render_python_venv_setup_block(python_recipe: bool, python_requirements: &[St
     let legacy_pomegranate_mode = python_requirements
         .iter()
         .any(|req| req.starts_with("pomegranate"));
+    let legacy_pysam_mode = python_requirements.iter().any(|req| {
+        req == "pysam"
+            || req.starts_with("pysam<")
+            || req.starts_with("pysam>")
+            || req.starts_with("pysam=")
+            || req == "htslib"
+            || req.starts_with("htslib<")
+            || req.starts_with("htslib>")
+            || req.starts_with("htslib=")
+    });
     let cython_metadata_bootstrap = python_requirements
         .iter()
         .any(|req| req == "cython" || req.starts_with("ete4"));
@@ -13184,6 +13194,8 @@ fn render_python_venv_setup_block(python_recipe: bool, python_requirements: &[St
         let requirements_body = python_requirements.join("\n");
         let preinstall_legacy_build_bits = if legacy_pomegranate_mode {
             "\"$PIP\" install \"cython<3\" \"numpy<2\" \"scipy<2\"\n"
+        } else if legacy_pysam_mode {
+            "\"$PIP\" install \"cython<3\" \"numpy<2\"\n"
         } else if cython_metadata_bootstrap {
             "\"$PIP\" install \"cython\" \"numpy<2\"\n"
         } else {
@@ -19592,6 +19604,7 @@ requirements:
             "dnf -y install zlib-devel bzip2-devel xz-devel libcurl-devel openssl-devel"
         ));
         assert!(block.contains("export CFLAGS=\"-fPIC ${CFLAGS:-}\""));
+        assert!(block.contains("\"$PIP\" install \"cython<3\" \"numpy<2\""));
     }
 
     #[test]
