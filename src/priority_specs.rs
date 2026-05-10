@@ -9670,8 +9670,11 @@ chmod 0755 buildsrc/build.sh\n"
         &parsed.build_number,
         &scope,
     );
-    let python_venv_setup =
-        render_python_venv_setup_block(scope.python_runtime_required, &python_requirements);
+    let python_venv_setup = render_python_venv_setup_block(
+        &parsed.package_name,
+        scope.python_runtime_required,
+        &python_requirements,
+    );
     let gsl_prefix_shim_block = render_gsl_prefix_shim_block(parsed);
     let build_commands = if scope.recipe_build_sh_required {
         "echo \"bioconda2rpm minimal mode: recipe build.sh retained for install phase\"\n"
@@ -10017,7 +10020,8 @@ fn render_payload_spec(
         && (recipe_dep_mentions(parsed, "louvain")
             || recipe_dep_mentions(parsed, "igraph")
             || recipe_dep_mentions(parsed, "python-igraph"));
-    let python_venv_setup = render_python_venv_setup_block(python_recipe, &python_requirements);
+    let python_venv_setup =
+        render_python_venv_setup_block(&parsed.package_name, python_recipe, &python_requirements);
     let build_script_commands = parsed
         .build_script
         .as_deref()
@@ -10717,15 +10721,6 @@ then\n\
   while IFS= read -r -d '' longint_src; do\n\
     perl -0pi -e 's/#\\s*include\\s+[\"<]longintrepr\\.h[\">]/#include <cpython\\/longintrepr.h>/g' \"$longint_src\" || true\n\
   done < <(find . -type f \\( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \\) -print0 2>/dev/null)\n\
-fi\n\
-\n\
-# Legacy pysam source archives vendor HTSlib as htslib/htslib/*.h, while\n\
-# generated extension sources include headers as htslib/*.h.\n\
-if [[ \"%{{tool}}\" == \"pysam\" && -d \"htslib/htslib\" ]]; then\n\
-  mkdir -p \"$PREFIX/include\"\n\
-  ln -snf \"$(pwd)/htslib/htslib\" \"$PREFIX/include/htslib\" || true\n\
-  export CFLAGS=\"-I$(pwd)/htslib ${{CFLAGS:-}}\"\n\
-  export CPPFLAGS=\"-I$(pwd)/htslib ${{CPPFLAGS:-}}\"\n\
 fi\n\
 \n\
 # Conda recipes often assume host/build dependencies are co-located in one PREFIX.\n\
@@ -13209,7 +13204,11 @@ fi\n"
     }
 }
 
-fn render_python_venv_setup_block(python_recipe: bool, python_requirements: &[String]) -> String {
+fn render_python_venv_setup_block(
+    package_name: &str,
+    python_recipe: bool,
+    python_requirements: &[String],
+) -> String {
     if !python_recipe {
         return String::new();
     }
@@ -13230,6 +13229,17 @@ fn render_python_venv_setup_block(python_recipe: bool, python_requirements: &[St
     let cython_metadata_bootstrap = python_requirements
         .iter()
         .any(|req| req == "cython" || req.starts_with("ete4"));
+    let package_name = normalize_name(package_name);
+    let package_specific_prelude = if package_name == "pysam" {
+        "if [ -d htslib/htslib ]; then\n\
+    mkdir -p \"$PREFIX/include\"\n\
+    ln -snf \"$(pwd)/htslib/htslib\" \"$PREFIX/include/htslib\" || true\n\
+    export CFLAGS=\"-I$(pwd)/htslib ${CFLAGS:-}\"\n\
+    export CPPFLAGS=\"-I$(pwd)/htslib ${CPPFLAGS:-}\"\n\
+fi\n"
+    } else {
+        ""
+    };
     let requirements_install = if python_requirements.is_empty() {
         String::new()
     } else {
@@ -13352,7 +13362,9 @@ export PIP=\"$VIRTUAL_ENV/bin/pip\"\n\
 export SP_DIR=\"$($PYTHON -c 'import site, sysconfig; paths=[p for p in (getattr(site, \"getsitepackages\", lambda: [])() or []) if p.endswith(\"site-packages\")]; print(paths[0] if paths else sysconfig.get_paths().get(\"purelib\", \"\"))')\"\n\
 export PIP_DISABLE_PIP_VERSION_CHECK=1\n\
 \"$PIP\" install --upgrade pip \"setuptools<81\" wheel\n\
+{package_specific_prelude}\
 {requirements_install}",
+        package_specific_prelude = package_specific_prelude,
         requirements_install = requirements_install
     )
 }
@@ -19666,8 +19678,11 @@ requirements:
 
     #[test]
     fn python_venv_install_preinstalls_cython_for_metadata_bootstrap() {
-        let block =
-            render_python_venv_setup_block(true, &["cython".to_string(), "ete4".to_string()]);
+        let block = render_python_venv_setup_block(
+            "example",
+            true,
+            &["cython".to_string(), "ete4".to_string()],
+        );
         assert!(block.contains("\"$PIP\" install \"cython\" \"numpy<2\"\n"));
         assert!(block.contains("pip-compile --generate-hashes"));
         assert!(block.contains("--pip-args \"--no-build-isolation\""));
@@ -19676,6 +19691,7 @@ requirements:
     #[test]
     fn python_venv_install_disables_build_isolation_for_pomegranate() {
         let block = render_python_venv_setup_block(
+            "example",
             true,
             &["pomegranate>=0.14.8".to_string(), "cython<3".to_string()],
         );
@@ -19687,7 +19703,7 @@ requirements:
 
     #[test]
     fn python_venv_install_falls_back_for_legacy_sdist_lock_failures() {
-        let block = render_python_venv_setup_block(true, &["cigar".to_string()]);
+        let block = render_python_venv_setup_block("example", true, &["cigar".to_string()]);
         assert!(block.contains("if pip-compile --generate-hashes requirements.in"));
         assert!(block.contains("pip-compile failed; falling back to direct no-build-isolation"));
         assert!(block.contains("\"$PIP\" install --no-build-isolation -r requirements.in"));
@@ -19695,7 +19711,7 @@ requirements:
 
     #[test]
     fn python_venv_install_bootstraps_zlib_for_pysam_sdists() {
-        let block = render_python_venv_setup_block(true, &["pysam".to_string()]);
+        let block = render_python_venv_setup_block("example", true, &["pysam".to_string()]);
         assert!(block.contains("grep -Eiq '^(pysam|htslib)([<>=!~ ;]|$)' requirements.in"));
         assert!(block.contains(
             "dnf -y install zlib-devel bzip2-devel xz-devel libcurl-devel openssl-devel"
@@ -19705,8 +19721,19 @@ requirements:
     }
 
     #[test]
+    fn python_venv_setup_links_pysam_bundled_htslib_headers() {
+        let block = render_python_venv_setup_block("pysam", true, &["cython<3".to_string()]);
+        assert!(block.contains("if [ -d htslib/htslib ]; then"));
+        assert!(block.contains("ln -snf \"$(pwd)/htslib/htslib\" \"$PREFIX/include/htslib\""));
+        assert!(block.contains("export CFLAGS=\"-I$(pwd)/htslib ${CFLAGS:-}\""));
+
+        let generic_block = render_python_venv_setup_block("example", true, &[]);
+        assert!(!generic_block.contains("htslib/htslib"));
+    }
+
+    #[test]
     fn python_venv_install_bootstraps_mpi_for_mpi4py_sdists() {
-        let block = render_python_venv_setup_block(true, &["mpi4py".to_string()]);
+        let block = render_python_venv_setup_block("example", true, &["mpi4py".to_string()]);
         assert!(block.contains("grep -Eiq '^(mpi4py)([<>=!~ ;]|$)' requirements.in"));
         assert!(block.contains("dnf -y install openmpi-devel"));
         assert!(block.contains("export MPICC=/usr/lib64/openmpi/bin/mpicc"));
@@ -19715,6 +19742,7 @@ requirements:
     #[test]
     fn python_venv_install_preinstalls_setuptools_caps() {
         let block = render_python_venv_setup_block(
+            "example",
             true,
             &["cython<3".to_string(), "setuptools<58".to_string()],
         );
@@ -19729,6 +19757,7 @@ requirements:
     #[test]
     fn python_venv_setup_sanitizes_conda_only_lock_inputs() {
         let block = render_python_venv_setup_block(
+            "example",
             true,
             &[
                 "seaborn>=0.11.*".to_string(),
@@ -19821,7 +19850,7 @@ requirements:
 
     #[test]
     fn python_venv_setup_exports_sp_dir_for_conda_compat() {
-        let block = render_python_venv_setup_block(true, &[]);
+        let block = render_python_venv_setup_block("example", true, &[]);
         assert!(block.contains("export SP_DIR=\"$($PYTHON -c"));
         assert!(block.contains("getsitepackages"));
         assert!(block.contains("purelib"));
@@ -19829,7 +19858,7 @@ requirements:
 
     #[test]
     fn python_venv_setup_uses_virtualenv_for_python2_runtime() {
-        let block = render_python_venv_setup_block(true, &[]);
+        let block = render_python_venv_setup_block("example", true, &[]);
         assert!(block.contains("sys.version_info[0] < 3"));
         assert!(block.contains("\"$PYTHON\" -m virtualenv \"$PREFIX/venv\""));
         assert!(block.contains("\"$PIP\" install 'virtualenv<20.22'"));
@@ -20805,7 +20834,7 @@ requirements:
         assert!(!reqs.iter().any(|r| r.starts_with("pyasp")));
         assert!(should_keep_rpm_dependency_for_python("pyasp"));
 
-        let block = render_python_venv_setup_block(true, &["pyasp>=1.4.3".to_string()]);
+        let block = render_python_venv_setup_block("example", true, &["pyasp>=1.4.3".to_string()]);
         assert!(block.contains("'pyasp'"));
     }
 
@@ -23624,9 +23653,6 @@ requirements:
         assert!(spec.contains("PYLONGINT"));
         assert!(spec.contains("sys.version_info >= (3, 11)"));
         assert!(spec.contains("cpython\\/longintrepr.h"));
-        assert!(spec.contains("htslib/htslib"));
-        assert!(spec.contains("\"$PREFIX/include/htslib\""));
-        assert!(spec.contains("$(pwd)/htslib"));
         assert!(spec.contains("-name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx'"));
     }
 
