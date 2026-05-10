@@ -13519,7 +13519,10 @@ then\n\
     \"$PYTHON\" -m virtualenv \"$PREFIX/venv\"\n\
   fi\n\
 else\n\
-  \"$PYTHON\" -m venv \"$PREFIX/venv\"\n\
+  if ! \"$PYTHON\" -m venv \"$PREFIX/venv\"; then\n\
+    \"$PIP\" install 'virtualenv<20.22'\n\
+    \"$PYTHON\" -m virtualenv \"$PREFIX/venv\"\n\
+  fi\n\
 fi\n\
 export VIRTUAL_ENV=\"$PREFIX/venv\"\n\
 export PATH=\"$VIRTUAL_ENV/bin:$PATH\"\n\
@@ -20121,6 +20124,7 @@ requirements:
         assert!(block.contains("\"$PYTHON\" -m virtualenv \"$PREFIX/venv\""));
         assert!(block.contains("\"$PIP\" install 'virtualenv<20.22'"));
         assert!(block.contains("\"$PYTHON\" -m venv \"$PREFIX/venv\""));
+        assert!(block.contains("if ! \"$PYTHON\" -m venv \"$PREFIX/venv\"; then"));
     }
 
     #[test]
