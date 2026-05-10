@@ -16436,11 +16436,30 @@ record_local_candidate() {{\n\
 }}\n\
 \n\
 if [[ \"$needs_local_candidate_index\" -eq 1 ]]; then\n\
-  for rpm_dir in '{target_rpms_dir}' '{legacy_rpms_dir}'; do\n\
-    if [[ ! -d \"$rpm_dir\" ]]; then\n\
+  declare -A candidate_rpm_seen\n\
+  for dep in \"${{build_requires[@]:-}}\"; do\n\
+    if [[ -z \"$dep\" ]]; then\n\
       continue\n\
     fi\n\
-    while IFS= read -r -d '' rpmf; do\n\
+    if rpm -q --whatprovides \"$dep\" >/dev/null 2>&1; then\n\
+      provider=$(rpm -q --whatprovides \"$dep\" | head -n 1 || true)\n\
+      if [[ \"$provider\" != phoreus-* ]]; then\n\
+        continue\n\
+      fi\n\
+    fi\n\
+    dep_file_token=$(printf '%s' \"$dep\" | sed -E 's/[<>=].*$//; s/\\([^)]*\\)//g; s/[^A-Za-z0-9_.+-]+/-/g; s/^-+//; s/-+$//')\n\
+    if [[ -z \"$dep_file_token\" || \"$dep_file_token\" == /* ]]; then\n\
+      continue\n\
+    fi\n\
+    for rpm_dir in '{target_rpms_dir}' '{legacy_rpms_dir}'; do\n\
+      if [[ ! -d \"$rpm_dir\" ]]; then\n\
+        continue\n\
+      fi\n\
+      while IFS= read -r -d '' rpmf; do\n\
+        if [[ -n \"${{candidate_rpm_seen[$rpmf]:-}}\" ]]; then\n\
+          continue\n\
+        fi\n\
+        candidate_rpm_seen[\"$rpmf\"]=1\n\
       name=$(rpm -qp --qf '%{{NAME}}\\n' \"$rpmf\" 2>/dev/null || true)\n\
       mapfile -t rpm_provides < <(rpm -qp --provides \"$rpmf\" 2>/dev/null || true)\n\
       provides_score=${{#rpm_provides[@]}}\n\
@@ -16456,7 +16475,8 @@ if [[ \"$needs_local_candidate_index\" -eq 1 ]]; then\n\
         lower_key=$(printf '%s' \"$key\" | tr '[:upper:]' '[:lower:]')\n\
         record_local_candidate \"$lower_key\" \"$rpmf\" \"$provides_score\"\n\
       done\n\
-    done < <(find \"$rpm_dir\" -type f -name '*.rpm' -print0 2>/dev/null)\n\
+      done < <(find \"$rpm_dir\" -type f \\( -iname \"*${{dep_file_token}}*.rpm\" -o -iname \"*phoreus-${{dep_file_token}}*.rpm\" \\) -print0 2>/dev/null)\n\
+    done\n\
   done\n\
 fi\n\
 \n\
