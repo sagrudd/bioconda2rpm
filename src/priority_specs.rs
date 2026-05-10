@@ -9399,6 +9399,20 @@ fi
 "###
 }
 
+fn render_foreign_elf_cleanup_block(software_slug: &str) -> &'static str {
+    match software_slug {
+        "2pg-cartesian" | "2pg_cartesian" => {
+            r###"# HEURISTIC-TEMP(issue=bioconda2rpm#2pg-cartesian-vendored-maxcluster):
+# 2pg_cartesian installs a prebuilt 32-bit maxcluster helper from upstream
+# analysis scripts. It is not built from the package source in this recipe and
+# cannot be shipped in an x86_64/aarch64 RPM without violating arch/provenance.
+find %{buildroot}%{phoreus_prefix} -type f -path '*/scripts/analysis/maxcluster/maxcluster' -delete 2>/dev/null || true
+"###
+        }
+        _ => "",
+    }
+}
+
 fn render_perl_recursive_source_link_cleanup_block(perl_recipe: bool) -> &'static str {
     if !perl_recipe {
         return "";
@@ -9877,6 +9891,7 @@ done < <(find %{buildroot}%{phoreus_prefix} -type f -print0 2>/dev/null)\n\
 fi\n";
     let blast_compat_block = render_minimal_blast_compat_block(&scope);
     let spacerplacer_mafft_cleanup_block = render_spacerplacer_mafft_cleanup_block(software_slug);
+    let foreign_elf_cleanup_block = render_foreign_elf_cleanup_block(software_slug);
     let build_scope = scope.label_string();
     let perl_module_provides = if perl_recipe {
         perl_module_name_from_conda(&parsed.package_name)
@@ -9958,6 +9973,7 @@ export PREFIX=%{{buildroot}}%{{phoreus_prefix}}\n\
 {perl_recursive_source_link_cleanup_block}\
 {install_commands}\
 {spacerplacer_mafft_cleanup_block}\
+{foreign_elf_cleanup_block}\
 {elf_arch_guard_block}\
 {symlink_normalization_block}\
 {buildroot_text_scrub_block}\
@@ -10012,6 +10028,7 @@ chmod 0644 %{{buildroot}}%{{phoreus_moddir}}/%{{version}}.lua\n\
         python_venv_setup = python_venv_setup,
         perl_recursive_source_link_cleanup_block = perl_recursive_source_link_cleanup_block,
         spacerplacer_mafft_cleanup_block = spacerplacer_mafft_cleanup_block,
+        foreign_elf_cleanup_block = foreign_elf_cleanup_block,
         elf_arch_guard_block = elf_arch_guard_block,
         symlink_normalization_block = symlink_normalization_block,
         buildroot_text_scrub_block = buildroot_text_scrub_block,
@@ -20534,6 +20551,60 @@ requirements:
         assert!(!spec.contains("phoreus-python-3.11"));
         assert!(spec.contains("export PYTHON2=\"$PYTHON\""));
         assert!(spec.contains("foreign ELF architecture mismatch"));
+    }
+
+    #[test]
+    fn minimal_payload_spec_prunes_2pg_cartesian_vendored_foreign_elf() {
+        let parsed = ParsedMeta {
+            package_name: "2pg_cartesian".to_string(),
+            version: "1.0.1".to_string(),
+            build_number: "8".to_string(),
+            source_url: "https://example.invalid/2pg_cartesian.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: "https://github.com/rodrigofaccioli/2pg_cartesian".to_string(),
+            license: "Apache-2.0".to_string(),
+            summary: "2pg cartesian".to_string(),
+            source_patches: Vec::new(),
+            build_script: None,
+            output_build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: Vec::new(),
+            run_dep_specs_raw: vec!["gromacs".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::new(),
+            run_deps: BTreeSet::from(["gromacs".to_string()]),
+        };
+        let plan = InterpretedBuildPlan {
+            build_commands: vec![
+                "cmake -S . -B build".to_string(),
+                "cmake --build build".to_string(),
+            ],
+            install_commands: vec!["cp -a scripts $PREFIX/".to_string()],
+            prefix_install_vars: BTreeSet::new(),
+        };
+
+        let spec = render_payload_spec_minimal(
+            "2pg-cartesian",
+            &parsed,
+            &plan,
+            None,
+            &[],
+            Path::new("/tmp/meta.yaml"),
+            Path::new("/tmp"),
+            false,
+            false,
+            false,
+            false,
+        );
+
+        assert!(spec.contains("2pg-cartesian-vendored-maxcluster"));
+        assert!(spec.contains("scripts/analysis/maxcluster/maxcluster"));
+        assert!(spec.contains("foreign ELF architecture mismatch"));
+        assert!(
+            spec.find("scripts/analysis/maxcluster/maxcluster")
+                < spec.find("foreign ELF architecture mismatch")
+        );
     }
 
     #[test]
