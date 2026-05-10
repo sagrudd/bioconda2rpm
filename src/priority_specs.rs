@@ -245,6 +245,18 @@ const PHOREUS_PYTHON_PACKAGE: &str = "phoreus-python-3.11";
 const PHOREUS_PYTHON_VERSION_27: &str = "2.7";
 const PHOREUS_PYTHON_FULL_VERSION_27: &str = "2.7.18";
 const PHOREUS_PYTHON_PACKAGE_27: &str = "phoreus-python-2.7";
+const PHOREUS_PYTHON_VERSION_37: &str = "3.7";
+const PHOREUS_PYTHON_FULL_VERSION_37: &str = "3.7.17";
+const PHOREUS_PYTHON_PACKAGE_37: &str = "phoreus-python-3.7";
+const PHOREUS_PYTHON_VERSION_38: &str = "3.8";
+const PHOREUS_PYTHON_FULL_VERSION_38: &str = "3.8.20";
+const PHOREUS_PYTHON_PACKAGE_38: &str = "phoreus-python-3.8";
+const PHOREUS_PYTHON_VERSION_39: &str = "3.9";
+const PHOREUS_PYTHON_FULL_VERSION_39: &str = "3.9.23";
+const PHOREUS_PYTHON_PACKAGE_39: &str = "phoreus-python-3.9";
+const PHOREUS_PYTHON_VERSION_310: &str = "3.10";
+const PHOREUS_PYTHON_FULL_VERSION_310: &str = "3.10.18";
+const PHOREUS_PYTHON_PACKAGE_310: &str = "phoreus-python-3.10";
 const PHOREUS_PYTHON_VERSION_312: &str = "3.12";
 const PHOREUS_PYTHON_FULL_VERSION_312: &str = "3.12.11";
 const PHOREUS_PYTHON_PACKAGE_312: &str = "phoreus-python-3.12";
@@ -265,6 +277,34 @@ const PHOREUS_PYTHON_RUNTIME_27: PhoreusPythonRuntime = PhoreusPythonRuntime {
     full_version: PHOREUS_PYTHON_FULL_VERSION_27,
     package: PHOREUS_PYTHON_PACKAGE_27,
 };
+const PHOREUS_PYTHON_RUNTIME_37: PhoreusPythonRuntime = PhoreusPythonRuntime {
+    major: 3,
+    minor: 7,
+    minor_str: PHOREUS_PYTHON_VERSION_37,
+    full_version: PHOREUS_PYTHON_FULL_VERSION_37,
+    package: PHOREUS_PYTHON_PACKAGE_37,
+};
+const PHOREUS_PYTHON_RUNTIME_38: PhoreusPythonRuntime = PhoreusPythonRuntime {
+    major: 3,
+    minor: 8,
+    minor_str: PHOREUS_PYTHON_VERSION_38,
+    full_version: PHOREUS_PYTHON_FULL_VERSION_38,
+    package: PHOREUS_PYTHON_PACKAGE_38,
+};
+const PHOREUS_PYTHON_RUNTIME_39: PhoreusPythonRuntime = PhoreusPythonRuntime {
+    major: 3,
+    minor: 9,
+    minor_str: PHOREUS_PYTHON_VERSION_39,
+    full_version: PHOREUS_PYTHON_FULL_VERSION_39,
+    package: PHOREUS_PYTHON_PACKAGE_39,
+};
+const PHOREUS_PYTHON_RUNTIME_310: PhoreusPythonRuntime = PhoreusPythonRuntime {
+    major: 3,
+    minor: 10,
+    minor_str: PHOREUS_PYTHON_VERSION_310,
+    full_version: PHOREUS_PYTHON_FULL_VERSION_310,
+    package: PHOREUS_PYTHON_PACKAGE_310,
+};
 const PHOREUS_PYTHON_RUNTIME_312: PhoreusPythonRuntime = PhoreusPythonRuntime {
     major: 3,
     minor: 12,
@@ -279,8 +319,12 @@ const PHOREUS_PYTHON_RUNTIME_313: PhoreusPythonRuntime = PhoreusPythonRuntime {
     full_version: PHOREUS_PYTHON_FULL_VERSION_313,
     package: PHOREUS_PYTHON_PACKAGE_313,
 };
-const PHOREUS_PYTHON_RUNTIMES: [PhoreusPythonRuntime; 4] = [
+const PHOREUS_PYTHON_RUNTIMES: [PhoreusPythonRuntime; 8] = [
     PHOREUS_PYTHON_RUNTIME_27,
+    PHOREUS_PYTHON_RUNTIME_37,
+    PHOREUS_PYTHON_RUNTIME_38,
+    PHOREUS_PYTHON_RUNTIME_39,
+    PHOREUS_PYTHON_RUNTIME_310,
     PHOREUS_PYTHON_RUNTIME_311,
     PHOREUS_PYTHON_RUNTIME_312,
     PHOREUS_PYTHON_RUNTIME_313,
@@ -3539,11 +3583,16 @@ fn parse_meta_for_resolved_native(
 ) -> Result<ParsedRecipeResult> {
     let meta_text = fs::read_to_string(&resolved.meta_path)
         .with_context(|| format!("failed to read metadata {}", resolved.meta_path.display()))?;
-    let selector_ctx = if meta_text_requests_python2(&meta_text, target_arch) {
-        SelectorContext::for_rpm_build_with_python(target_arch, 2, 7)
-    } else {
-        SelectorContext::for_rpm_build(target_arch)
-    };
+    let selector_runtime = infer_selector_python_runtime(&meta_text, target_arch);
+    let selector_ctx = selector_runtime
+        .map(|runtime| {
+            SelectorContext::for_rpm_build_with_python(
+                target_arch,
+                runtime.major as i64,
+                runtime.minor as i64,
+            )
+        })
+        .unwrap_or_else(|| SelectorContext::for_rpm_build(target_arch));
     let selected_meta = apply_selectors(&meta_text, &selector_ctx);
     let rendered = render_meta_yaml(&selected_meta).with_context(|| {
         format!(
@@ -3568,6 +3617,7 @@ fn parse_meta_for_resolved_native(
             resolved.meta_path.display()
         )
     })?;
+    let parsed = apply_selector_python_runtime_hint(parsed, selector_runtime);
     Ok(ParsedRecipeResult {
         parsed,
         build_skip,
@@ -3580,11 +3630,8 @@ fn parse_meta_for_resolved_conda(
     target_arch: &str,
 ) -> Result<ParsedRecipeResult> {
     let meta_text = fs::read_to_string(&resolved.meta_path).unwrap_or_default();
-    let conda_py = if meta_text_requests_python2(&meta_text, target_arch) {
-        "27"
-    } else {
-        "311"
-    };
+    let selector_runtime = infer_selector_python_runtime(&meta_text, target_arch);
+    let conda_py = selector_runtime.map(conda_py_for_runtime).unwrap_or("311");
     let output = Command::new("python3")
         .env("CONDA_SUBDIR", conda_subdir_for_target_arch(target_arch))
         .env("CONDA_PY", conda_py)
@@ -3642,6 +3689,7 @@ fn parse_meta_for_resolved_conda(
         host_deps: normalize_dep_specs_to_set(&host_dep_specs_raw),
         run_deps: normalize_dep_specs_to_set(&run_dep_specs_raw),
     };
+    let parsed = apply_selector_python_runtime_hint(parsed, selector_runtime);
 
     Ok(ParsedRecipeResult {
         parsed,
@@ -3689,6 +3737,79 @@ fn normalize_dep_specs_to_set(raw_specs: &[String]) -> BTreeSet<String> {
         .iter()
         .filter_map(|raw| normalize_dependency_name(raw))
         .collect()
+}
+
+fn conda_py_for_runtime(runtime: PhoreusPythonRuntime) -> &'static str {
+    match (runtime.major, runtime.minor) {
+        (2, 7) => "27",
+        (3, 7) => "37",
+        (3, 8) => "38",
+        (3, 9) => "39",
+        (3, 10) => "310",
+        (3, 12) => "312",
+        (3, 13) => "313",
+        _ => "311",
+    }
+}
+
+fn python_runtime_dep_hint(runtime: PhoreusPythonRuntime) -> String {
+    format!(
+        "python >={major}.{minor},<{major}.{next_minor}",
+        major = runtime.major,
+        minor = runtime.minor,
+        next_minor = runtime.minor + 1
+    )
+}
+
+fn raw_dep_is_plain_python(raw: &str) -> bool {
+    parse_dependency_spec(raw)
+        .map(|dep| dep.name == "python" && dep.constraints.is_empty())
+        .unwrap_or(false)
+}
+
+fn apply_selector_python_runtime_hint(
+    mut parsed: ParsedMeta,
+    selector_runtime: Option<PhoreusPythonRuntime>,
+) -> ParsedMeta {
+    let Some(runtime) = selector_runtime else {
+        return parsed;
+    };
+    if runtime.package == PHOREUS_PYTHON_RUNTIME_311.package {
+        return parsed;
+    }
+    let has_python_runtime_constraint = parsed
+        .build_dep_specs_raw
+        .iter()
+        .chain(parsed.host_dep_specs_raw.iter())
+        .chain(parsed.run_dep_specs_raw.iter())
+        .any(|raw| {
+            let Some(dep) = parse_dependency_spec(raw) else {
+                return false;
+            };
+            dep.name == "python" && !dep.constraints.is_empty()
+        });
+    if has_python_runtime_constraint {
+        return parsed;
+    }
+
+    let hint = python_runtime_dep_hint(runtime);
+    if parsed
+        .host_dep_specs_raw
+        .iter()
+        .any(|raw| raw_dep_is_plain_python(raw))
+    {
+        parsed.host_dep_specs_raw.push(hint.clone());
+    }
+    if parsed
+        .run_dep_specs_raw
+        .iter()
+        .any(|raw| raw_dep_is_plain_python(raw))
+    {
+        parsed.run_dep_specs_raw.push(hint);
+    }
+    parsed.host_deps = normalize_dep_specs_to_set(&parsed.host_dep_specs_raw);
+    parsed.run_deps = normalize_dep_specs_to_set(&parsed.run_dep_specs_raw);
+    parsed
 }
 
 fn conda_subdir_for_target_arch(target_arch: &str) -> &'static str {
@@ -5268,6 +5389,91 @@ impl SelectorContext {
 }
 
 fn meta_text_requests_python2(meta_text: &str, target_arch: &str) -> bool {
+    infer_selector_python_runtime(meta_text, target_arch)
+        .map(|runtime| runtime.package == PHOREUS_PYTHON_RUNTIME_27.package)
+        .unwrap_or(false)
+}
+
+fn infer_selector_python_runtime(
+    meta_text: &str,
+    target_arch: &str,
+) -> Option<PhoreusPythonRuntime> {
+    let requested = infer_python_runtime_from_meta_dependencies(meta_text);
+    if requested.is_some() {
+        return requested;
+    }
+
+    let default_ctx = SelectorContext::for_rpm_build(target_arch);
+    let skip_lines = recipe_build_skip_lines(meta_text);
+    for runtime in PHOREUS_PYTHON_RUNTIMES {
+        if runtime.package == PHOREUS_PYTHON_RUNTIME_311.package {
+            continue;
+        }
+        let runtime_ctx = SelectorContext::for_rpm_build_with_python(
+            target_arch,
+            runtime.major as i64,
+            runtime.minor as i64,
+        );
+        if skip_lines.iter().any(|line| {
+            let Some((_, selector)) = split_selector(line) else {
+                return false;
+            };
+            evaluate_selector(selector, &default_ctx) && !evaluate_selector(selector, &runtime_ctx)
+        }) {
+            return Some(runtime);
+        }
+    }
+
+    None
+}
+
+fn infer_python_runtime_from_meta_dependencies(meta_text: &str) -> Option<PhoreusPythonRuntime> {
+    let python_deps = meta_text.lines().filter_map(|line| {
+        let dependency = line
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .strip_prefix('-')
+            .unwrap_or_else(|| line.split('#').next().unwrap_or_default().trim())
+            .trim();
+        let dep = parse_dependency_spec(dependency)?;
+        (dep.name == "python").then_some(dep)
+    });
+
+    let mut best = None;
+    for dep in python_deps {
+        if dep.constraints.is_empty() {
+            continue;
+        }
+        let compatible = PHOREUS_PYTHON_RUNTIMES
+            .iter()
+            .copied()
+            .filter(|runtime| {
+                dep.constraints
+                    .iter()
+                    .all(|constraint| version_satisfies_requirement(runtime.minor_str, constraint))
+            })
+            .collect::<Vec<_>>();
+        if compatible.is_empty() {
+            continue;
+        }
+        if compatible
+            .iter()
+            .any(|runtime| runtime.package == PHOREUS_PYTHON_RUNTIME_311.package)
+        {
+            best = Some(PHOREUS_PYTHON_RUNTIME_311);
+        } else {
+            best = compatible
+                .into_iter()
+                .max_by_key(|runtime| (runtime.major == 3, runtime.major, runtime.minor));
+        }
+    }
+    best.filter(|runtime| runtime.package != PHOREUS_PYTHON_RUNTIME_311.package)
+}
+
+#[allow(dead_code)]
+fn legacy_meta_text_requests_python2(meta_text: &str, target_arch: &str) -> bool {
     let dependency_requests_python27 = meta_text.lines().any(|line| {
         let dependency = line
             .split('#')
@@ -5362,7 +5568,11 @@ fn evaluate_python_selector(term: &str, ctx: &SelectorContext) -> Option<bool> {
     for op in ops {
         if let Some(rest) = term.strip_prefix(&format!("py{op}")) {
             let value = rest.trim().parse::<i64>().ok()?;
-            let current = ctx.py_major * 100 + ctx.py_minor;
+            let current = if ctx.py_minor >= 10 {
+                ctx.py_major * 100 + ctx.py_minor
+            } else {
+                ctx.py_major * 10 + ctx.py_minor
+            };
             return Some(match op {
                 ">=" => current >= value,
                 "<=" => current <= value,
@@ -6082,6 +6292,10 @@ fn phoreus_python_runtime_from_dep(dep: &str) -> Option<PhoreusPythonRuntime> {
     match normalize_dependency_token(dep).as_str() {
         PHOREUS_PYTHON_PACKAGE_27 => Some(PHOREUS_PYTHON_RUNTIME_27),
         "python2.7" | "python-2.7" => Some(PHOREUS_PYTHON_RUNTIME_27),
+        PHOREUS_PYTHON_PACKAGE_37 => Some(PHOREUS_PYTHON_RUNTIME_37),
+        PHOREUS_PYTHON_PACKAGE_38 => Some(PHOREUS_PYTHON_RUNTIME_38),
+        PHOREUS_PYTHON_PACKAGE_39 => Some(PHOREUS_PYTHON_RUNTIME_39),
+        PHOREUS_PYTHON_PACKAGE_310 => Some(PHOREUS_PYTHON_RUNTIME_310),
         PHOREUS_PYTHON_PACKAGE => Some(PHOREUS_PYTHON_RUNTIME_311),
         PHOREUS_PYTHON_PACKAGE_312 => Some(PHOREUS_PYTHON_RUNTIME_312),
         PHOREUS_PYTHON_PACKAGE_313 => Some(PHOREUS_PYTHON_RUNTIME_313),
@@ -8582,7 +8796,9 @@ fn compute_minimal_build_scope(
                 &interpreted_build_plan.build_commands,
             ) || command_configures_install_prefix_from_prefix(
                 &interpreted_build_plan.install_commands,
-            )) && command_installs_configured_prefix(&interpreted_build_plan.install_commands))
+            )) && command_installs_configured_prefix(
+                &interpreted_build_plan.install_commands,
+            ))
             || native_vendored_prefix_required
             || core_c_bootstrap_prefix_required);
     let blast_compat_required = package_requires_blast_compat(software_slug);
@@ -18818,6 +19034,70 @@ build:
     }
 
     #[test]
+    fn selector_context_infers_supported_python_minor_versions() {
+        let py37_only = "build:\n  skip: True  # [py!=37]\nrequirements:\n  run:\n    - python\n";
+        let py39_only = "build:\n  skip: True  # [osx or py<39 or py>39]\nrequirements:\n  run:\n    - python\n";
+        let py312_plus =
+            "build:\n  skip: True  # [py<312]\nrequirements:\n  run:\n    - python >=3\n";
+
+        assert_eq!(
+            infer_selector_python_runtime(py37_only, "x86_64")
+                .expect("py37 runtime")
+                .package,
+            PHOREUS_PYTHON_PACKAGE_37
+        );
+        assert_eq!(
+            infer_selector_python_runtime(py39_only, "x86_64")
+                .expect("py39 runtime")
+                .package,
+            PHOREUS_PYTHON_PACKAGE_39
+        );
+        assert_eq!(
+            infer_selector_python_runtime(py312_plus, "x86_64")
+                .expect("py312 runtime")
+                .package,
+            PHOREUS_PYTHON_PACKAGE_312
+        );
+    }
+
+    #[test]
+    fn selector_runtime_hint_pins_plain_python_dependencies() {
+        let parsed = ParsedMeta {
+            package_name: "fanc".to_string(),
+            version: "0.9.28".to_string(),
+            build_number: "0".to_string(),
+            source_url: "https://example.invalid/fanc.tar.gz".to_string(),
+            source_folder: String::new(),
+            homepage: String::new(),
+            license: "MIT".to_string(),
+            summary: String::new(),
+            source_patches: Vec::new(),
+            build_script: None,
+            output_build_script: None,
+            noarch_python: false,
+            build_dep_specs_raw: Vec::new(),
+            host_dep_specs_raw: vec!["python".to_string()],
+            run_dep_specs_raw: vec!["python".to_string()],
+            build_deps: BTreeSet::new(),
+            host_deps: BTreeSet::from(["python".to_string()]),
+            run_deps: BTreeSet::from(["python".to_string()]),
+        };
+
+        let hinted = apply_selector_python_runtime_hint(parsed, Some(PHOREUS_PYTHON_RUNTIME_37));
+
+        assert!(
+            hinted
+                .host_dep_specs_raw
+                .iter()
+                .any(|dep| dep == "python >=3.7,<3.8")
+        );
+        assert_eq!(
+            select_phoreus_python_runtime(&hinted, true).package,
+            PHOREUS_PYTHON_PACKAGE_37
+        );
+    }
+
+    #[test]
     fn build_skip_reason_classifies_interpreter_selectors() {
         let lines = recipe_build_skip_lines(
             r#"
@@ -19608,6 +19888,23 @@ requirements:
         assert!(
             spec.contains("ln -sfn python%{py_minor} %{buildroot}%{phoreus_prefix}/bin/python2")
         );
+    }
+
+    #[test]
+    fn phoreus_legacy_python3_bootstrap_specs_are_rendered_with_expected_names() {
+        for (runtime, name, version) in [
+            (PHOREUS_PYTHON_RUNTIME_37, "phoreus-python-3.7", "3.7.17"),
+            (PHOREUS_PYTHON_RUNTIME_38, "phoreus-python-3.8", "3.8.20"),
+            (PHOREUS_PYTHON_RUNTIME_39, "phoreus-python-3.9", "3.9.23"),
+            (PHOREUS_PYTHON_RUNTIME_310, "phoreus-python-3.10", "3.10.18"),
+        ] {
+            let spec = render_phoreus_python_bootstrap_spec(runtime);
+            assert!(spec.contains(&format!("Name:           {name}")));
+            assert!(spec.contains(&format!("Version:        {version}")));
+            assert!(spec.contains(
+                "Source0:        https://www.python.org/ftp/python/%{version}/Python-%{version}.tar.xz"
+            ));
+        }
     }
 
     #[test]

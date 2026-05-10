@@ -200,6 +200,7 @@ FR-021b Source unavailability policy
 - The system shall maintain a repository-root `blacklist.txt` CSV for known unavailable upstream sources and recipe-declared build skips. Each entry shall include package name, problem URL or recipe URI, and justification, and matching packages shall be quarantined before source fetch/build work begins.
 - When `build --force` is used directly or through a forwarded/server request, blacklist quarantine shall be bypassed only for the requested root and its dependency closure, and those packages shall enter the normal build route.
 - Recipe-declared build skips shall be recorded at skip time with selector/interpreter/platform context so the report state and blacklist evidence explain why the package was excluded.
+- Interpreter-selector build skips shall be evaluated against the supported Phoreus Python runtime corpus before quarantine; if Python 2.7 or Python 3.7 through 3.13 satisfies the selector, the package shall enter the normal build route with that runtime.
 - Source-unavailability failures shall remain visible in JSON reports, catalogue failure state, and `bioconda2rpm failures` output until a source-equivalent fallback or recipe update is added.
 
 FR-021a Legacy build-helper bootstrap and transitive-source compatibility policy

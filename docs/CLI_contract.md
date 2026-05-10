@@ -195,7 +195,7 @@ Regression-only options:
 - Workspace-lock ownership is authoritative: secondary `build` invocations submit package names into the active session queue instead of failing lock-acquisition.
 - Forwarded packages carry `--force` and `--refresh-files` into the authoritative queue for that request and otherwise inherit the owning session scheduler/container settings.
 - The persistent `server` process does not own or broadcast `--force` or `--refresh-files`; submit `bioconda2rpm build --force <package>` or `bioconda2rpm build --refresh-files <package>` to route those policies through a running server.
-- `--force` bypasses blacklist quarantine only for the requested package and its dependency closure; recipe-declared `build.skip=true` still records a skipped result because the active render context has no buildable recipe output.
+- `--force` bypasses blacklist quarantine only for the requested package and its dependency closure. Interpreter-selector `build.skip=true` rules are evaluated against the supported Phoreus Python runtime corpus first; only recipes with no supported interpreter context remain skipped.
 - Persistent `server` ownership keeps the queue interface available between batches and exits only on user Ctrl-C.
 - `server --status` and `lookup` expose `server_status` for pre-container visibility, including phases such as recipe sync, dependency indexing, spec generation, queue dispatch, and container build heartbeats.
 - Operator removals are explicit queue events; removed package nodes are reported as skipped and their dependents are blocked by normal dependency-gate handling.

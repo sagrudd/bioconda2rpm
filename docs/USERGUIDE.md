@@ -446,7 +446,7 @@ If the source URL is gone, returns 404/503, no longer resolves, or downloads an 
 
 Known unavailable upstream sources and recipe-declared build skips are recorded in the repository-root `blacklist.txt` CSV with `package`, `problem_url`, and `justification` columns. Packages listed there are quarantined early unless `build --force` is used; remove or update an entry only when a provenance-preserving source-equivalent URL is available again or the skipped recipe has a supported build path.
 
-When a recipe renders `build.skip=true`, the skip is recorded immediately with adapter, target architecture, and selector-family detail such as interpreter or platform selector. These entries are appended to `blacklist.txt` when the command is run from the repository root, so running-session skipped state and committed blacklist evidence do not drift silently.
+When a recipe renders `build.skip=true`, the skip is recorded immediately with adapter, target architecture, and selector-family detail such as interpreter or platform selector. These entries are appended to `blacklist.txt` when the command is run from the repository root, so running-session skipped state and committed blacklist evidence do not drift silently. Interpreter selector skips are only final when none of the supported Phoreus Python runtimes can satisfy the selector; the renderer now tests Python 2.7 and Python 3.7 through 3.13 before quarantining a recipe as skipped.
 
 ## 10. Recommended Enterprise Run Pattern
 
