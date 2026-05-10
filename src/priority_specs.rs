@@ -7266,7 +7266,7 @@ fn harden_package_build_script_text(package_name: &str, script: &str) -> String 
         }
         if !emitted_htslib_mode && pip_install_targets_local_source(trimmed) {
             lines.push("unset HTSLIB_LIBRARY_DIR HTSLIB_INCLUDE_DIR".to_string());
-            lines.push("export HTSLIB_MODE=separate".to_string());
+            lines.push("export HTSLIB_MODE=shared".to_string());
             emitted_htslib_mode = true;
         }
         lines.push(raw_line.to_string());
@@ -13283,7 +13283,7 @@ fn render_python_venv_setup_block(
     export CFLAGS=\"-I$(pwd)/htslib ${CFLAGS:-}\"\n\
     export CPPFLAGS=\"-I$(pwd)/htslib ${CPPFLAGS:-}\"\n\
     unset HTSLIB_LIBRARY_DIR HTSLIB_INCLUDE_DIR\n\
-    export HTSLIB_MODE=separate\n\
+    export HTSLIB_MODE=shared\n\
 fi\n"
     } else {
         ""
@@ -19775,7 +19775,7 @@ requirements:
         assert!(block.contains("ln -snf \"$(pwd)/htslib/htslib\" \"$PREFIX/include/htslib\""));
         assert!(block.contains("export CFLAGS=\"-I$(pwd)/htslib ${CFLAGS:-}\""));
         assert!(block.contains("unset HTSLIB_LIBRARY_DIR HTSLIB_INCLUDE_DIR"));
-        assert!(block.contains("export HTSLIB_MODE=separate"));
+        assert!(block.contains("export HTSLIB_MODE=shared"));
 
         let generic_block = render_python_venv_setup_block("example", true, &[]);
         assert!(!generic_block.contains("htslib/htslib"));
@@ -24566,7 +24566,7 @@ $PYTHON -m pip install . --ignore-installed --no-deps -vv --no-build-isolation
             r#"export CFLAGS="-I$(pwd)/htslib -I$PREFIX/include -DHAVE_LIBDEFLATE ${CFLAGS:-}""#
         ));
         assert!(hardened.contains("unset HTSLIB_LIBRARY_DIR HTSLIB_INCLUDE_DIR"));
-        assert!(hardened.contains("export HTSLIB_MODE=separate"));
+        assert!(hardened.contains("export HTSLIB_MODE=shared"));
         assert!(!hardened.contains("export HTSLIB_LIBRARY_DIR=$PREFIX/lib"));
         assert!(!hardened.contains("export HTSLIB_INCLUDE_DIR=$PREFIX/include"));
 
