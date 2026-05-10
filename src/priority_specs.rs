@@ -13240,8 +13240,8 @@ if grep -Eiq '^(rpy2|rpy2-rinterface)([<>=!~ ;]|$)' requirements.in; then
     if command -v microdnf >/dev/null 2>&1; then microdnf -y install readline-devel ncurses-devel >/dev/null 2>&1 || true; fi
 fi
 if grep -Eiq '^(pysam|htslib)([<>=!~ ;]|$)' requirements.in; then
-    if command -v dnf >/dev/null 2>&1; then dnf -y install zlib-devel >/dev/null 2>&1 || true; fi
-    if command -v microdnf >/dev/null 2>&1; then microdnf -y install zlib-devel >/dev/null 2>&1 || true; fi
+    if command -v dnf >/dev/null 2>&1; then dnf -y install zlib-devel bzip2-devel xz-devel libcurl-devel openssl-devel >/dev/null 2>&1 || true; fi
+    if command -v microdnf >/dev/null 2>&1; then microdnf -y install zlib-devel bzip2-devel xz-devel libcurl-devel openssl-devel >/dev/null 2>&1 || true; fi
 fi
 {preinstall_legacy_build_bits}"$PIP" install pip-tools
 if pip-compile --generate-hashes requirements.in --output-file requirements.lock{compile_flags}; then
@@ -19586,7 +19586,9 @@ requirements:
     fn python_venv_install_bootstraps_zlib_for_pysam_sdists() {
         let block = render_python_venv_setup_block(true, &["pysam".to_string()]);
         assert!(block.contains("grep -Eiq '^(pysam|htslib)([<>=!~ ;]|$)' requirements.in"));
-        assert!(block.contains("dnf -y install zlib-devel"));
+        assert!(block.contains(
+            "dnf -y install zlib-devel bzip2-devel xz-devel libcurl-devel openssl-devel"
+        ));
     }
 
     #[test]
