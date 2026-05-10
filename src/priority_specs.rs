@@ -9274,6 +9274,15 @@ if [[ -d \"$PHOREUS_RUST_PREFIX/bin\" ]]; then\n\
   export RUSTUP_HOME=\"$PHOREUS_RUST_PREFIX/.rustup\"\n\
   export CARGO_BUILD_JOBS=1\n\
   export CARGO_INCREMENTAL=0\n\
+  if command -v protoc >/dev/null 2>&1; then\n\
+    export BIOCONDA2RPM_PROTOC_REAL=\"$(command -v protoc)\"\n\
+    cat > \"$(pwd)/.bioconda2rpm-protoc\" <<'PROTOCEOF'\n\
+#!/usr/bin/env bash\n\
+exec \"$BIOCONDA2RPM_PROTOC_REAL\" --experimental_allow_proto3_optional \"$@\"\n\
+PROTOCEOF\n\
+    chmod +x \"$(pwd)/.bioconda2rpm-protoc\"\n\
+    export PROTOC=\"$(pwd)/.bioconda2rpm-protoc\"\n\
+  fi\n\
 fi\n",
             phoreus_rust_minor = PHOREUS_RUST_MINOR
         ));
@@ -13736,7 +13745,16 @@ export CARGO_HOME=\"$PHOREUS_RUST_PREFIX\"\n\
 export RUSTUP_HOME=\"$PHOREUS_RUST_PREFIX/.rustup\"\n\
 export CARGO_BUILD_JOBS=1\n\
 export CARGO_INCREMENTAL=0\n\
-export CARGO_TARGET_DIR=\"$(pwd)/.cargo-target\"\n",
+export CARGO_TARGET_DIR=\"$(pwd)/.cargo-target\"\n\
+if command -v protoc >/dev/null 2>&1; then\n\
+  export BIOCONDA2RPM_PROTOC_REAL=\"$(command -v protoc)\"\n\
+  cat > \"$(pwd)/.bioconda2rpm-protoc\" <<'PROTOCEOF'\n\
+#!/usr/bin/env bash\n\
+exec \"$BIOCONDA2RPM_PROTOC_REAL\" --experimental_allow_proto3_optional \"$@\"\n\
+PROTOCEOF\n\
+  chmod +x \"$(pwd)/.bioconda2rpm-protoc\"\n\
+  export PROTOC=\"$(pwd)/.bioconda2rpm-protoc\"\n\
+fi\n",
         phoreus_rust_minor = PHOREUS_RUST_MINOR
     )
 }
@@ -24044,6 +24062,8 @@ requirements:
         assert!(spec.contains(&format!("BuildRequires:  {}", PHOREUS_RUST_PACKAGE)));
         assert!(spec.contains("export PHOREUS_RUST_PREFIX=/usr/local/phoreus/rust/1.92"));
         assert!(spec.contains("export CARGO_BUILD_JOBS=1"));
+        assert!(spec.contains("export PROTOC=\"$(pwd)/.bioconda2rpm-protoc\""));
+        assert!(spec.contains("--experimental_allow_proto3_optional"));
     }
 
     #[test]
@@ -26575,6 +26595,7 @@ $R CMD INSTALL --build .
         assert!(block.contains("export LD_LIBRARY_PATH=\"$PHOREUS_PYTHON_PREFIX/lib"));
         assert!(block.contains("export CARGO_HOME=\"$PHOREUS_RUST_PREFIX\""));
         assert!(block.contains("export RUSTUP_HOME=\"$PHOREUS_RUST_PREFIX/.rustup\""));
+        assert!(block.contains("export PROTOC=\"$(pwd)/.bioconda2rpm-protoc\""));
     }
 
     #[test]
