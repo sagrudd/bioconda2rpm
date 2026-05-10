@@ -13439,7 +13439,7 @@ REQEOF
 python - <<'PYREQSAN'
 import re, sys
 drop = {{
-    'abyss', 'apptainer', 'augustus', 'bamtools', 'bbmap', 'beast2', 'bedops',
+    'abyss', 'age-metasv', 'apptainer', 'augustus', 'bamtools', 'bbmap', 'beast2', 'bedops',
     'bifrost', 'boost-cpp', 'bowtie', 'bowtie2', 'bracken', 'busco', 'bwa',
     'bwa-mem2', 'cd-hit', 'clustalw', 'conda', 'diamond', 'entrez-direct',
     'espresso', 'fastqc', 'fasttree', 'filtlong', 'flye', 'geos', 'gfatools',
@@ -20137,6 +20137,7 @@ requirements:
         assert!(block.contains("if not line or line.startswith('#'):\n        continue"));
         assert!(block.contains("if line.startswith(('/', './', '../')):\n        continue"));
         assert!(block.contains("'abyss'"));
+        assert!(block.contains("'age-metasv'"));
         assert!(block.contains("'apptainer'"));
         assert!(block.contains("'bamtools'"));
         assert!(block.contains("'bracken'"));
