@@ -5529,7 +5529,7 @@ pub(crate) fn apply_selectors(meta: &str, ctx: &SelectorContext) -> String {
 }
 
 fn split_selector(line: &str) -> Option<(&str, &str)> {
-    let idx = line.find("#[").or_else(|| line.find("# ["))?;
+    let idx = line.find('#')?;
     let prefix = &line[..idx];
     let rest = &line[(idx + 1)..].trim_start();
     let rest = rest.strip_prefix('[')?;
@@ -19226,6 +19226,14 @@ build:
 
         assert!(apply_selectors(meta, &py2_ctx).contains("skip: True"));
         assert!(!apply_selectors(meta, &py3_ctx).contains("skip: True"));
+    }
+
+    #[test]
+    fn selector_parser_accepts_multiple_spaces_after_hash() {
+        let meta = "build:\n  skip: True  #  [osx]\nrequirements:\n  run:\n    - zlib\n";
+        let linux_ctx = SelectorContext::for_rpm_build("x86_64");
+
+        assert!(!apply_selectors(meta, &linux_ctx).contains("skip: True"));
     }
 
     #[test]
