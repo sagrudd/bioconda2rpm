@@ -13459,6 +13459,9 @@ fi
 if grep -Eiq '^(mysql-python|mysqlclient)([<>=!~ ;]|$)' requirements.in; then
     if command -v dnf >/dev/null 2>&1; then dnf -y install mariadb-connector-c-devel >/dev/null 2>&1 || true; fi
     if command -v microdnf >/dev/null 2>&1; then microdnf -y install mariadb-connector-c-devel >/dev/null 2>&1 || true; fi
+    if [ -d /usr/include/mysql ] && [ ! -e /usr/include/mysql/my_config.h ]; then
+        printf '#pragma once\n#include <mariadb_version.h>\n' > /usr/include/mysql/my_config.h || true
+    fi
 fi
 setuptools_req="$(grep -Ei '^(setuptools)([<>=!~ ;]|$)' requirements.in | head -n 1 || true)"
 if [ -n "$setuptools_req" ]; then
@@ -19932,6 +19935,8 @@ requirements:
             block.contains("grep -Eiq '^(mysql-python|mysqlclient)([<>=!~ ;]|$)' requirements.in")
         );
         assert!(block.contains("dnf -y install mariadb-connector-c-devel"));
+        assert!(block.contains("/usr/include/mysql/my_config.h"));
+        assert!(block.contains("#include <mariadb_version.h>"));
     }
 
     #[test]
