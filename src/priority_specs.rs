@@ -13430,8 +13430,8 @@ fi\n"
         } else if cython_metadata_bootstrap {
             preinstall_legacy_build_bits.push_str("\"$PIP\" install \"cython<3\" \"numpy<2\"\n");
         }
-        let compile_flags = " --pip-args \"--no-build-isolation\"";
-        let install_flags = " --no-build-isolation";
+        let compile_flags = " --pip-args \"--no-build-isolation --no-use-pep517\"";
+        let install_flags = " --no-build-isolation --no-use-pep517";
         format!(
             r#"cat > requirements.in <<'REQEOF'
 {requirements_body}
@@ -19944,7 +19944,7 @@ requirements:
         );
         assert!(block.contains("\"$PIP\" install \"cython<3\" \"numpy<2\"\n"));
         assert!(block.contains("pip-compile --generate-hashes"));
-        assert!(block.contains("--pip-args \"--no-build-isolation\""));
+        assert!(block.contains("--pip-args \"--no-build-isolation --no-use-pep517\""));
     }
 
     #[test]
@@ -19955,9 +19955,9 @@ requirements:
             &["pomegranate>=0.14.8".to_string(), "cython<3".to_string()],
         );
         assert!(block.contains("pip-compile --generate-hashes"));
-        assert!(block.contains("--pip-args \"--no-build-isolation\""));
+        assert!(block.contains("--pip-args \"--no-build-isolation --no-use-pep517\""));
         assert!(block.contains("\"$PIP\" install \"cython<3\" \"numpy<2\" \"scipy<2\""));
-        assert!(block.contains("install --no-build-isolation --require-hashes"));
+        assert!(block.contains("install --no-build-isolation --no-use-pep517 --require-hashes"));
     }
 
     #[test]
@@ -19965,7 +19965,11 @@ requirements:
         let block = render_python_venv_setup_block("example", true, &["cigar".to_string()]);
         assert!(block.contains("if pip-compile --generate-hashes requirements.in"));
         assert!(block.contains("pip-compile failed; falling back to direct no-build-isolation"));
-        assert!(block.contains("\"$PIP\" install --no-build-isolation -r requirements.in"));
+        assert!(
+            block.contains(
+                "\"$PIP\" install --no-build-isolation --no-use-pep517 -r requirements.in"
+            )
+        );
     }
 
     #[test]
@@ -20145,12 +20149,16 @@ requirements:
         assert!(block.contains("name.startswith('nvidia-')"));
         assert!(block.contains("dnf -y install readline-devel ncurses-devel"));
         assert!(block.contains(
-            "pip-compile --generate-hashes requirements.in --output-file requirements.lock --pip-args \"--no-build-isolation\""
+            "pip-compile --generate-hashes requirements.in --output-file requirements.lock --pip-args \"--no-build-isolation --no-use-pep517\""
         ));
         assert!(block.contains(
-            "\"$PIP\" install --no-build-isolation --require-hashes -r requirements.lock"
+            "\"$PIP\" install --no-build-isolation --no-use-pep517 --require-hashes -r requirements.lock"
         ));
-        assert!(block.contains("\"$PIP\" install --no-build-isolation -r requirements.in"));
+        assert!(
+            block.contains(
+                "\"$PIP\" install --no-build-isolation --no-use-pep517 -r requirements.in"
+            )
+        );
     }
 
     #[test]
