@@ -6578,6 +6578,9 @@ fn conda_dep_to_pip_requirement(raw: &str) -> Option<String> {
     if is_phoreus_python_toolchain_dependency(&normalized) {
         return None;
     }
+    if is_conda_only_dependency(&normalized) {
+        return None;
+    }
     if is_python_dev_test_dependency_name(&normalized) {
         return None;
     }
@@ -13346,7 +13349,7 @@ drop = {{
     'hdf5', 'hifiasm', 'hmmer', 'htslib', 'intarna', 'iqtree', 'kallisto',
     'kmc', 'kmtricks', 'lamassemble', 'mafft', 'mamba', 'masurca', 'mash',
     'maxbin2', 'mccortex', 'meme', 'metaeuk', 'micromamba', 'miniasm',
-    'minimap2', 'miniprot', 'mscorefonts', 'muscle', 'mummer',
+    'minimap2', 'miniprot', 'mscorefonts', 'muscle', 'mummer', 'nltk-data',
     'nb-conda-kernels', 'ncbi-datasets-cli', 'openblas', 'libopenblas',
     'libblas', 'libcblas', 'mkl', 'mkl-devel', 'pbccs', 'pcre', 'phylip',
     'pilon', 'pplacer', 'prank', 'prodigal', 'purge-dups', 'pyasp', 'pytaxonkit',
@@ -14904,7 +14907,7 @@ fn is_conda_only_dependency(dep: &str) -> bool {
     let normalized = normalize_dependency_token(dep);
     matches!(
         normalized.as_str(),
-        "bioconductor-data-packages" | "go-licenses" | "openmp-mutex"
+        "bioconductor-data-packages" | "go-licenses" | "nltk-data" | "openmp-mutex"
     )
 }
 
@@ -19582,6 +19585,7 @@ source:
         assert_eq!(conda_dep_to_pip_requirement("tensorflow >=2.15"), None);
         assert_eq!(conda_dep_to_pip_requirement("jaxlib >=0.4"), None);
         assert_eq!(conda_dep_to_pip_requirement("nvidia-cublas >=13"), None);
+        assert_eq!(conda_dep_to_pip_requirement("nltk_data"), None);
         assert_eq!(
             conda_dep_to_pip_requirement("pytables >=3.5.*"),
             Some("tables>=3.5".to_string())
@@ -19875,6 +19879,7 @@ requirements:
                 "pytorch-cpu>=2.*".to_string(),
                 "torchvision>=0.17".to_string(),
                 "nvidia-cublas>=13".to_string(),
+                "nltk_data".to_string(),
             ],
         );
         assert!(block.contains("PYREQSAN"));
@@ -19913,6 +19918,7 @@ requirements:
         assert!(block.contains("'stringtie'"));
         assert!(block.contains("'tabix'"));
         assert!(block.contains("'openblas'"));
+        assert!(block.contains("'nltk-data'"));
         assert!(block.contains("'pytorch-cpu'"));
         assert!(block.contains("'torchvision'"));
         assert!(block.contains("name.startswith('nvidia-')"));
