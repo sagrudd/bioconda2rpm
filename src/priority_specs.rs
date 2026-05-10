@@ -9205,6 +9205,11 @@ export RANLIB=\"${RANLIB:-ranlib}\"\n\
 export STRIP=\"${STRIP:-strip}\"\n",
         );
         out.push_str(
+            "if command -v git >/dev/null 2>&1; then\n\
+  git config --global --add safe.directory '*' >/dev/null 2>&1 || true\n\
+fi\n",
+        );
+        out.push_str(
             "# Expose include/lib/pkg-config roots from installed Phoreus dependencies.\n\
 if [[ -d /usr/local/phoreus ]]; then\n\
   while IFS= read -r -d '' dep_include; do\n\
@@ -20613,6 +20618,7 @@ requirements:
         assert!(spec.contains("scripts/analysis/maxcluster/maxcluster"));
         assert!(spec.contains("export AR=\"${AR:-ar}\""));
         assert!(spec.contains("export RANLIB=\"${RANLIB:-ranlib}\""));
+        assert!(spec.contains("git config --global --add safe.directory '*'"));
         assert!(spec.contains("foreign ELF architecture mismatch"));
         assert!(
             spec.find("scripts/analysis/maxcluster/maxcluster")
