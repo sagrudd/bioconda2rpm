@@ -223,7 +223,7 @@ fn fetch_origin(repo: &Repository) -> Result<()> {
 
 fn default_origin_branch_name(repo: &Repository) -> Result<String> {
     if let Ok(origin_head) = repo.find_reference("refs/remotes/origin/HEAD") {
-        if let Some(symbolic) = origin_head.symbolic_target() {
+        if let Ok(Some(symbolic)) = origin_head.symbolic_target() {
             if let Some(branch) = symbolic.strip_prefix("refs/remotes/origin/") {
                 return Ok(branch.to_string());
             }
@@ -238,7 +238,7 @@ fn default_origin_branch_name(repo: &Repository) -> Result<String> {
         }
     }
     if let Ok(head) = repo.head() {
-        if let Some(name) = head.shorthand() {
+        if let Ok(name) = head.shorthand() {
             return Ok(name.to_string());
         }
     }
