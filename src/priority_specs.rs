@@ -49,24 +49,24 @@ struct ResolvedRecipe {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ParsedMeta {
-    package_name: String,
-    version: String,
-    build_number: String,
-    source_url: String,
-    source_folder: String,
-    homepage: String,
-    license: String,
-    summary: String,
-    source_patches: Vec<String>,
-    build_script: Option<String>,
-    noarch_python: bool,
-    build_dep_specs_raw: Vec<String>,
-    host_dep_specs_raw: Vec<String>,
-    run_dep_specs_raw: Vec<String>,
-    build_deps: BTreeSet<String>,
-    host_deps: BTreeSet<String>,
-    run_deps: BTreeSet<String>,
+pub(crate) struct ParsedMeta {
+    pub(crate) package_name: String,
+    pub(crate) version: String,
+    pub(crate) build_number: String,
+    pub(crate) source_url: String,
+    pub(crate) source_folder: String,
+    pub(crate) homepage: String,
+    pub(crate) license: String,
+    pub(crate) summary: String,
+    pub(crate) source_patches: Vec<String>,
+    pub(crate) build_script: Option<String>,
+    pub(crate) noarch_python: bool,
+    pub(crate) build_dep_specs_raw: Vec<String>,
+    pub(crate) host_dep_specs_raw: Vec<String>,
+    pub(crate) run_dep_specs_raw: Vec<String>,
+    pub(crate) build_deps: BTreeSet<String>,
+    pub(crate) host_deps: BTreeSet<String>,
+    pub(crate) run_deps: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -3577,7 +3577,7 @@ fn find_recipe_by_identifier(recipe_root: &Path, key: &str) -> Result<Option<Rec
     Ok(None)
 }
 
-fn select_recipe_variant_dir(recipe_dir: &Path) -> Result<PathBuf> {
+pub(crate) fn select_recipe_variant_dir(recipe_dir: &Path) -> Result<PathBuf> {
     let mut candidates: Vec<(String, PathBuf, bool)> = Vec::new();
 
     if meta_file_path(recipe_dir).is_some() {
@@ -3623,9 +3623,107 @@ fn select_recipe_variant_dir(recipe_dir: &Path) -> Result<PathBuf> {
         .unwrap_or_else(|| recipe_dir.to_path_buf()))
 }
 
+// This shared module is compiled into both the library and CLI targets; only
+// the library ingress API needs the root-confined selector.
+#[allow(dead_code)]
+pub(crate) fn select_recipe_variant_dir_within_root(
+    recipe_root: &Path,
+    recipe_dir: &Path,
+) -> Result<PathBuf> {
+    let canonical_root = fs::canonicalize(recipe_root)
+        .with_context(|| format!("resolving recipe root {}", recipe_root.display()))?;
+    let canonical_recipe = fs::canonicalize(recipe_dir)
+        .with_context(|| format!("resolving recipe directory {}", recipe_dir.display()))?;
+    if !canonical_recipe.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "recipe directory escapes recipe root: {}",
+            recipe_dir.display()
+        );
+    }
+
+    let mut candidates: Vec<(String, PathBuf, bool)> = Vec::new();
+    if let Some(meta_path) =
+        canonical_metadata_file_within_root(&canonical_root, &canonical_recipe)?
+    {
+        let version = rendered_recipe_version_at(&meta_path)
+            .or_else(|| canonical_recipe.file_name()?.to_str().map(str::to_string))
+            .unwrap_or_else(|| "0".to_string());
+        candidates.push((version, canonical_recipe.clone(), true));
+    }
+
+    for entry in fs::read_dir(&canonical_recipe)
+        .with_context(|| format!("reading recipe directory {}", canonical_recipe.display()))?
+    {
+        let entry = entry.with_context(|| {
+            format!(
+                "reading entry in recipe directory {}",
+                canonical_recipe.display()
+            )
+        })?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !looks_like_version_dir(&name) {
+            continue;
+        }
+        let metadata = match fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("inspecting recipe variant {}", path.display()));
+            }
+        };
+        if !metadata.is_dir() {
+            continue;
+        }
+
+        let canonical_variant = fs::canonicalize(&path)
+            .with_context(|| format!("resolving recipe variant {}", path.display()))?;
+        if !canonical_variant.starts_with(&canonical_root) {
+            anyhow::bail!("recipe variant escapes recipe root: {}", path.display());
+        }
+        let Some(meta_path) =
+            canonical_metadata_file_within_root(&canonical_root, &canonical_variant)?
+        else {
+            continue;
+        };
+        let version = rendered_recipe_version_at(&meta_path).unwrap_or(name);
+        candidates.push((version, canonical_variant, false));
+    }
+
+    if candidates.is_empty() {
+        return Ok(canonical_recipe);
+    }
+    candidates.sort_by(|a, b| compare_version_labels(&a.0, &b.0).then_with(|| a.2.cmp(&b.2)));
+    Ok(candidates
+        .last()
+        .map(|(_, path, _)| path.clone())
+        .unwrap_or(canonical_recipe))
+}
+
+#[allow(dead_code)]
+fn canonical_metadata_file_within_root(root: &Path, directory: &Path) -> Result<Option<PathBuf>> {
+    let Some(meta_path) = meta_file_path(directory) else {
+        return Ok(None);
+    };
+    let canonical = fs::canonicalize(&meta_path)
+        .with_context(|| format!("resolving recipe metadata {}", meta_path.display()))?;
+    if !canonical.starts_with(root) {
+        anyhow::bail!(
+            "recipe metadata escapes recipe root: {}",
+            meta_path.display()
+        );
+    }
+    Ok(Some(canonical))
+}
+
 fn rendered_recipe_version(dir: &Path) -> Option<String> {
     let meta_path = meta_file_path(dir)?;
-    let text = fs::read_to_string(&meta_path).ok()?;
+    rendered_recipe_version_at(&meta_path)
+}
+
+fn rendered_recipe_version_at(meta_path: &Path) -> Option<String> {
+    let text = fs::read_to_string(meta_path).ok()?;
     let selector_ctx = SelectorContext::for_rpm_build(std::env::consts::ARCH);
     let selected_meta = apply_selectors(&text, &selector_ctx);
     let rendered = render_meta_yaml(&selected_meta).ok()?;
@@ -3728,7 +3826,7 @@ fn push_version_part(parts: &mut Vec<VersionPart>, piece: &str, is_num: bool) {
     parts.push(VersionPart::Text(piece.to_lowercase()));
 }
 
-fn meta_file_path(dir: &Path) -> Option<PathBuf> {
+pub(crate) fn meta_file_path(dir: &Path) -> Option<PathBuf> {
     let yaml = dir.join("meta.yaml");
     if yaml.exists() {
         return Some(yaml);
@@ -3740,7 +3838,7 @@ fn meta_file_path(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn render_meta_yaml(meta: &str) -> Result<String> {
+pub(crate) fn render_meta_yaml(meta: &str) -> Result<String> {
     let normalized_meta = normalize_common_jinja_string_methods(meta);
     let mut env = Environment::new();
     env.add_function("compiler", |lang: String| {
@@ -3799,7 +3897,7 @@ fn normalize_common_jinja_string_methods(meta: &str) -> String {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SelectorContext {
+pub(crate) struct SelectorContext {
     linux: bool,
     osx: bool,
     win: bool,
@@ -3811,7 +3909,7 @@ struct SelectorContext {
 }
 
 impl SelectorContext {
-    fn for_rpm_build(target_arch: &str) -> Self {
+    pub(crate) fn for_rpm_build(target_arch: &str) -> Self {
         let arch = target_arch;
         let linux = true;
         let osx = false;
@@ -3833,7 +3931,7 @@ impl SelectorContext {
     }
 }
 
-fn apply_selectors(meta: &str, ctx: &SelectorContext) -> String {
+pub(crate) fn apply_selectors(meta: &str, ctx: &SelectorContext) -> String {
     let mut out = String::new();
     for line in meta.lines() {
         if let Some((prefix, selector)) = split_selector(line) {
@@ -3911,7 +4009,7 @@ fn evaluate_python_selector(term: &str, ctx: &SelectorContext) -> Option<bool> {
     None
 }
 
-fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
+pub(crate) fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
     let root: Value = serde_yaml::from_str(rendered).context("deserializing rendered meta.yaml")?;
 
     let package = root
