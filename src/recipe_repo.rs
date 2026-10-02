@@ -221,7 +221,7 @@ fn fetch_origin(repo: &Repository) -> Result<()> {
 
 fn default_origin_branch_name(repo: &Repository) -> Result<String> {
     if let Ok(origin_head) = repo.find_reference("refs/remotes/origin/HEAD") {
-        if let Some(symbolic) = origin_head.symbolic_target() {
+        if let Ok(Some(symbolic)) = origin_head.symbolic_target() {
             if let Some(branch) = symbolic.strip_prefix("refs/remotes/origin/") {
                 return Ok(branch.to_string());
             }
@@ -236,7 +236,7 @@ fn default_origin_branch_name(repo: &Repository) -> Result<String> {
         }
     }
     if let Ok(head) = repo.head() {
-        if let Some(name) = head.shorthand() {
+        if let Ok(name) = head.shorthand() {
             return Ok(name.to_string());
         }
     }
@@ -497,4 +497,49 @@ fn acquire_recipe_repo_lock(repo_root: &Path) -> Result<RepoSyncLock> {
     ));
 
     Ok(RepoSyncLock { lock_file })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_origin_branch_name;
+    use git2::{Repository, Signature};
+
+    #[test]
+    fn default_branch_uses_remote_head_symbolic_target() {
+        let temp = tempfile::tempdir().expect("temporary repository directory");
+        let repo = Repository::init(temp.path()).expect("initialize repository");
+        repo.reference_symbolic(
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+            true,
+            "test remote HEAD",
+        )
+        .expect("create remote HEAD reference");
+
+        assert_eq!(
+            default_origin_branch_name(&repo).expect("default branch"),
+            "main"
+        );
+    }
+
+    #[test]
+    fn default_branch_falls_back_to_local_head_shorthand() {
+        let temp = tempfile::tempdir().expect("temporary repository directory");
+        let repo = Repository::init(temp.path()).expect("initialize repository");
+        let signature = Signature::now("Test", "test@example.invalid").expect("signature");
+        let tree_id = repo.index().expect("index").write_tree().expect("tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let commit_id = repo
+            .commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+            .expect("initial commit");
+        let commit = repo.find_commit(commit_id).expect("find initial commit");
+        repo.branch("develop", &commit, false)
+            .expect("create local branch");
+        repo.set_head("refs/heads/develop").expect("set local HEAD");
+
+        assert_eq!(
+            default_origin_branch_name(&repo).expect("default branch"),
+            "develop"
+        );
+    }
 }
