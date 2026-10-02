@@ -49,24 +49,24 @@ struct ResolvedRecipe {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ParsedMeta {
-    package_name: String,
-    version: String,
-    build_number: String,
-    source_url: String,
-    source_folder: String,
-    homepage: String,
-    license: String,
-    summary: String,
-    source_patches: Vec<String>,
-    build_script: Option<String>,
-    noarch_python: bool,
-    build_dep_specs_raw: Vec<String>,
-    host_dep_specs_raw: Vec<String>,
-    run_dep_specs_raw: Vec<String>,
-    build_deps: BTreeSet<String>,
-    host_deps: BTreeSet<String>,
-    run_deps: BTreeSet<String>,
+pub(crate) struct ParsedMeta {
+    pub(crate) package_name: String,
+    pub(crate) version: String,
+    pub(crate) build_number: String,
+    pub(crate) source_url: String,
+    pub(crate) source_folder: String,
+    pub(crate) homepage: String,
+    pub(crate) license: String,
+    pub(crate) summary: String,
+    pub(crate) source_patches: Vec<String>,
+    pub(crate) build_script: Option<String>,
+    pub(crate) noarch_python: bool,
+    pub(crate) build_dep_specs_raw: Vec<String>,
+    pub(crate) host_dep_specs_raw: Vec<String>,
+    pub(crate) run_dep_specs_raw: Vec<String>,
+    pub(crate) build_deps: BTreeSet<String>,
+    pub(crate) host_deps: BTreeSet<String>,
+    pub(crate) run_deps: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -3577,7 +3577,7 @@ fn find_recipe_by_identifier(recipe_root: &Path, key: &str) -> Result<Option<Rec
     Ok(None)
 }
 
-fn select_recipe_variant_dir(recipe_dir: &Path) -> Result<PathBuf> {
+pub(crate) fn select_recipe_variant_dir(recipe_dir: &Path) -> Result<PathBuf> {
     let mut candidates: Vec<(String, PathBuf, bool)> = Vec::new();
 
     if meta_file_path(recipe_dir).is_some() {
@@ -3728,7 +3728,7 @@ fn push_version_part(parts: &mut Vec<VersionPart>, piece: &str, is_num: bool) {
     parts.push(VersionPart::Text(piece.to_lowercase()));
 }
 
-fn meta_file_path(dir: &Path) -> Option<PathBuf> {
+pub(crate) fn meta_file_path(dir: &Path) -> Option<PathBuf> {
     let yaml = dir.join("meta.yaml");
     if yaml.exists() {
         return Some(yaml);
@@ -3740,7 +3740,7 @@ fn meta_file_path(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn render_meta_yaml(meta: &str) -> Result<String> {
+pub(crate) fn render_meta_yaml(meta: &str) -> Result<String> {
     let normalized_meta = normalize_common_jinja_string_methods(meta);
     let mut env = Environment::new();
     env.add_function("compiler", |lang: String| {
@@ -3799,7 +3799,7 @@ fn normalize_common_jinja_string_methods(meta: &str) -> String {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SelectorContext {
+pub(crate) struct SelectorContext {
     linux: bool,
     osx: bool,
     win: bool,
@@ -3811,7 +3811,7 @@ struct SelectorContext {
 }
 
 impl SelectorContext {
-    fn for_rpm_build(target_arch: &str) -> Self {
+    pub(crate) fn for_rpm_build(target_arch: &str) -> Self {
         let arch = target_arch;
         let linux = true;
         let osx = false;
@@ -3833,7 +3833,7 @@ impl SelectorContext {
     }
 }
 
-fn apply_selectors(meta: &str, ctx: &SelectorContext) -> String {
+pub(crate) fn apply_selectors(meta: &str, ctx: &SelectorContext) -> String {
     let mut out = String::new();
     for line in meta.lines() {
         if let Some((prefix, selector)) = split_selector(line) {
@@ -3911,7 +3911,7 @@ fn evaluate_python_selector(term: &str, ctx: &SelectorContext) -> Option<bool> {
     None
 }
 
-fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
+pub(crate) fn parse_rendered_meta(rendered: &str) -> Result<ParsedMeta> {
     let root: Value = serde_yaml::from_str(rendered).context("deserializing rendered meta.yaml")?;
 
     let package = root

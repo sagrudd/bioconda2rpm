@@ -2,6 +2,11 @@
 
 Rust CLI to convert Bioconda recipes into Phoreus-style RPM artifacts.
 
+## Rust library API
+
+The crate also exposes a supported Rust API for recipe repository preparation
+and recipe metadata ingress. See [the library API guide](docs/Rust_library_api.md).
+
 ## Baseline CLI
 
 ```bash
