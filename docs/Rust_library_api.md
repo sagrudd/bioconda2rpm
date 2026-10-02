@@ -16,6 +16,14 @@ The ingress metadata reader applies the same selector and metadata rendering
 logic as the CLI. Recipe release dates are inferred from filesystem metadata
 when available; they are not authoritative upstream release timestamps.
 
+Recipe names `.` and `..` are invalid. Recipe lookup resolves the recipe root,
+recipe directory, selected version directory, and metadata file to canonical
+paths and rejects any candidate that escapes the recipe root, including
+case-insensitive directory matches and symlinks. `recipe_exists` returns an
+error for an escaping directory; `lookup_recipe_metadata` returns an error for
+invalid names or escaping paths. The `meta_yaml_path` in `RecipeMetadata` is the
+contained canonical metadata path.
+
 The API is available to Rust consumers through the `bioconda2rpm` crate. No
 stability guarantee is made beyond the crate's SemVer contract; additions before
 1.0.0 may introduce a MINOR version increment.

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::priority_specs::{
     SelectorContext, apply_selectors, meta_file_path, parse_rendered_meta, render_meta_yaml,
-    select_recipe_variant_dir,
+    select_recipe_variant_dir_within_root,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +24,8 @@ pub struct RecipeMetadata {
 pub fn is_valid_recipe_name(value: &str) -> bool {
     let trimmed = value.trim();
     !trimmed.is_empty()
+        && trimmed != "."
+        && trimmed != ".."
         && trimmed.chars().all(|ch| {
             ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_' | '.' | '+')
         })
@@ -34,7 +36,9 @@ pub fn recipe_exists(recipe_root: &Path, recipe_name: &str) -> Result<bool> {
     if !is_valid_recipe_name(&normalized) {
         return Ok(false);
     }
-    Ok(resolve_recipe_dir(recipe_root, &normalized)?.is_some())
+    let canonical_root = fs::canonicalize(recipe_root)
+        .with_context(|| format!("resolving recipe root {}", recipe_root.display()))?;
+    Ok(resolve_recipe_dir(&canonical_root, &normalized)?.is_some())
 }
 
 pub fn lookup_recipe_metadata(recipe_root: &Path, recipe_name: &str) -> Result<RecipeMetadata> {
@@ -42,12 +46,16 @@ pub fn lookup_recipe_metadata(recipe_root: &Path, recipe_name: &str) -> Result<R
     if !is_valid_recipe_name(&normalized) {
         return Err(anyhow!("invalid recipe name"));
     }
-    let recipe_dir =
-        resolve_recipe_dir(recipe_root, &normalized)?.ok_or_else(|| anyhow!("recipe not found"))?;
-    let variant_dir = select_recipe_variant_dir(&recipe_dir)?;
-    let meta_yaml_path = meta_file_path(&variant_dir)
-        .or_else(|| meta_file_path(&recipe_dir))
-        .ok_or_else(|| anyhow!("missing meta.yaml/meta.yml"))?;
+    let canonical_root = fs::canonicalize(recipe_root)
+        .with_context(|| format!("resolving recipe root {}", recipe_root.display()))?;
+    let recipe_dir = resolve_recipe_dir(&canonical_root, &normalized)?
+        .ok_or_else(|| anyhow!("recipe not found"))?;
+    let variant_dir = select_recipe_variant_dir_within_root(&canonical_root, &recipe_dir)?;
+    let meta_yaml_path = match canonical_metadata_path(&canonical_root, &variant_dir)? {
+        Some(path) => path,
+        None => canonical_metadata_path(&canonical_root, &recipe_dir)?
+            .ok_or_else(|| anyhow!("missing meta.yaml/meta.yml"))?,
+    };
     let raw_meta = fs::read_to_string(&meta_yaml_path)
         .with_context(|| format!("reading {}", meta_yaml_path.display()))?;
     let selector_ctx = SelectorContext::for_rpm_build(std::env::consts::ARCH);
@@ -74,8 +82,8 @@ pub fn lookup_recipe_metadata(recipe_root: &Path, recipe_name: &str) -> Result<R
 
 fn resolve_recipe_dir(recipe_root: &Path, recipe_name: &str) -> Result<Option<PathBuf>> {
     let direct = recipe_root.join(recipe_name);
-    if direct.is_dir() {
-        return Ok(Some(direct));
+    if let Some(canonical) = canonical_recipe_dir(recipe_root, &direct)? {
+        return Ok(Some(canonical));
     }
     let normalized = recipe_name.to_ascii_lowercase();
     for entry in fs::read_dir(recipe_root)
@@ -83,14 +91,52 @@ fn resolve_recipe_dir(recipe_root: &Path, recipe_name: &str) -> Result<Option<Pa
     {
         let entry = entry.with_context(|| format!("reading entry in {}", recipe_root.display()))?;
         let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        if entry.file_name().to_string_lossy().to_ascii_lowercase() == normalized {
-            return Ok(Some(path));
+        if entry.file_name().to_string_lossy().to_ascii_lowercase() == normalized
+            && let Some(canonical) = canonical_recipe_dir(recipe_root, &path)?
+        {
+            return Ok(Some(canonical));
         }
     }
     Ok(None)
+}
+
+fn canonical_recipe_dir(root: &Path, candidate: &Path) -> Result<Option<PathBuf>> {
+    let metadata = match fs::metadata(candidate) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspecting recipe directory {}", candidate.display()));
+        }
+    };
+    if !metadata.is_dir() {
+        return Ok(None);
+    }
+
+    let canonical = fs::canonicalize(candidate)
+        .with_context(|| format!("resolving recipe directory {}", candidate.display()))?;
+    if !canonical.starts_with(root) {
+        return Err(anyhow!(
+            "recipe directory escapes recipe root: {}",
+            candidate.display()
+        ));
+    }
+    Ok(Some(canonical))
+}
+
+fn canonical_metadata_path(root: &Path, directory: &Path) -> Result<Option<PathBuf>> {
+    let Some(candidate) = meta_file_path(directory) else {
+        return Ok(None);
+    };
+    let canonical = fs::canonicalize(&candidate)
+        .with_context(|| format!("resolving recipe metadata {}", candidate.display()))?;
+    if !canonical.starts_with(root) {
+        return Err(anyhow!(
+            "recipe metadata escapes recipe root: {}",
+            candidate.display()
+        ));
+    }
+    Ok(Some(canonical))
 }
 
 fn non_empty_value(value: &str) -> Option<String> {
@@ -188,6 +234,9 @@ mod tests {
         assert!(is_valid_recipe_name("r-foo.bar"));
         assert!(!is_valid_recipe_name("BLAST"));
         assert!(!is_valid_recipe_name("bad name"));
+        assert!(!is_valid_recipe_name("."));
+        assert!(!is_valid_recipe_name(".."));
+        assert!(!is_valid_recipe_name(" .. "));
     }
 
     #[test]
@@ -197,6 +246,23 @@ mod tests {
         fs::create_dir_all(recipes_root.join("blast")).expect("recipe dir should create");
         assert!(recipe_exists(&recipes_root, "blast").expect("existence should resolve"));
         assert!(!recipe_exists(&recipes_root, "missing").expect("existence should resolve"));
+        assert!(!recipe_exists(&recipes_root, ".").expect("invalid names should be rejected"));
+        assert!(!recipe_exists(&recipes_root, "..").expect("invalid names should be rejected"));
+    }
+
+    #[test]
+    fn lookup_rejects_parent_directory_names_without_reading_parent_metadata() {
+        let temp = tempdir().expect("tempdir should create");
+        let recipes_root = temp.path().join("recipes");
+        fs::create_dir_all(&recipes_root).expect("recipes root should create");
+        fs::write(
+            temp.path().join("meta.yaml"),
+            "package:\n  name: escaped\n  version: \"1\"\n",
+        )
+        .expect("parent metadata should write");
+
+        assert!(lookup_recipe_metadata(&recipes_root, ".").is_err());
+        assert!(lookup_recipe_metadata(&recipes_root, "..").is_err());
     }
 
     #[test]

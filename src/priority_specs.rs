@@ -3623,9 +3623,107 @@ pub(crate) fn select_recipe_variant_dir(recipe_dir: &Path) -> Result<PathBuf> {
         .unwrap_or_else(|| recipe_dir.to_path_buf()))
 }
 
+// This shared module is compiled into both the library and CLI targets; only
+// the library ingress API needs the root-confined selector.
+#[allow(dead_code)]
+pub(crate) fn select_recipe_variant_dir_within_root(
+    recipe_root: &Path,
+    recipe_dir: &Path,
+) -> Result<PathBuf> {
+    let canonical_root = fs::canonicalize(recipe_root)
+        .with_context(|| format!("resolving recipe root {}", recipe_root.display()))?;
+    let canonical_recipe = fs::canonicalize(recipe_dir)
+        .with_context(|| format!("resolving recipe directory {}", recipe_dir.display()))?;
+    if !canonical_recipe.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "recipe directory escapes recipe root: {}",
+            recipe_dir.display()
+        );
+    }
+
+    let mut candidates: Vec<(String, PathBuf, bool)> = Vec::new();
+    if let Some(meta_path) =
+        canonical_metadata_file_within_root(&canonical_root, &canonical_recipe)?
+    {
+        let version = rendered_recipe_version_at(&meta_path)
+            .or_else(|| canonical_recipe.file_name()?.to_str().map(str::to_string))
+            .unwrap_or_else(|| "0".to_string());
+        candidates.push((version, canonical_recipe.clone(), true));
+    }
+
+    for entry in fs::read_dir(&canonical_recipe)
+        .with_context(|| format!("reading recipe directory {}", canonical_recipe.display()))?
+    {
+        let entry = entry.with_context(|| {
+            format!(
+                "reading entry in recipe directory {}",
+                canonical_recipe.display()
+            )
+        })?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !looks_like_version_dir(&name) {
+            continue;
+        }
+        let metadata = match fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("inspecting recipe variant {}", path.display()));
+            }
+        };
+        if !metadata.is_dir() {
+            continue;
+        }
+
+        let canonical_variant = fs::canonicalize(&path)
+            .with_context(|| format!("resolving recipe variant {}", path.display()))?;
+        if !canonical_variant.starts_with(&canonical_root) {
+            anyhow::bail!("recipe variant escapes recipe root: {}", path.display());
+        }
+        let Some(meta_path) =
+            canonical_metadata_file_within_root(&canonical_root, &canonical_variant)?
+        else {
+            continue;
+        };
+        let version = rendered_recipe_version_at(&meta_path).unwrap_or(name);
+        candidates.push((version, canonical_variant, false));
+    }
+
+    if candidates.is_empty() {
+        return Ok(canonical_recipe);
+    }
+    candidates.sort_by(|a, b| compare_version_labels(&a.0, &b.0).then_with(|| a.2.cmp(&b.2)));
+    Ok(candidates
+        .last()
+        .map(|(_, path, _)| path.clone())
+        .unwrap_or(canonical_recipe))
+}
+
+#[allow(dead_code)]
+fn canonical_metadata_file_within_root(root: &Path, directory: &Path) -> Result<Option<PathBuf>> {
+    let Some(meta_path) = meta_file_path(directory) else {
+        return Ok(None);
+    };
+    let canonical = fs::canonicalize(&meta_path)
+        .with_context(|| format!("resolving recipe metadata {}", meta_path.display()))?;
+    if !canonical.starts_with(root) {
+        anyhow::bail!(
+            "recipe metadata escapes recipe root: {}",
+            meta_path.display()
+        );
+    }
+    Ok(Some(canonical))
+}
+
 fn rendered_recipe_version(dir: &Path) -> Option<String> {
     let meta_path = meta_file_path(dir)?;
-    let text = fs::read_to_string(&meta_path).ok()?;
+    rendered_recipe_version_at(&meta_path)
+}
+
+fn rendered_recipe_version_at(meta_path: &Path) -> Option<String> {
+    let text = fs::read_to_string(meta_path).ok()?;
     let selector_ctx = SelectorContext::for_rpm_build(std::env::consts::ARCH);
     let selected_meta = apply_selectors(&text, &selector_ctx);
     let rendered = render_meta_yaml(&selected_meta).ok()?;
