@@ -1,9 +1,31 @@
 use serde_json::Value;
+use std::path::PathBuf;
 use std::process::Command;
-use tempfile::tempdir;
+use tempfile::{TempDir, tempdir};
+
+fn command_with_fake_docker() -> (Command, TempDir) {
+    let fake_bin = tempdir().expect("fake runtime directory");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("/bin/true", fake_bin.path().join("docker"))
+        .expect("create fake docker executable");
+
+    #[cfg(unix)]
+    let existing_path = std::env::var_os("PATH").unwrap_or_default();
+    #[cfg(not(unix))]
+    let existing_path = std::ffi::OsString::new();
+    let path = std::env::join_paths(
+        std::iter::once(PathBuf::from(fake_bin.path()))
+            .chain(std::env::split_paths(&existing_path)),
+    )
+    .expect("compose test PATH");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bioconda2rpm"));
+    command.env("PATH", path);
+    (command, fake_bin)
+}
 
 fn run(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_bioconda2rpm"))
+    let (mut command, _fake_bin) = command_with_fake_docker();
+    command
         .args(args)
         .output()
         .expect("run bioconda2rpm command")
@@ -153,7 +175,8 @@ fn todo_json_emits_manual_source_file_task() {
     std::fs::write(&blacklist_path, "package,problem_url,justification\n")
         .expect("write blacklist");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_bioconda2rpm"))
+    let (mut command, _fake_bin) = command_with_fake_docker();
+    let output = command
         .env("BIOCONDA2RPM_BLACKLIST", &blacklist_path)
         .args(["todo", "--json", "--topdir", &topdir_arg])
         .output()
@@ -403,7 +426,8 @@ fn blacklist_updates_csv_and_clears_catalogue_failures() {
         .expect("failures json");
     assert_eq!(parsed.as_array().expect("array").len(), 0);
 
-    let refreshed = Command::new(env!("CARGO_BIN_EXE_bioconda2rpm"))
+    let (mut command, _fake_bin) = command_with_fake_docker();
+    let refreshed = command
         .env("BIOCONDA2RPM_BLACKLIST", &blacklist_path)
         .args(["failures", "--refresh", "--json", "--topdir", &topdir_arg])
         .output()
@@ -445,7 +469,8 @@ fn todo_and_failures_hide_packages_already_in_blacklist() {
     )
     .expect("write catalog");
 
-    let failures = Command::new(env!("CARGO_BIN_EXE_bioconda2rpm"))
+    let (mut command, _fake_bin) = command_with_fake_docker();
+    let failures = command
         .env("BIOCONDA2RPM_BLACKLIST", &blacklist_path)
         .args(["failures", "--json", "--topdir", &topdir_arg])
         .output()
@@ -455,7 +480,8 @@ fn todo_and_failures_hide_packages_already_in_blacklist() {
         .expect("failures json");
     assert_eq!(parsed.as_array().expect("array").len(), 0);
 
-    let todo = Command::new(env!("CARGO_BIN_EXE_bioconda2rpm"))
+    let (mut command, _fake_bin) = command_with_fake_docker();
+    let todo = command
         .env("BIOCONDA2RPM_BLACKLIST", &blacklist_path)
         .args(["todo", "--json", "--topdir", &topdir_arg])
         .output()

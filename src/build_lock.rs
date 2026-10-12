@@ -6,7 +6,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+use std::{ffi::OsStr, process::Output};
+use wait_timeout::ChildExt;
 
 const LOCK_FILE_NAME: &str = ".bioconda2rpm-artifacts.lock";
 const STATE_FILE_NAME: &str = ".bioconda2rpm-active-builds.json";
@@ -15,6 +18,8 @@ const REMOVE_REQUESTS_FILE_NAME: &str = ".bioconda2rpm-remove-requests.jsonl";
 const SERVER_CONTROL_REQUESTS_FILE_NAME: &str = ".bioconda2rpm-server-control.jsonl";
 const SERVER_STATUS_FILE_NAME: &str = ".bioconda2rpm-server-status.json";
 const SERVER_PROGRESS_FILE_NAME: &str = ".bioconda2rpm-server-progress.json";
+const RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(8);
+const MAX_RUNTIME_PROBE_OUTPUT_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildSessionKind {
@@ -152,6 +157,7 @@ pub struct BuildLookupSnapshot {
     pub active_entries: Vec<LookupActiveBuildEntry>,
     pub queued_requests: Vec<LookupQueuedBuildRequest>,
     pub running_containers: Vec<String>,
+    pub runtime_probe_status: String,
     pub container_probe_error: Option<String>,
     pub server_status: Option<LookupServerStatus>,
     pub updated_at_utc: String,
@@ -272,6 +278,13 @@ pub fn current_host_name() -> String {
 }
 
 pub fn lookup_build_runtime(topdir: &Path) -> Result<BuildLookupSnapshot> {
+    lookup_build_runtime_with_probe(topdir, &DockerRuntimeProbe::default())
+}
+
+fn lookup_build_runtime_with_probe(
+    topdir: &Path,
+    probe: &dyn RuntimeProbe,
+) -> Result<BuildLookupSnapshot> {
     let lock_path = topdir.join(LOCK_FILE_NAME);
     let state_file = topdir.join(STATE_FILE_NAME);
     let requests_file = topdir.join(REQUESTS_FILE_NAME);
@@ -293,9 +306,17 @@ pub fn lookup_build_runtime(topdir: &Path) -> Result<BuildLookupSnapshot> {
         })
         .collect::<Vec<_>>();
     let queued_requests = load_queued_requests(&requests_file)?;
-    let (running_containers, container_probe_error) = probe_running_containers();
-    let server_status =
-        load_lookup_server_status(topdir, &progress_file, &active_entries, &queued_requests)?;
+    let probe_outcome = probe.probe();
+    let runtime_containers = probe_outcome.healthy_containers().unwrap_or_default();
+    let (running_containers, runtime_probe_status, container_probe_error) =
+        probe_outcome.into_lookup_fields();
+    let server_status = load_lookup_server_status(
+        topdir,
+        &progress_file,
+        &active_entries,
+        &queued_requests,
+        &runtime_containers,
+    )?;
 
     Ok(BuildLookupSnapshot {
         topdir: topdir.to_string_lossy().to_string(),
@@ -303,6 +324,7 @@ pub fn lookup_build_runtime(topdir: &Path) -> Result<BuildLookupSnapshot> {
         active_entries,
         queued_requests,
         running_containers,
+        runtime_probe_status,
         container_probe_error,
         server_status,
         updated_at_utc: chrono::Utc::now().to_rfc3339(),
@@ -318,6 +340,29 @@ impl BuildSessionGuard {
         force_rebuild: bool,
         refresh_files: bool,
     ) -> Result<Self> {
+        Self::acquire_with_probe(
+            topdir,
+            target_id,
+            packages,
+            session_kind,
+            force_rebuild,
+            refresh_files,
+            &DockerRuntimeProbe::default(),
+        )
+    }
+
+    fn acquire_with_probe(
+        topdir: &Path,
+        target_id: &str,
+        packages: &[String],
+        session_kind: BuildSessionKind,
+        force_rebuild: bool,
+        refresh_files: bool,
+        probe: &dyn RuntimeProbe,
+    ) -> Result<Self> {
+        if session_kind != BuildSessionKind::GeneratePrioritySpecs {
+            ensure_runtime_known(probe)?;
+        }
         fs::create_dir_all(topdir)
             .with_context(|| format!("creating topdir {}", topdir.to_string_lossy()))?;
 
@@ -380,6 +425,27 @@ impl BuildSessionGuard {
         refresh_files: bool,
         manual_source_files: &[PathBuf],
     ) -> Result<BuildAcquireOutcome> {
+        Self::acquire_or_forward_build_with_probe(
+            topdir,
+            target_id,
+            packages,
+            force_rebuild,
+            refresh_files,
+            manual_source_files,
+            &DockerRuntimeProbe::default(),
+        )
+    }
+
+    fn acquire_or_forward_build_with_probe(
+        topdir: &Path,
+        target_id: &str,
+        packages: &[String],
+        force_rebuild: bool,
+        refresh_files: bool,
+        manual_source_files: &[PathBuf],
+        probe: &dyn RuntimeProbe,
+    ) -> Result<BuildAcquireOutcome> {
+        ensure_runtime_known(probe)?;
         fs::create_dir_all(topdir)
             .with_context(|| format!("creating topdir {}", topdir.to_string_lossy()))?;
         let lock_path = topdir.join(LOCK_FILE_NAME);
@@ -1068,10 +1134,12 @@ pub fn stop_all_build_containers(engine: &str) -> Result<Vec<String>> {
 }
 
 fn stop_build_containers(engine: &str, matches_name: impl Fn(&str) -> bool) -> Result<Vec<String>> {
-    let output = Command::new(engine)
-        .args(["ps", "--format", "{{.Names}}"])
-        .output()
-        .with_context(|| format!("probing running build containers with {engine}"))?;
+    let output = run_bounded_command(
+        OsStr::new(engine),
+        &["ps".into(), "--format".into(), "{{.Names}}".into()],
+        RUNTIME_PROBE_TIMEOUT,
+    )
+    .map_err(|err| anyhow::anyhow!("probing running build containers with {engine}: {err}"))?;
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
         bail!(
@@ -1218,6 +1286,7 @@ fn load_lookup_server_status(
     progress_file: &Path,
     active_entries: &[LookupActiveBuildEntry],
     queued_requests: &[LookupQueuedBuildRequest],
+    runtime_containers: &[RuntimeContainerInfo],
 ) -> Result<Option<LookupServerStatus>> {
     let progress = load_server_progress_state(progress_file).unwrap_or_default();
     let target_id = progress
@@ -1235,7 +1304,7 @@ fn load_lookup_server_status(
         active_entries.first().map(|entry| entry.pid).unwrap_or(0)
     };
     let closing = server_is_closing(topdir, &target_id).unwrap_or(false);
-    let active_containers = lookup_build_containers(topdir)?;
+    let active_containers = lookup_build_containers(topdir, runtime_containers);
     let recent_logs = lookup_recent_build_logs(topdir, 8)?;
     let mut pending_packages = progress.pending_packages;
     if pending_packages.is_empty() {
@@ -1292,23 +1361,14 @@ fn parse_progress_kv(line: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn lookup_build_containers(topdir: &Path) -> Result<Vec<LookupBuildContainer>> {
-    let output = Command::new("docker")
-        .args(["ps", "--format", "{{.Names}}\t{{.ID}}\t{{.Status}}"])
-        .output();
-    let Ok(output) = output else {
-        return Ok(Vec::new());
-    };
-    if !output.status.success() {
-        return Ok(Vec::new());
-    }
+fn lookup_build_containers(
+    topdir: &Path,
+    runtime_containers: &[RuntimeContainerInfo],
+) -> Vec<LookupBuildContainer> {
     let topdir_pid = active_state_pid(topdir).unwrap_or_default();
     let mut out = Vec::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let mut fields = line.split('\t');
-        let name = fields.next().unwrap_or_default().trim();
-        let _id = fields.next().unwrap_or_default().trim();
-        let status = fields.next().unwrap_or_default().trim();
+    for container in runtime_containers {
+        let name = container.name.as_str();
         if !name.starts_with("bioconda2rpm-") {
             continue;
         }
@@ -1322,11 +1382,11 @@ fn lookup_build_containers(topdir: &Path) -> Result<Vec<LookupBuildContainer>> {
             spec: parsed.spec,
             attempt: parsed.attempt,
             pid: parsed.pid,
-            status: status.to_string(),
+            status: container.status.clone(),
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(out)
+    out
 }
 
 struct ParsedContainerName {
@@ -1442,29 +1502,258 @@ fn collect_build_logs(dir: &Path, out: &mut Vec<LookupBuildLog>) -> Result<()> {
     Ok(())
 }
 
-fn probe_running_containers() -> (Vec<String>, Option<String>) {
-    let output = Command::new("docker")
-        .args(["ps", "--format", "{{.Names}}"])
-        .output();
-    let Ok(output) = output else {
-        return (Vec::new(), Some("docker command unavailable".to_string()));
-    };
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let detail = if err.is_empty() {
-            format!("docker ps exit={}", output.status)
-        } else {
-            err
-        };
-        return (Vec::new(), Some(detail));
+trait RuntimeProbe: Send + Sync {
+    fn probe(&self) -> RuntimeProbeOutcome;
+}
+
+struct DockerRuntimeProbe {
+    command: std::ffi::OsString,
+    args: Vec<std::ffi::OsString>,
+    timeout: Duration,
+}
+
+impl Default for DockerRuntimeProbe {
+    fn default() -> Self {
+        Self {
+            command: "docker".into(),
+            args: vec![
+                "ps".into(),
+                "--format".into(),
+                "{{.Names}}\t{{.ID}}\t{{.Status}}".into(),
+            ],
+            timeout: RUNTIME_PROBE_TIMEOUT,
+        }
     }
-    let mut containers = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|line| line.trim().to_string())
-        .filter(|name| !name.is_empty() && name.contains("bioconda2rpm-"))
-        .collect::<Vec<_>>();
-    containers.sort();
-    (containers, None)
+}
+
+impl RuntimeProbe for DockerRuntimeProbe {
+    fn probe(&self) -> RuntimeProbeOutcome {
+        return match run_bounded_command(&self.command, &self.args, self.timeout) {
+            Err(BoundedCommandError::Unavailable(detail)) => {
+                RuntimeProbeOutcome::Unavailable(detail)
+            }
+            Err(BoundedCommandError::TimedOut(timeout)) => RuntimeProbeOutcome::TimedOut(timeout),
+            Err(BoundedCommandError::Failed(detail)) => RuntimeProbeOutcome::Failed(detail),
+            Ok(output) => {
+                if !output.status.success() {
+                    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    let detail = if detail.is_empty() {
+                        format!("docker ps exited with {}", output.status)
+                    } else {
+                        detail
+                    };
+                    return RuntimeProbeOutcome::Failed(detail);
+                }
+                let stdout = match String::from_utf8(output.stdout) {
+                    Ok(stdout) => stdout,
+                    Err(err) => {
+                        return RuntimeProbeOutcome::Malformed(format!(
+                            "docker ps returned non-UTF-8 output: {err}"
+                        ));
+                    }
+                };
+                let mut containers = Vec::new();
+                for line in stdout.lines() {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let fields = line.split('\t').collect::<Vec<_>>();
+                    if fields.len() != 3 {
+                        return RuntimeProbeOutcome::Malformed(format!(
+                            "docker ps returned a malformed row {line:?}"
+                        ));
+                    }
+                    let name = fields[0].trim();
+                    let id = fields[1].trim();
+                    let status = fields[2].trim();
+                    if name.is_empty()
+                        || id.is_empty()
+                        || status.is_empty()
+                        || name.chars().any(char::is_control)
+                        || name.chars().any(char::is_whitespace)
+                        || id.chars().any(char::is_control)
+                        || id.chars().any(char::is_whitespace)
+                        || status.chars().any(char::is_control)
+                    {
+                        return RuntimeProbeOutcome::Malformed(format!(
+                            "docker ps returned invalid container fields {line:?}"
+                        ));
+                    }
+                    containers.push(RuntimeContainerInfo {
+                        name: name.to_string(),
+                        status: status.to_string(),
+                    });
+                }
+                containers.sort_by(|a, b| a.name.cmp(&b.name));
+                RuntimeProbeOutcome::Healthy(containers)
+            }
+        };
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeContainerInfo {
+    name: String,
+    status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RuntimeProbeOutcome {
+    Healthy(Vec<RuntimeContainerInfo>),
+    Unavailable(String),
+    TimedOut(Duration),
+    Failed(String),
+    Malformed(String),
+}
+
+impl RuntimeProbeOutcome {
+    fn healthy_containers(&self) -> Option<Vec<RuntimeContainerInfo>> {
+        match self {
+            Self::Healthy(containers) => Some(containers.clone()),
+            _ => None,
+        }
+    }
+
+    fn status_name(&self) -> &'static str {
+        match self {
+            Self::Healthy(_) => "healthy",
+            Self::Unavailable(_) => "unavailable",
+            Self::TimedOut(_) => "timeout",
+            Self::Failed(_) => "failed",
+            Self::Malformed(_) => "malformed",
+        }
+    }
+
+    fn detail(&self) -> Option<String> {
+        match self {
+            Self::Healthy(_) => None,
+            Self::Unavailable(detail) | Self::Failed(detail) | Self::Malformed(detail) => {
+                Some(detail.clone())
+            }
+            Self::TimedOut(timeout) => Some(format!(
+                "docker ps exceeded the {} second timeout",
+                timeout.as_secs_f64()
+            )),
+        }
+    }
+
+    fn into_lookup_fields(self) -> (Vec<String>, String, Option<String>) {
+        let containers = match &self {
+            Self::Healthy(containers) => containers
+                .iter()
+                .map(|container| container.name.clone())
+                .filter(|name| name.starts_with("bioconda2rpm-"))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let status = self.status_name().to_string();
+        let error = self.detail();
+        (containers, status, error)
+    }
+}
+
+#[derive(Debug)]
+enum BoundedCommandError {
+    Unavailable(String),
+    TimedOut(Duration),
+    Failed(String),
+}
+
+impl std::fmt::Display for BoundedCommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable(detail) | Self::Failed(detail) => f.write_str(detail),
+            Self::TimedOut(timeout) => write!(f, "command exceeded {timeout:?} timeout"),
+        }
+    }
+}
+
+fn run_bounded_command(
+    command: &OsStr,
+    args: &[std::ffi::OsString],
+    timeout: Duration,
+) -> std::result::Result<Output, BoundedCommandError> {
+    let mut stdout_file = tempfile::tempfile()
+        .map_err(|err| BoundedCommandError::Failed(format!("creating stdout capture: {err}")))?;
+    let mut stderr_file = tempfile::tempfile()
+        .map_err(|err| BoundedCommandError::Failed(format!("creating stderr capture: {err}")))?;
+    let mut child = Command::new(command)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout_file.try_clone().map_err(|err| {
+            BoundedCommandError::Failed(format!("cloning stdout capture: {err}"))
+        })?))
+        .stderr(Stdio::from(stderr_file.try_clone().map_err(|err| {
+            BoundedCommandError::Failed(format!("cloning stderr capture: {err}"))
+        })?))
+        .spawn()
+        .map_err(|err| {
+            if err.kind() == ErrorKind::NotFound {
+                BoundedCommandError::Unavailable(format!(
+                    "{} executable not found",
+                    command.to_string_lossy()
+                ))
+            } else {
+                BoundedCommandError::Failed(format!(
+                    "starting {}: {err}",
+                    command.to_string_lossy()
+                ))
+            }
+        })?;
+
+    match child.wait_timeout(timeout) {
+        Ok(Some(status)) => {
+            let stdout = read_captured_output(&mut stdout_file)
+                .map_err(|err| BoundedCommandError::Failed(format!("reading stdout: {err}")))?;
+            let stderr = read_captured_output(&mut stderr_file)
+                .map_err(|err| BoundedCommandError::Failed(format!("reading stderr: {err}")))?;
+            Ok(Output {
+                status,
+                stdout,
+                stderr,
+            })
+        }
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(BoundedCommandError::TimedOut(timeout))
+        }
+        Err(err) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(BoundedCommandError::Failed(format!(
+                "waiting for command: {err}"
+            )))
+        }
+    }
+}
+
+fn read_captured_output(file: &mut fs::File) -> std::io::Result<Vec<u8>> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut output = Vec::new();
+    (&mut *file)
+        .take(MAX_RUNTIME_PROBE_OUTPUT_BYTES + 1)
+        .read_to_end(&mut output)?;
+    if output.len() as u64 > MAX_RUNTIME_PROBE_OUTPUT_BYTES {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            "container runtime output exceeded 1 MiB",
+        ));
+    }
+    Ok(output)
+}
+
+fn ensure_runtime_known(probe: &dyn RuntimeProbe) -> Result<()> {
+    match probe.probe() {
+        RuntimeProbeOutcome::Healthy(_) => Ok(()),
+        outcome => bail!(
+            "cannot acquire build session: Docker runtime state is {}: {}",
+            outcome.status_name(),
+            outcome
+                .detail()
+                .unwrap_or_else(|| "unknown error".to_string())
+        ),
+    }
 }
 
 fn write_state(path: &Path, state: &ActiveBuildState) -> Result<()> {
@@ -1521,6 +1810,53 @@ fn append_build_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FakeProbe(RuntimeProbeOutcome);
+
+    impl RuntimeProbe for FakeProbe {
+        fn probe(&self) -> RuntimeProbeOutcome {
+            self.0.clone()
+        }
+    }
+
+    fn healthy_probe() -> FakeProbe {
+        FakeProbe(RuntimeProbeOutcome::Healthy(Vec::new()))
+    }
+
+    fn acquire_test_build(
+        topdir: &Path,
+        target_id: &str,
+        packages: &[String],
+    ) -> Result<BuildSessionGuard> {
+        BuildSessionGuard::acquire_with_probe(
+            topdir,
+            target_id,
+            packages,
+            BuildSessionKind::Build,
+            false,
+            false,
+            &healthy_probe(),
+        )
+    }
+
+    fn acquire_or_forward_test_build(
+        topdir: &Path,
+        target_id: &str,
+        packages: &[String],
+        force_rebuild: bool,
+        refresh_files: bool,
+        manual_source_files: &[PathBuf],
+    ) -> Result<BuildAcquireOutcome> {
+        BuildSessionGuard::acquire_or_forward_build_with_probe(
+            topdir,
+            target_id,
+            packages,
+            force_rebuild,
+            refresh_files,
+            manual_source_files,
+            &healthy_probe(),
+        )
+    }
 
     fn tempdir(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -1782,18 +2118,11 @@ mod tests {
     #[test]
     fn closing_server_rejects_new_forwarded_builds() {
         let topdir = tempdir("closing-rejects-forward");
-        let owner = BuildSessionGuard::acquire(
-            &topdir,
-            "target-a",
-            &["emboss".to_string()],
-            BuildSessionKind::Build,
-            false,
-            false,
-        )
-        .expect("acquire owner");
+        let owner = acquire_test_build(&topdir, "target-a", &["emboss".to_string()])
+            .expect("acquire owner");
         mark_server_closing(&topdir, "target-a").expect("mark closing");
 
-        let err = match BuildSessionGuard::acquire_or_forward_build(
+        let err = match acquire_or_forward_test_build(
             &topdir,
             "target-a",
             &["blast".to_string()],
@@ -1816,15 +2145,7 @@ mod tests {
     #[test]
     fn lookup_build_runtime_reports_server_progress() {
         let topdir = tempdir("server-progress");
-        let _owner = BuildSessionGuard::acquire(
-            &topdir,
-            "target-a",
-            &[],
-            BuildSessionKind::Build,
-            false,
-            false,
-        )
-        .expect("acquire owner");
+        let _owner = acquire_test_build(&topdir, "target-a", &[]).expect("acquire owner");
         record_server_progress(
             &topdir,
             "target-a",
@@ -1834,7 +2155,8 @@ mod tests {
         )
         .expect("record progress");
 
-        let snapshot = lookup_build_runtime(&topdir).expect("lookup runtime");
+        let snapshot =
+            lookup_build_runtime_with_probe(&topdir, &healthy_probe()).expect("lookup runtime");
         let status = snapshot.server_status.expect("server status");
         assert_eq!(status.target_id, "target-a");
         assert_eq!(status.current_phase, "dependency-index");
@@ -1880,7 +2202,8 @@ mod tests {
         )
         .expect("write queue request");
 
-        let snapshot = lookup_build_runtime(&topdir).expect("lookup build runtime");
+        let snapshot = lookup_build_runtime_with_probe(&topdir, &healthy_probe())
+            .expect("lookup build runtime");
         assert_eq!(snapshot.topdir, topdir.to_string_lossy().to_string());
         assert_eq!(snapshot.active_entries.len(), 1);
         assert_eq!(snapshot.active_entries[0].packages, vec!["trinity"]);
@@ -1889,28 +2212,175 @@ mod tests {
             snapshot.queued_requests[0].packages,
             vec!["pplacer".to_string(), "mothur".to_string()]
         );
+        assert_eq!(snapshot.runtime_probe_status, "healthy");
+        assert_eq!(snapshot.container_probe_error, None);
 
         let _ = fs::remove_dir_all(&topdir);
     }
 
     #[test]
+    fn build_lock_rejects_timeout_unavailable_failed_and_malformed_runtime_probes() {
+        let cases = [
+            (
+                RuntimeProbeOutcome::TimedOut(RUNTIME_PROBE_TIMEOUT),
+                "timeout",
+                "exceeded the 8 second timeout",
+            ),
+            (
+                RuntimeProbeOutcome::Unavailable("docker executable not found".to_string()),
+                "unavailable",
+                "docker executable not found",
+            ),
+            (
+                RuntimeProbeOutcome::Failed("Docker daemon returned an error".to_string()),
+                "failed",
+                "Docker daemon returned an error",
+            ),
+            (
+                RuntimeProbeOutcome::Malformed("invalid container name".to_string()),
+                "malformed",
+                "invalid container name",
+            ),
+        ];
+
+        for (outcome, expected_status, expected_detail) in cases {
+            let topdir = tempdir("runtime-probe-fail-closed");
+            let result = BuildSessionGuard::acquire_with_probe(
+                &topdir,
+                "target-a",
+                &["samtools".to_string()],
+                BuildSessionKind::Build,
+                false,
+                false,
+                &FakeProbe(outcome),
+            );
+            let err = match result {
+                Ok(_) => panic!("uncertain Docker state must prevent build lock acquisition"),
+                Err(err) => err,
+            };
+            let message = format!("{err:#}");
+            assert!(message.contains(expected_status), "{message}");
+            assert!(message.contains(expected_detail), "{message}");
+            assert!(
+                !topdir.join(LOCK_FILE_NAME).exists(),
+                "build lock file should not be created for {expected_status}"
+            );
+            let _ = fs::remove_dir_all(&topdir);
+        }
+    }
+
+    #[test]
+    fn lookup_reports_unknown_runtime_state_instead_of_empty_runtime() {
+        let topdir = tempdir("runtime-probe-unknown");
+        for (outcome, expected_status) in [
+            (
+                RuntimeProbeOutcome::Unavailable("docker executable not found".to_string()),
+                "unavailable",
+            ),
+            (
+                RuntimeProbeOutcome::TimedOut(RUNTIME_PROBE_TIMEOUT),
+                "timeout",
+            ),
+            (
+                RuntimeProbeOutcome::Failed("daemon error".to_string()),
+                "failed",
+            ),
+            (
+                RuntimeProbeOutcome::Malformed("bad output".to_string()),
+                "malformed",
+            ),
+        ] {
+            let snapshot = lookup_build_runtime_with_probe(&topdir, &FakeProbe(outcome))
+                .expect("lookup should retain diagnostic snapshot");
+            assert_eq!(snapshot.runtime_probe_status, expected_status);
+            assert!(snapshot.running_containers.is_empty());
+            assert!(snapshot.container_probe_error.is_some());
+        }
+        let _ = fs::remove_dir_all(&topdir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn production_probe_bounds_a_non_returning_runtime_command() {
+        let probe = DockerRuntimeProbe {
+            command: "/bin/sleep".into(),
+            args: vec!["30".into()],
+            timeout: Duration::from_millis(100),
+        };
+        let started = std::time::Instant::now();
+        let outcome = probe.probe();
+        assert_eq!(
+            outcome,
+            RuntimeProbeOutcome::TimedOut(Duration::from_millis(100))
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn production_probe_distinguishes_unavailable_failed_and_malformed_output() {
+        let unavailable = DockerRuntimeProbe {
+            command: "/missing/docker".into(),
+            args: Vec::new(),
+            timeout: Duration::from_secs(1),
+        };
+        assert!(matches!(
+            unavailable.probe(),
+            RuntimeProbeOutcome::Unavailable(_)
+        ));
+
+        let failed = DockerRuntimeProbe {
+            command: "/usr/bin/false".into(),
+            args: Vec::new(),
+            timeout: Duration::from_secs(1),
+        };
+        assert!(matches!(failed.probe(), RuntimeProbeOutcome::Failed(_)));
+
+        let malformed = DockerRuntimeProbe {
+            command: "/usr/bin/printf".into(),
+            args: vec!["bad name\tid\tUp 2 seconds\n".into()],
+            timeout: Duration::from_secs(1),
+        };
+        assert!(matches!(
+            malformed.probe(),
+            RuntimeProbeOutcome::Malformed(_)
+        ));
+
+        let healthy_empty = DockerRuntimeProbe {
+            command: "/usr/bin/printf".into(),
+            args: vec![String::new().into()],
+            timeout: Duration::from_secs(1),
+        };
+        assert_eq!(
+            healthy_empty.probe(),
+            RuntimeProbeOutcome::Healthy(Vec::new())
+        );
+
+        let healthy_active = DockerRuntimeProbe {
+            command: "/usr/bin/printf".into(),
+            args: vec!["bioconda2rpm-test\tdeadbeef\tUp 2 seconds\n".into()],
+            timeout: Duration::from_secs(1),
+        };
+        assert_eq!(
+            healthy_active.probe(),
+            RuntimeProbeOutcome::Healthy(vec![RuntimeContainerInfo {
+                name: "bioconda2rpm-test".to_string(),
+                status: "Up 2 seconds".to_string(),
+            }])
+        );
+    }
+
+    #[test]
     fn acquire_or_forward_build_preserves_manual_source_files() {
         let topdir = tempdir("forward-files");
-        let _owner = BuildSessionGuard::acquire(
-            &topdir,
-            "target-a",
-            &["server-root".to_string()],
-            BuildSessionKind::Build,
-            false,
-            false,
-        )
-        .expect("acquire owner");
+        let _owner = acquire_test_build(&topdir, "target-a", &["server-root".to_string()])
+            .expect("acquire owner");
 
         let manual_files = vec![
             PathBuf::from("/home/stephen/Downloads/cap3.tar.gz"),
             PathBuf::from("/data/manual/special.zip"),
         ];
-        let forwarded = match BuildSessionGuard::acquire_or_forward_build(
+        let forwarded = match acquire_or_forward_test_build(
             &topdir,
             "target-a",
             &["cap3".to_string()],

@@ -19,6 +19,7 @@ ratatui = "0.29.0"
 git2 = { version = "0.19.0", features = ["vendored-libgit2"] }
 fs2 = "0.4.3"
 ctrlc = "3.4.5"
+tempfile = "3.19.1"
+wait-timeout = "0.2.1"
 
 [dev-dependencies]
-tempfile = "3.19.1"
