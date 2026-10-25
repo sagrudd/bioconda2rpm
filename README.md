@@ -7,6 +7,15 @@ Rust CLI to convert Bioconda recipes into Phoreus-style RPM artifacts.
 The crate also exposes a supported Rust API for recipe repository preparation
 and recipe metadata ingress. See [the library API guide](docs/Rust_library_api.md).
 
+Library consumers can set `default-features = false` on their pinned Git
+dependency to omit terminal UI dependencies while retaining the same ingress
+and recipe repository APIs. Version 0.3.0 is pending qualification; use the exact
+qualified successor revision after coordinated admission, not a floating branch
+or an assumed crates.io publication.
+
+The default feature set retains the existing CLI and terminal UI. The binary
+requires `cli`; build a library-only dependency with `--no-default-features --lib`.
+
 ## Baseline CLI
 
 ```bash
